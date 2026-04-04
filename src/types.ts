@@ -20,6 +20,9 @@ export interface LogFilter {
   fromBlock?: number;
   toBlock?: number;
   address?: string;
+  /** Topic filters. Each entry is null (match any) or an array of hex values (OR match).
+   *  topics[0] = event signature hash, topics[1..3] = indexed params. */
+  topics?: (string | string[] | null)[];
 }
 
 export interface BlockHeader {
