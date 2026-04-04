@@ -33,7 +33,8 @@ TypeScript SDK for interacting with the Pyde blockchain. Post-quantum secure via
   - [Vectors](#vectors)
   - [Structs & Tuples](#structs--tuples)
   - [Nested Types](#nested-types)
-  - [ABI-Aware Reads](#abi-aware-reads)
+  - [ABI-Aware Contract (fromArtifact + connect)](#abi-aware-contract-fromartifact--connect)
+  - [Arg Validation (before broadcast)](#arg-validation-before-broadcast)
   - [Decoding Return Values](#decoding-return-values)
 - [Events & Logs](#events--logs)
 - [Error Handling](#error-handling)
@@ -428,29 +429,65 @@ new ContractCall("set_team")
   .build();
 ```
 
-### ABI-Aware Reads
+### ABI-Aware Contract (fromArtifact + connect)
 
-Register function return types for auto-decoded reads.
+The recommended way to interact with contracts — loads the full ABI including
+struct/enum definitions, validates args before broadcast, auto-encodes and decodes.
 
 ```typescript
 import { Contract } from "pyde-ts-sdk";
 
-const contract = new Contract("0xcontract...", provider);
-contract.addFunction("get_count", "u64");
-contract.addFunction("get_name", "String");
-contract.addFunction("is_active", "bool");
-contract.addFunction("get_owner", "Address");
+// Load from build artifact (gets all functions, structs, enums)
+const contract = Contract.fromArtifact("out/MyContract.json", addr, provider)
+  .connect(wallet);
 
-// Returns the correct TypeScript type automatically
-const count = await contract.read("get_count");   // bigint (42n)
-const name = await contract.read("get_name");     // string ("hello")
-const active = await contract.read("is_active");  // boolean (true)
-const owner = await contract.read("get_owner");   // string ("0xaa...")
+// Read — auto-decoded return value
+const count = await contract.read("get_count");           // bigint
+const user = await contract.read("get_user");             // { name: "alice", age: 25n, active: true }
+const scores = await contract.read("get_scores");         // [100n, 200n, 300n]
+const status = await contract.read("get_status");         // "Active" (enum variant name)
+
+// Write — validated, encoded, signed, sent, waited
+await contract.write("deposit", { amount: 500 });
+await contract.write("set_user", { user: { name: "alice", age: 25, active: true } });
+await contract.write("set_status", { status: "Active" });
+await contract.write("set_scores", { scores: [100, 200, 300] });
+```
+
+### Arg Validation (before broadcast)
+
+Args are validated against the ABI before any transaction is sent:
+
+```typescript
+// Missing param → error
+await contract.write("deposit", {});
+// Error: deposit(): missing required param 'amount' (u64)
+
+// Wrong type → error
+await contract.write("deposit", { amount: "hello" });
+// Error: deposit().amount: expected u64, got string
+
+// Out of range → error
+await contract.write("deposit", { amount: -1 });
+// Error: deposit().amount: value -1 out of range for u64 (0 to 18446744073709551615)
+
+// Missing struct field → error
+await contract.write("set_user", { user: { name: "alice" } });
+// Error: set_user().user: missing field 'age' for struct UserInfo
+
+// Unknown enum variant → error
+await contract.write("set_status", { status: "Unknown" });
+// Error: set_status().status: unknown variant 'Unknown' for enum Status. Valid: Active, Inactive, Banned
+
+// Write without connect() → error
+const readOnly = Contract.fromArtifact("out/Contract.json", addr, provider);
+await readOnly.write("deposit", { amount: 500 });
+// Error: No wallet connected. Use contract.connect(wallet) first.
 ```
 
 ### Decoding Return Values
 
-Manual decoders for raw hex return data.
+Manual decoders for raw hex return data (low-level alternative to Contract.read).
 
 ```typescript
 import { decodeU64, decodeBool, decodeString, decodeAddress } from "pyde-ts-sdk";
