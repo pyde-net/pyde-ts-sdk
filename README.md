@@ -28,7 +28,11 @@ TypeScript SDK for interacting with the Pyde blockchain. Post-quantum secure via
   - [Waiting for Receipts](#waiting-for-receipts)
 - [Contract Interaction](#contract-interaction)
   - [Building Calldata](#building-calldata)
+  - [Wide Types (u128, u256)](#wide-types-u128-u256)
   - [Multi-Arg Calls](#multi-arg-calls)
+  - [Vectors](#vectors)
+  - [Structs & Tuples](#structs--tuples)
+  - [Nested Types](#nested-types)
   - [ABI-Aware Reads](#abi-aware-reads)
   - [Decoding Return Values](#decoding-return-values)
 - [Events & Logs](#events--logs)
@@ -300,24 +304,34 @@ Use `ContractCall` to encode function selectors and arguments.
 ```typescript
 import { ContractCall } from "pyde-ts-sdk";
 
-// Function with no args
-const data = new ContractCall("increment").build();
+// No args
+new ContractCall("increment").build();
 
-// Function with a u64 arg
-const data = new ContractCall("deposit").argU64(500).build();
+// GP types (8 bytes)
+new ContractCall("set_u8").argU8(255).build();
+new ContractCall("set_u16").argU16(1000).build();
+new ContractCall("set_u32").argU32(100000).build();
+new ContractCall("set_u64").argU64(42).build();
+new ContractCall("set_i64").argI64(-1).build();
+new ContractCall("set_active").argBool(true).build();
 
-// Function with a boolean arg
-const data = new ContractCall("set_active").argBool(true).build();
+// Address (32 bytes)
+new ContractCall("set_owner").argAddress("0xaabb...").build();
 
-// Function with an address arg
-const data = new ContractCall("set_owner")
-  .argAddress("0xaabb...")
-  .build();
+// String (length-prefixed, 8-byte aligned)
+new ContractCall("set_name").argString("hello").build();
+```
 
-// Function with a string arg
-const data = new ContractCall("set_name")
-  .argString("hello")
-  .build();
+### Wide Types (u128, u256)
+
+```typescript
+// u128 / i128 (16 bytes)
+new ContractCall("set_amount").argU128(1000000000000n).build();
+new ContractCall("set_signed").argI128(-500n).build();
+
+// u256 / i256 (32 bytes)
+new ContractCall("set_big").argU256(99n).build();
+new ContractCall("set_signed_big").argI256(-1n).build();
 ```
 
 ### Multi-Arg Calls
@@ -325,11 +339,92 @@ const data = new ContractCall("set_name")
 Chain multiple arguments in order.
 
 ```typescript
-const data = new ContractCall("set_all")
+new ContractCall("set_all")
   .argString("hello")    // String
   .argU64(42)             // u64
   .argBool(true)          // bool
+  .argU256(99n)           // u256
   .argAddress("0xaa...")  // Address
+  .build();
+```
+
+### Vectors
+
+```typescript
+// Vec<u64>
+new ContractCall("set_scores").argVecU64([100, 200, 300]).build();
+
+// Vec<bool>
+new ContractCall("set_flags").argVecBool([true, false, true]).build();
+
+// Vec<Address>
+new ContractCall("set_addrs").argVecAddress(["0xaa...", "0xbb..."]).build();
+
+// Vec<String> — use argVecOf for any element type
+new ContractCall("set_names")
+  .argVecOf(3, b => b
+    .argString("alice")
+    .argString("bob")
+    .argString("charlie"))
+  .build();
+
+// Vec<u256>
+new ContractCall("set_bigs")
+  .argVecOf(2, b => b.argU256(100n).argU256(200n))
+  .build();
+```
+
+### Structs & Tuples
+
+```typescript
+// Struct: [byte_len:8][fields...]
+new ContractCall("set_user")
+  .argStruct(s => s
+    .argString("alice")
+    .argU64(25)
+    .argBool(true))
+  .build();
+
+// Tuple: sequential fields, no length prefix
+new ContractCall("set_pair")
+  .argTuple(t => t.argU64(1).argString("one"))
+  .build();
+```
+
+### Nested Types
+
+`argVecOf` and `argStruct` are composable — nest them arbitrarily.
+
+```typescript
+// Vec<Struct>
+new ContractCall("set_users")
+  .argVecOf(2, b => b
+    .argStruct(s => s.argString("alice").argU64(25))
+    .argStruct(s => s.argString("bob").argU64(30)))
+  .build();
+
+// Vec<Vec<u64>>
+new ContractCall("set_matrix")
+  .argVecOf(2, b => b
+    .argVecU64([1, 2, 3])
+    .argVecU64([4, 5, 6]))
+  .build();
+
+// Vec<Tuple>
+new ContractCall("set_pairs")
+  .argVecOf(2, b => b
+    .argTuple(t => t.argU64(1).argString("one"))
+    .argTuple(t => t.argU64(2).argString("two")))
+  .build();
+
+// Struct containing Vec
+new ContractCall("set_team")
+  .argStruct(s => s
+    .argString("Team Alpha")
+    .argVecOf(3, b => b
+      .argString("alice")
+      .argString("bob")
+      .argString("charlie")))
   .build();
 ```
 
