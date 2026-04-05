@@ -18,6 +18,7 @@ TypeScript SDK for interacting with the Pyde blockchain. Post-quantum secure via
 - [Wallet](#wallet)
   - [Creating a Wallet](#creating-a-wallet)
   - [Restoring a Wallet](#restoring-a-wallet)
+  - [Encrypted Keystore](#encrypted-keystore)
   - [Exporting Keys](#exporting-keys)
   - [Signing Messages](#signing-messages)
 - [Transactions](#transactions)
@@ -36,6 +37,8 @@ TypeScript SDK for interacting with the Pyde blockchain. Post-quantum secure via
   - [ABI-Aware Contract (fromArtifact + connect)](#abi-aware-contract-fromartifact--connect)
   - [Arg Validation (before broadcast)](#arg-validation-before-broadcast)
   - [Decoding Return Values](#decoding-return-values)
+  - [DeployData Builder](#deploydata-builder)
+  - [Receipt Utilities](#receipt-utilities)
 - [Events & Logs](#events--logs)
 - [Error Handling](#error-handling)
 - [Cryptographic Primitives](#cryptographic-primitives)
@@ -58,7 +61,7 @@ npm install pyde-ts-sdk
 ## Getting Started
 
 ```typescript
-import { Provider, Wallet, ContractCall } from "pyde-ts-sdk";
+import { Provider, Wallet, Contract } from "pyde-ts-sdk";
 
 // 1. Connect to a node
 const provider = new Provider("http://127.0.0.1:8545");
@@ -75,9 +78,11 @@ console.log("Balance:", balance, "quanta");
 const receipt = await wallet.transfer(provider, recipientAddress, 1000000n);
 console.log("Tx:", receipt.txHash, "Success:", receipt.success);
 
-// 5. Call a contract
-const data = new ContractCall("get_count").build();
-const result = await provider.call(contractAddress, data);
+// 5. Interact with a contract (load ABI from build artifact)
+const contract = Contract.fromArtifact("out/Counter.json", contractAddress, provider)
+  .connect(wallet);
+const count = await contract.read("get_count");
+await contract.write("increment", {});
 ```
 
 ---
@@ -134,14 +139,15 @@ if (block) {
 
 ### Static Calls
 
-Execute a contract function without creating a transaction. No gas is consumed. Used for read-only queries.
+Execute a contract function without creating a transaction. No gas is consumed.
 
 ```typescript
-// Build calldata (selector + args)
-const data = new ContractCall("get_count").build();
+// Using Contract (recommended)
+const contract = Contract.fromArtifact("out/Counter.json", addr, provider);
+const count = await contract.read("get_count");
 
-// Execute static call
-const resultHex = await provider.call("0xcontract...", data);
+// Low-level (manual calldata)
+const resultHex = await provider.call("0xcontract...", "0xcalldata...");
 ```
 
 ### Gas Estimation
@@ -149,8 +155,7 @@ const resultHex = await provider.call("0xcontract...", data);
 Estimate how much gas a transaction will consume.
 
 ```typescript
-const data = new ContractCall("deposit").argU64(500).build();
-const estimatedGas = await provider.estimateGas("0xcontract...", data);
+const estimatedGas = await provider.estimateGas("0xcontract...", "0xcalldata...");
 console.log("Estimated gas:", estimatedGas);
 ```
 
@@ -176,6 +181,41 @@ const wallet = Wallet.fromPrivateKey("0xabcdef...");
 
 // From individual key components
 const wallet = Wallet.fromKeys(publicKeyHex, secretKeyHex);
+
+// From encrypted keystore file
+const wallet = Wallet.fromKeystore("~/.pyde/wallets/my-wallet.json", "my-password");
+
+// From encrypted keystore object (already in memory)
+const wallet = Wallet.fromEncrypted(keystoreObj, "my-password");
+```
+
+### Encrypted Keystore
+
+Wallets can be encrypted with AES-256-GCM and saved to disk. The encryption key is
+derived via Poseidon2(password || salt), matching the Rust SDK's keystore format exactly.
+
+```typescript
+// Generate a new wallet and save encrypted to disk
+const wallet = Wallet.createEncrypted("/path/to/wallet.json", "strong-password");
+// File is chmod 600 on Unix
+
+// Export an existing wallet as encrypted keystore
+const keystore = wallet.toKeystore("strong-password");
+// Returns { address, public_key, encrypted_secret_key, salt, nonce, version }
+
+// Save keystore to a specific file
+wallet.saveKeystore("/path/to/backup.json", "strong-password");
+
+// Load from file
+const restored = Wallet.fromKeystore("/path/to/wallet.json", "strong-password");
+console.log(restored.address === wallet.address); // true
+
+// Load from in-memory keystore object
+const restored2 = Wallet.fromEncrypted(keystore, "strong-password");
+
+// Wrong password → throws
+Wallet.fromEncrypted(keystore, "wrong");
+// Error: decryption failed — wrong password?
 ```
 
 ### Exporting Keys
@@ -216,6 +256,8 @@ const signedTxHex = wallet.signTransaction({
 The simplest transaction — send native tokens from one address to another.
 
 ```typescript
+import { ReceiptUtils } from "pyde-ts-sdk";
+
 const receipt = await wallet.transfer(
   provider,
   "0xrecipient...",  // to address
@@ -223,8 +265,8 @@ const receipt = await wallet.transfer(
 );
 
 console.log("Success:", receipt.success);
-console.log("Gas Used:", receipt.gasUsed);
-console.log("Fee Paid:", receipt.feePaid);
+console.log("Gas Used:", ReceiptUtils.gas(receipt));     // parsed number
+console.log("Fee Paid:", receipt.feePaid);                // hex string
 ```
 
 ### Calling a Contract Function
@@ -232,29 +274,35 @@ console.log("Fee Paid:", receipt.feePaid);
 Send a state-changing transaction to a deployed contract.
 
 ```typescript
-// Build calldata
-const data = new ContractCall("deposit").argU64(500).build();
+// Using Contract (recommended — validates args against ABI)
+const contract = Contract.fromArtifact("out/Contract.json", addr, provider)
+  .connect(wallet);
+const receipt = await contract.write("deposit", { amount: 500 });
 
-// Sign, send, and wait for receipt
-const receipt = await wallet.sendCall(
-  provider,
-  "0xcontract...",   // contract address
-  data,              // calldata
-  100_000_000        // gas limit (optional, defaults to 100M)
-);
+// Low-level (manual calldata + wallet)
+const data = new ContractCall("deposit").argU64(500).build();
+const receipt2 = await wallet.sendCall(provider, "0xcontract...", data);
 ```
 
 ### Deploying a Contract
 
 ```typescript
+import { DeployData, ReceiptUtils } from "pyde-ts-sdk";
+
+// Build deploy payload (with constructor args)
+const deployData = new DeployData(constructorHex, runtimeHex)
+  .argU64(1000)
+  .build();
+
 const receipt = await wallet.deploy(
   provider,
-  "0xdeploybytecode...",  // constructor + runtime bytecode
-  100_000_000             // gas limit
+  deployData,
+  100_000_000  // gas limit (optional, defaults to 100M)
 );
 
-// Contract address is in the receipt's returnData
-console.log("Deployed at:", receipt.returnData);
+// Extract contract address from receipt
+const contractAddr = ReceiptUtils.contractAddress(receipt);
+console.log("Deployed at:", contractAddr);
 ```
 
 ### Raw Transaction Submission
@@ -298,9 +346,13 @@ const receipt = await provider.sendAndWait(signedTxHex, 10000);
 
 ## Contract Interaction
 
-### Building Calldata
+> **Recommended**: Use `Contract.fromArtifact()` with `.read()` / `.write()` for ABI-aware
+> interaction with validation. The `ContractCall` builder below is for low-level / dynamic use
+> when you don't have an artifact.
 
-Use `ContractCall` to encode function selectors and arguments.
+### Low-Level Calldata Builder
+
+Use `ContractCall` when you need manual control over calldata encoding.
 
 ```typescript
 import { ContractCall } from "pyde-ts-sdk";
@@ -490,12 +542,64 @@ await readOnly.write("deposit", { amount: 500 });
 Manual decoders for raw hex return data (low-level alternative to Contract.read).
 
 ```typescript
-import { decodeU64, decodeBool, decodeString, decodeAddress } from "pyde-ts-sdk";
+import {
+  decodeU64, decodeI64, decodeU128, decodeI128,
+  decodeU256, decodeI256, decodeBool, decodeAddress,
+  decodeString, decodeBytes,
+} from "pyde-ts-sdk";
 
+// GP integers
 const count = decodeU64("0x2a00000000000000");                    // 42n
-const flag = decodeBool("0x0100000000000000");                     // true
-const name = decodeString("0x050000000000000068656c6c6f");         // "hello"
-const addr = decodeAddress("0x" + "aa".repeat(32));                // "0xaaaa..."
+const neg   = decodeI64("0x" + "ff".repeat(8));                    // -1n
+
+// Wide integers
+const big   = decodeU128("0x0100000000000000" + "00".repeat(8));  // 1n
+const sneg  = decodeI128("0x" + "ff".repeat(16));                  // -1n
+const huge  = decodeU256("0x0100000000000000" + "00".repeat(24)); // 1n
+const shuge = decodeI256("0x" + "ff".repeat(32));                  // -1n
+
+// Other types
+const flag  = decodeBool("0x0100000000000000");                    // true
+const name  = decodeString("0x050000000000000068656c6c6f");        // "hello"
+const addr  = decodeAddress("0x" + "aa".repeat(32));               // "0xaaaa..."
+const raw   = decodeBytes("0x0300000000000000aabbcc");             // Buffer<aabbcc>
+```
+
+### DeployData Builder
+
+Build properly formatted deploy transaction payloads.
+
+```typescript
+import { DeployData } from "pyde-ts-sdk";
+
+// No constructor args
+const simple = new DeployData(constructorHex, runtimeHex).build();
+
+// With constructor args
+const withArgs = new DeployData(constructorHex, runtimeHex)
+  .argU64(1000)         // initial supply
+  .argString("MyToken") // name
+  .argBool(true)        // mintable
+  .build();
+
+// Format: [clen:4 LE][rlen:4 LE][constructor][runtime][args]
+```
+
+### Receipt Utilities
+
+Helper functions for parsing receipt fields.
+
+```typescript
+import { ReceiptUtils } from "pyde-ts-sdk";
+
+// Parse gas used from hex string to number
+const gas = ReceiptUtils.gas(receipt);
+
+// Extract contract address from deploy receipt
+const addr = ReceiptUtils.contractAddress(receipt); // string | null
+
+// Get raw return data as hex
+const hex = ReceiptUtils.returnHex(receipt); // "0x..." or "0x"
 ```
 
 ---
@@ -601,7 +705,7 @@ Direct access to the WASM-compiled crypto layer.
 ### Key Generation
 
 ```typescript
-import { generateKeypair } from "pyde-ts-sdk";
+import { generateKeypair, deriveAddress } from "pyde-ts-sdk";
 
 const keypair = generateKeypair();
 // {
@@ -609,6 +713,9 @@ const keypair = generateKeypair();
 //   secretKey: "0x..." (1281 bytes, FALCON-512 secret key),
 //   address: "0x..."   (32 bytes, Poseidon2 hash of public key)
 // }
+
+// Derive address from a public key
+const address = deriveAddress(keypair.publicKey);  // "0x..." (32 bytes)
 ```
 
 ### Signing & Verification
@@ -618,6 +725,27 @@ import { signMessage, verifySignature } from "pyde-ts-sdk";
 
 const signature = signMessage(secretKeyHex, messageHex);
 const isValid = verifySignature(publicKeyHex, messageHex, signature);
+```
+
+### Transaction Hashing & Signing
+
+```typescript
+import { hashTransaction, signTransaction } from "pyde-ts-sdk";
+
+// Compute transaction hash without signing
+const txHash = hashTransaction({
+  from: wallet.address,
+  to: "0xrecipient...",
+  value: 1000,
+  data: "0x",
+  gasLimit: 21000,
+  nonce: 0,
+  chainId: 31337,
+  txType: 0,
+});
+
+// Sign a transaction — returns wire-encoded signed tx hex
+const signedTxHex = signTransaction(txFields, secretKeyHex);
 ```
 
 ### Hashing
@@ -652,10 +780,10 @@ pyde-ts-sdk/
 │   └── types.ts       — Receipt, Log, TxFields, etc.
 ├── wasm/              — compiled Rust → WASM (FALCON-512, Poseidon2)
 └── tests/
-    └── sdk.test.ts    — 17 unit tests
+    └── sdk.test.ts    — 50 unit tests
 ```
 
 All cryptographic operations are compiled from Rust to WebAssembly, guaranteeing exact compatibility with the Pyde node:
-- **FALCON-512** — post-quantum lattice-based signatures
-- **Poseidon2** — ZK-friendly algebraic hash (tx hashing, address derivation)
-- **AES-256-GCM** — quantum-resistant symmetric encryption (via Rust SDK keystore)
+- **FALCON-512** — post-quantum lattice-based signatures (WASM)
+- **Poseidon2** — ZK-friendly algebraic hash for tx hashing, address derivation, key derivation (WASM)
+- **AES-256-GCM** — quantum-resistant symmetric encryption for keystore (Node.js `crypto` module, Poseidon2 for KDF)
