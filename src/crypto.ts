@@ -1,6 +1,8 @@
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const wasm = require("../wasm/pyde_crypto_wasm");
 
+import { TxFields } from "./types";
+
 export interface Keypair {
   publicKey: string;
   secretKey: string;
@@ -49,15 +51,4 @@ export function hashTransaction(tx: TxFields): string {
 /** Sign a transaction and return wire-encoded signed tx as hex. */
 export function signTransaction(tx: TxFields, secretKeyHex: string): string {
   return wasm.signTransaction(JSON.stringify(tx), secretKeyHex);
-}
-
-export interface TxFields {
-  from: string;
-  to: string;
-  value: number | string;
-  data: string;
-  gasLimit: number;
-  nonce: number;
-  chainId: number;
-  txType: number;
 }

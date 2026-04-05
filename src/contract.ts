@@ -192,9 +192,12 @@ export class Contract {
         throw new Error(`${path}: expected ${type}, got ${typeof value}`);
       }
       const n = BigInt(value);
+      this.validateWideRange(n, type, path);
+      // Two's complement: mask to 128 bits so negative values encode correctly
+      const unsigned = n & ((1n << 128n) - 1n);
       const b = Buffer.alloc(16);
-      b.writeBigUInt64LE(n & 0xFFFFFFFFFFFFFFFFn, 0);
-      b.writeBigUInt64LE((n >> 64n) & 0xFFFFFFFFFFFFFFFFn, 8);
+      b.writeBigUInt64LE(unsigned & 0xFFFFFFFFFFFFFFFFn, 0);
+      b.writeBigUInt64LE((unsigned >> 64n) & 0xFFFFFFFFFFFFFFFFn, 8);
       buf.push(...b);
       return;
     }
@@ -205,9 +208,12 @@ export class Contract {
         throw new Error(`${path}: expected ${type}, got ${typeof value}`);
       }
       const n = BigInt(value);
+      this.validateWideRange(n, type, path);
+      // Two's complement: mask to 256 bits so negative values encode correctly
+      const unsigned = n & ((1n << 256n) - 1n);
       const b = Buffer.alloc(32);
       for (let i = 0; i < 4; i++) {
-        b.writeBigUInt64LE((n >> BigInt(i * 64)) & 0xFFFFFFFFFFFFFFFFn, i * 8);
+        b.writeBigUInt64LE((unsigned >> BigInt(i * 64)) & 0xFFFFFFFFFFFFFFFFn, i * 8);
       }
       buf.push(...b);
       return;
@@ -230,8 +236,8 @@ export class Contract {
         throw new Error(`${path}: expected Address (hex string), got ${typeof value}`);
       }
       const hex = value.startsWith("0x") ? value.slice(2) : value;
-      if (hex.length !== 64) {
-        throw new Error(`${path}: Address must be 64 hex chars, got ${hex.length}`);
+      if (!/^[0-9a-fA-F]{64}$/.test(hex)) {
+        throw new Error(`${path}: Address must be 64 hex chars (0-9, a-f), got "${hex.length > 20 ? hex.slice(0, 20) + "..." : hex}"`);
       }
       buf.push(...Buffer.from(hex, "hex"));
       return;
@@ -243,6 +249,20 @@ export class Contract {
         throw new Error(`${path}: expected String, got ${typeof value}`);
       }
       const bytes = Buffer.from(value, "utf-8");
+      const lenBuf = Buffer.alloc(8);
+      lenBuf.writeBigUInt64LE(BigInt(bytes.length));
+      buf.push(...lenBuf, ...bytes);
+      const pad = (8 - (bytes.length % 8)) % 8;
+      for (let i = 0; i < pad; i++) buf.push(0);
+      return;
+    }
+
+    // Bytes (length-prefixed, 8-byte aligned)
+    if (type === "Bytes" || type === "bytes") {
+      if (!Buffer.isBuffer(value) && !(value instanceof Uint8Array)) {
+        throw new Error(`${path}: expected Buffer/Uint8Array for ${type}, got ${typeof value}`);
+      }
+      const bytes = Buffer.from(value);
       const lenBuf = Buffer.alloc(8);
       lenBuf.writeBigUInt64LE(BigInt(bytes.length));
       buf.push(...lenBuf, ...bytes);
@@ -333,6 +353,19 @@ export class Contract {
     }
   }
 
+  private validateWideRange(n: bigint, type: string, path: string): void {
+    const ranges: Record<string, [bigint, bigint]> = {
+      u128: [0n, (1n << 128n) - 1n],
+      i128: [-(1n << 127n), (1n << 127n) - 1n],
+      u256: [0n, (1n << 256n) - 1n],
+      i256: [-(1n << 255n), (1n << 255n) - 1n],
+    };
+    const range = ranges[type];
+    if (range && (n < range[0] || n > range[1])) {
+      throw new Error(`${path}: value out of range for ${type}`);
+    }
+  }
+
   // ========================================================================
   // Decoding — return hex to values
   // ========================================================================
@@ -357,12 +390,29 @@ export class Contract {
       const hi = data.readBigUInt64LE(offset + 8);
       return { value: lo | (hi << 64n), bytesRead: 16 };
     }
-    if (type === "u256" || type === "i256") {
+    if (type === "i128") {
+      if (data.length < offset + 16) return { value: 0n, bytesRead: 16 };
+      const lo = data.readBigUInt64LE(offset);
+      const hi = data.readBigUInt64LE(offset + 8);
+      let val = lo | (hi << 64n);
+      if (val >= (1n << 127n)) val -= (1n << 128n);
+      return { value: val, bytesRead: 16 };
+    }
+    if (type === "u256") {
       if (data.length < offset + 32) return { value: 0n, bytesRead: 32 };
       let val = 0n;
       for (let i = 0; i < 4; i++) {
         val |= data.readBigUInt64LE(offset + i * 8) << BigInt(i * 64);
       }
+      return { value: val, bytesRead: 32 };
+    }
+    if (type === "i256") {
+      if (data.length < offset + 32) return { value: 0n, bytesRead: 32 };
+      let val = 0n;
+      for (let i = 0; i < 4; i++) {
+        val |= data.readBigUInt64LE(offset + i * 8) << BigInt(i * 64);
+      }
+      if (val >= (1n << 255n)) val -= (1n << 256n);
       return { value: val, bytesRead: 32 };
     }
     if (type === "bool") {
@@ -376,9 +426,18 @@ export class Contract {
     if (type === "String") {
       if (data.length < offset + 8) return { value: "", bytesRead: 8 };
       const len = Number(data.readBigUInt64LE(offset));
+      if (data.length < offset + 8 + len) return { value: "", bytesRead: 8 };
       const str = data.subarray(offset + 8, offset + 8 + len).toString("utf-8");
       const aligned = 8 + len + ((8 - (len % 8)) % 8);
       return { value: str, bytesRead: aligned };
+    }
+    if (type === "Bytes" || type === "bytes") {
+      if (data.length < offset + 8) return { value: Buffer.alloc(0), bytesRead: 8 };
+      const len = Number(data.readBigUInt64LE(offset));
+      if (data.length < offset + 8 + len) return { value: Buffer.alloc(0), bytesRead: 8 };
+      const bytes = Buffer.from(data.subarray(offset + 8, offset + 8 + len));
+      const aligned = 8 + len + ((8 - (len % 8)) % 8);
+      return { value: bytes, bytesRead: aligned };
     }
     if (type.startsWith("Vec<") && type.endsWith(">")) {
       const elemType = type.slice(4, -1);
@@ -445,41 +504,74 @@ export class ContractCall {
 
   get args(): Buffer { return this._args; }
 
-  /** @see u8: 0 to 255 */
-  argU8(val: number): this { return this.argU64(val); }
-  /** @see u16: 0 to 65,535 */
-  argU16(val: number): this { return this.argU64(val); }
-  /** @see u32: 0 to 4,294,967,295 */
-  argU32(val: number): this { return this.argU64(val); }
-  /** @see u64: 0 to 18,446,744,073,709,551,615 */
+  /** Unsigned 8-bit integer. Range: 0 to 255. Encoded as 8 bytes LE (zero-extended). */
+  argU8(val: number): this {
+    if (val < 0 || val > 255) throw new RangeError(`argU8: ${val} out of range (0 to 255)`);
+    return this.argU64(val);
+  }
+  /** Unsigned 16-bit integer. Range: 0 to 65,535. Encoded as 8 bytes LE. */
+  argU16(val: number): this {
+    if (val < 0 || val > 65535) throw new RangeError(`argU16: ${val} out of range (0 to 65535)`);
+    return this.argU64(val);
+  }
+  /** Unsigned 32-bit integer. Range: 0 to 4,294,967,295. Encoded as 8 bytes LE. */
+  argU32(val: number): this {
+    if (val < 0 || val > 4294967295) throw new RangeError(`argU32: ${val} out of range (0 to 4294967295)`);
+    return this.argU64(val);
+  }
+  /** Unsigned 64-bit integer. Range: 0 to 18,446,744,073,709,551,615. Encoded as 8 bytes LE. */
   argU64(val: number | bigint): this {
     const buf = Buffer.alloc(8);
     buf.writeBigUInt64LE(BigInt(val));
     this._args = Buffer.concat([this._args, buf]);
     return this;
   }
-  /** @see i8: -128 to 127 */
-  argI8(val: number): this { return this.argI64(BigInt(val)); }
-  /** @see i16: -32,768 to 32,767 */
-  argI16(val: number): this { return this.argI64(BigInt(val)); }
-  /** @see i32: -2,147,483,648 to 2,147,483,647 */
-  argI32(val: number): this { return this.argI64(BigInt(val)); }
-  /** @see i64: -9.2e18 to 9.2e18 */
+  /** Signed 8-bit integer. Range: -128 to 127. Sign-extended to 8 bytes LE. */
+  argI8(val: number): this {
+    if (val < -128 || val > 127) throw new RangeError(`argI8: ${val} out of range (-128 to 127)`);
+    return this.argI64(BigInt(val));
+  }
+  /** Signed 16-bit integer. Range: -32,768 to 32,767. Sign-extended to 8 bytes LE. */
+  argI16(val: number): this {
+    if (val < -32768 || val > 32767) throw new RangeError(`argI16: ${val} out of range (-32768 to 32767)`);
+    return this.argI64(BigInt(val));
+  }
+  /** Signed 32-bit integer. Range: -2,147,483,648 to 2,147,483,647. Sign-extended to 8 bytes LE. */
+  argI32(val: number): this {
+    if (val < -2147483648 || val > 2147483647) throw new RangeError(`argI32: ${val} out of range (-2147483648 to 2147483647)`);
+    return this.argI64(BigInt(val));
+  }
+  /** Signed 64-bit integer. Range: -9,223,372,036,854,775,808 to 9,223,372,036,854,775,807. Encoded as 8 bytes LE (two's complement). */
   argI64(val: number | bigint): this {
     const buf = Buffer.alloc(8);
     buf.writeBigInt64LE(BigInt(val));
     this._args = Buffer.concat([this._args, buf]);
     return this;
   }
+  /** Boolean. Encoded as u64: true = 1, false = 0. */
   argBool(val: boolean): this { return this.argU64(val ? 1 : 0); }
+  /** Unsigned 128-bit integer. Range: 0 to 2^128 - 1. Encoded as 16 bytes LE. */
   argU128(val: bigint): this {
+    if (val < 0n || val >= (1n << 128n)) throw new RangeError("argU128: value out of range");
     const buf = Buffer.alloc(16);
     buf.writeBigUInt64LE(val & 0xFFFFFFFFFFFFFFFFn, 0);
-    buf.writeBigUInt64LE(val >> 64n, 8);
+    buf.writeBigUInt64LE((val >> 64n) & 0xFFFFFFFFFFFFFFFFn, 8);
     this._args = Buffer.concat([this._args, buf]);
     return this;
   }
+  /** Signed 128-bit integer. Range: -2^127 to 2^127 - 1. Encoded as 16 bytes LE (two's complement). */
+  argI128(val: bigint): this {
+    if (val < -(1n << 127n) || val >= (1n << 127n)) throw new RangeError("argI128: value out of range");
+    const unsigned = val & ((1n << 128n) - 1n);
+    const buf = Buffer.alloc(16);
+    buf.writeBigUInt64LE(unsigned & 0xFFFFFFFFFFFFFFFFn, 0);
+    buf.writeBigUInt64LE((unsigned >> 64n) & 0xFFFFFFFFFFFFFFFFn, 8);
+    this._args = Buffer.concat([this._args, buf]);
+    return this;
+  }
+  /** Unsigned 256-bit integer. Range: 0 to 2^256 - 1. Encoded as 32 bytes LE. */
   argU256(val: bigint): this {
+    if (val < 0n || val >= (1n << 256n)) throw new RangeError("argU256: value out of range");
     const buf = Buffer.alloc(32);
     for (let i = 0; i < 4; i++) {
       buf.writeBigUInt64LE((val >> BigInt(i * 64)) & 0xFFFFFFFFFFFFFFFFn, i * 8);
@@ -487,11 +579,27 @@ export class ContractCall {
     this._args = Buffer.concat([this._args, buf]);
     return this;
   }
+  /** Signed 256-bit integer. Range: -2^255 to 2^255 - 1. Encoded as 32 bytes LE (two's complement). */
+  argI256(val: bigint): this {
+    if (val < -(1n << 255n) || val >= (1n << 255n)) throw new RangeError("argI256: value out of range");
+    const unsigned = val & ((1n << 256n) - 1n);
+    const buf = Buffer.alloc(32);
+    for (let i = 0; i < 4; i++) {
+      buf.writeBigUInt64LE((unsigned >> BigInt(i * 64)) & 0xFFFFFFFFFFFFFFFFn, i * 8);
+    }
+    this._args = Buffer.concat([this._args, buf]);
+    return this;
+  }
+  /** 32-byte address. Validates hex length. */
   argAddress(hex: string): this {
     const clean = hex.startsWith("0x") ? hex.slice(2) : hex;
+    if (!/^[0-9a-fA-F]{64}$/.test(clean)) {
+      throw new Error(`argAddress: expected 64 hex chars, got "${clean.length > 20 ? clean.slice(0, 20) + "..." : clean}"`);
+    }
     this._args = Buffer.concat([this._args, Buffer.from(clean, "hex")]);
     return this;
   }
+  /** Length-prefixed string (8-byte aligned). */
   argString(val: string): this {
     const bytes = Buffer.from(val, "utf-8");
     const lenBuf = Buffer.alloc(8);
@@ -500,8 +608,102 @@ export class ContractCall {
     this._args = Buffer.concat([this._args, lenBuf, bytes, Buffer.alloc(padding)]);
     return this;
   }
+  /** Raw bytes appended directly (no length prefix). */
   argBytes(data: Buffer): this {
     this._args = Buffer.concat([this._args, data]);
+    return this;
+  }
+
+  // ========================================================================
+  // Vec builders
+  // ========================================================================
+
+  /** Vec<u64>: [byte_len:8][count:8][cap:8][elements...] */
+  argVecU64(vals: (number | bigint)[]): this {
+    const dataLen = 16 + vals.length * 8;
+    const header = Buffer.alloc(24);
+    header.writeBigUInt64LE(BigInt(dataLen), 0);
+    header.writeBigUInt64LE(BigInt(vals.length), 8);
+    header.writeBigUInt64LE(BigInt(vals.length), 16);
+    const elems = Buffer.alloc(vals.length * 8);
+    for (let i = 0; i < vals.length; i++) elems.writeBigUInt64LE(BigInt(vals[i]), i * 8);
+    this._args = Buffer.concat([this._args, header, elems]);
+    return this;
+  }
+  /** Vec<bool>: encoded as Vec<u64>. */
+  argVecBool(vals: boolean[]): this {
+    return this.argVecU64(vals.map(b => b ? 1 : 0));
+  }
+  /** Vec<Address>: [byte_len:8][count:8][cap:8][addr0:32][addr1:32]... */
+  argVecAddress(vals: string[]): this {
+    const dataLen = 16 + vals.length * 32;
+    const header = Buffer.alloc(24);
+    header.writeBigUInt64LE(BigInt(dataLen), 0);
+    header.writeBigUInt64LE(BigInt(vals.length), 8);
+    header.writeBigUInt64LE(BigInt(vals.length), 16);
+    const elems: Buffer[] = vals.map(hex => {
+      const clean = hex.startsWith("0x") ? hex.slice(2) : hex;
+      if (clean.length !== 64) throw new Error(`argVecAddress: expected 64 hex chars per address`);
+      return Buffer.from(clean, "hex");
+    });
+    this._args = Buffer.concat([this._args, header, ...elems]);
+    return this;
+  }
+  /**
+   * Generic Vec: [byte_len:8][count:8][cap:8][elements...].
+   * Build elements using a callback that receives a fresh ContractCall.
+   *
+   * ```ts
+   * // Vec<String>
+   * .argVecOf(2, b => b.argString("alice").argString("bob"))
+   * // Vec<Struct>
+   * .argVecOf(2, b => b
+   *   .argStruct(s => s.argString("alice").argU64(25))
+   *   .argStruct(s => s.argString("bob").argU64(30)))
+   * ```
+   */
+  argVecOf(count: number, buildFn: (b: ContractCall) => ContractCall): this {
+    const inner = buildFn(new ContractCall("_vec_"));
+    const elements = inner._args;
+    const dataLen = 16 + elements.length;
+    const header = Buffer.alloc(24);
+    header.writeBigUInt64LE(BigInt(dataLen), 0);
+    header.writeBigUInt64LE(BigInt(count), 8);
+    header.writeBigUInt64LE(BigInt(count), 16);
+    this._args = Buffer.concat([this._args, header, elements]);
+    return this;
+  }
+
+  // ========================================================================
+  // Struct / Tuple builders
+  // ========================================================================
+
+  /**
+   * Struct: [byte_len:8][field0][field1]...
+   * Build fields using a callback.
+   *
+   * ```ts
+   * .argStruct(s => s.argString("alice").argU64(25).argBool(true))
+   * ```
+   */
+  argStruct(buildFn: (b: ContractCall) => ContractCall): this {
+    const inner = buildFn(new ContractCall("_struct_"));
+    const fields = inner._args;
+    const lenBuf = Buffer.alloc(8);
+    lenBuf.writeBigUInt64LE(BigInt(fields.length));
+    this._args = Buffer.concat([this._args, lenBuf, fields]);
+    return this;
+  }
+  /**
+   * Tuple: sequential fields, no length prefix.
+   *
+   * ```ts
+   * .argTuple(t => t.argU64(1).argString("one"))
+   * ```
+   */
+  argTuple(buildFn: (b: ContractCall) => ContractCall): this {
+    const inner = buildFn(new ContractCall("_tuple_"));
+    this._args = Buffer.concat([this._args, inner._args]);
     return this;
   }
 
@@ -530,11 +732,26 @@ export function decodeU128(hex: string): bigint {
   if (buf.length < 16) return 0n;
   return buf.readBigUInt64LE(0) | (buf.readBigUInt64LE(8) << 64n);
 }
+export function decodeI128(hex: string): bigint {
+  const buf = Buffer.from(stripHex(hex), "hex");
+  if (buf.length < 16) return 0n;
+  let val = buf.readBigUInt64LE(0) | (buf.readBigUInt64LE(8) << 64n);
+  if (val >= (1n << 127n)) val -= (1n << 128n);
+  return val;
+}
 export function decodeU256(hex: string): bigint {
   const buf = Buffer.from(stripHex(hex), "hex");
   if (buf.length < 32) return 0n;
   let val = 0n;
   for (let i = 0; i < 4; i++) val |= buf.readBigUInt64LE(i * 8) << BigInt(i * 64);
+  return val;
+}
+export function decodeI256(hex: string): bigint {
+  const buf = Buffer.from(stripHex(hex), "hex");
+  if (buf.length < 32) return 0n;
+  let val = 0n;
+  for (let i = 0; i < 4; i++) val |= buf.readBigUInt64LE(i * 8) << BigInt(i * 64);
+  if (val >= (1n << 255n)) val -= (1n << 256n);
   return val;
 }
 export function decodeBool(hex: string): boolean { return decodeU64(hex) !== 0n; }
@@ -546,9 +763,67 @@ export function decodeString(hex: string): string {
   const buf = Buffer.from(stripHex(hex), "hex");
   if (buf.length < 8) return "";
   const len = Number(buf.readBigUInt64LE());
-  return buf.length >= 8 + len ? buf.subarray(8, 8 + len).toString("utf-8") : "";
+  if (buf.length < 8 + len) throw new Error(`decodeString: expected ${len} bytes, buffer has ${buf.length - 8}`);
+  return buf.subarray(8, 8 + len).toString("utf-8");
+}
+export function decodeBytes(hex: string): Buffer {
+  const buf = Buffer.from(stripHex(hex), "hex");
+  if (buf.length < 8) throw new Error("decodeBytes: buffer too short for length prefix");
+  const len = Number(buf.readBigUInt64LE());
+  if (buf.length < 8 + len) throw new Error(`decodeBytes: expected ${len} bytes, buffer has ${buf.length - 8}`);
+  return buf.subarray(8, 8 + len);
 }
 
 function stripHex(s: string): string {
   return s.startsWith("0x") ? s.slice(2) : s;
+}
+
+// ============================================================================
+// DeployData — build deploy transaction payloads
+// ============================================================================
+
+/**
+ * Build deploy transaction data: [clen:4 LE][rlen:4 LE][constructor][runtime][args].
+ *
+ * ```ts
+ * const data = new DeployData(constructorHex, runtimeHex)
+ *   .argU64(1000)
+ *   .argString("hello")
+ *   .build();
+ * ```
+ */
+export class DeployData {
+  private constructor_: Buffer;
+  private runtime: Buffer;
+  private argsBuf: Buffer = Buffer.alloc(0);
+
+  constructor(constructorHex: string, runtimeHex: string) {
+    this.constructor_ = Buffer.from(stripHex(constructorHex), "hex");
+    this.runtime = Buffer.from(stripHex(runtimeHex), "hex");
+  }
+
+  argU64(val: number | bigint): this {
+    const buf = Buffer.alloc(8);
+    buf.writeBigUInt64LE(BigInt(val));
+    this.argsBuf = Buffer.concat([this.argsBuf, buf]);
+    return this;
+  }
+  argBool(val: boolean): this { return this.argU64(val ? 1 : 0); }
+  argString(val: string): this {
+    const bytes = Buffer.from(val, "utf-8");
+    const lenBuf = Buffer.alloc(8);
+    lenBuf.writeBigUInt64LE(BigInt(bytes.length));
+    const padding = (8 - (bytes.length % 8)) % 8;
+    this.argsBuf = Buffer.concat([this.argsBuf, lenBuf, bytes, Buffer.alloc(padding)]);
+    return this;
+  }
+
+  /** Build: [clen:4 LE][rlen:4 LE][constructor][runtime][args]. Returns hex string. */
+  build(): string {
+    const header = Buffer.alloc(8);
+    header.writeUInt32LE(this.constructor_.length, 0);
+    header.writeUInt32LE(this.runtime.length, 4);
+    const full = Buffer.concat([header, this.constructor_, this.runtime, this.argsBuf]);
+    return "0x" + full.toString("hex");
+  }
 }

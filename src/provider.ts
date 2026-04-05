@@ -3,6 +3,7 @@ import { Receipt, Log, LogFilter, BlockHeader } from "./types";
 /** JSON-RPC client for interacting with a Pyde node. */
 export class Provider {
   private rpcUrl: string;
+  private rpcId = 0;
 
   constructor(rpcUrl: string) {
     this.rpcUrl = rpcUrl;
@@ -20,7 +21,9 @@ export class Provider {
   async getNonce(address: string): Promise<number> {
     const result = await this.rpc("pyde_getTransactionCount", [address]);
     const s = result as string;
-    return s.startsWith("0x") ? parseInt(s, 16) : parseInt(s, 10);
+    const n = s.startsWith("0x") ? parseInt(s, 16) : parseInt(s, 10);
+    if (Number.isNaN(n)) throw new Error(`Invalid nonce response: ${s}`);
+    return n;
   }
 
   async getCode(address: string): Promise<string> {
@@ -29,12 +32,16 @@ export class Provider {
 
   async getChainId(): Promise<number> {
     const result = await this.rpc("pyde_chainId", []);
-    return parseInt(result as string, 16);
+    const n = parseInt(result as string, 16);
+    if (Number.isNaN(n)) throw new Error(`Invalid chainId response: ${result}`);
+    return n;
   }
 
   async getBlockNumber(): Promise<number> {
     const result = await this.rpc("pyde_blockNumber", []);
-    return parseInt(result as string, 16);
+    const n = parseInt(result as string, 16);
+    if (Number.isNaN(n)) throw new Error(`Invalid blockNumber response: ${result}`);
+    return n;
   }
 
   async getGasPrice(): Promise<bigint> {
@@ -71,7 +78,9 @@ export class Provider {
       data,
     };
     const result = await this.rpc("pyde_estimateGas", [params]);
-    return parseInt(result as string, 16);
+    const n = parseInt(result as string, 16);
+    if (Number.isNaN(n)) throw new Error(`Invalid estimateGas response: ${result}`);
+    return n;
   }
 
   // ========================================================================
@@ -136,7 +145,7 @@ export class Provider {
   private async rpc(method: string, params: unknown[]): Promise<unknown> {
     const body = {
       jsonrpc: "2.0",
-      id: 1,
+      id: ++this.rpcId,
       method,
       params,
     };
@@ -148,11 +157,20 @@ export class Provider {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
-    } catch (e: any) {
-      throw new Error(`Connection error: ${e.message}`);
+    } catch (e: unknown) {
+      throw new Error(`Connection error: ${e instanceof Error ? e.message : String(e)}`);
     }
 
-    const json: any = await resp.json();
+    if (!resp.ok) {
+      throw new Error(`RPC HTTP error ${resp.status}: ${resp.statusText}`);
+    }
+
+    let json: { result?: unknown; error?: unknown } = {};
+    try {
+      json = await resp.json() as { result?: unknown; error?: unknown };
+    } catch {
+      throw new Error(`RPC error: invalid JSON response from ${method}`);
+    }
     if (json.error) {
       throw new Error(`RPC error: ${JSON.stringify(json.error)}`);
     }
