@@ -1,4 +1,5 @@
-import { Receipt, Log, LogFilter, BlockHeader } from "./types";
+import { Receipt, Log, LogFilter, BlockHeader, TransactionInfo, FeeData } from "./types";
+import { CallExceptionError, ConnectionError, TimeoutError, RpcError } from "./errors";
 
 /** JSON-RPC client for interacting with a Pyde node. */
 export class Provider {
@@ -56,6 +57,19 @@ export class Provider {
   async getBlockByNumber(slot: number): Promise<BlockHeader | null> {
     const result = await this.rpc("pyde_getBlockByNumber", [slot]);
     return result ? (result as BlockHeader) : null;
+  }
+
+  /** Look up a transaction by its hash. Returns null if not found. */
+  async getTransaction(txHash: string): Promise<TransactionInfo | null> {
+    const result = await this.rpc("pyde_getTransactionByHash", [txHash]);
+    return result ? (result as TransactionInfo) : null;
+  }
+
+  /** Get current fee data (base fee, gas price). */
+  async getFeeData(): Promise<FeeData> {
+    const gasPrice = await this.getGasPrice();
+    // Base fee is the current gas price in Pyde's EIP-1559 model (no tips)
+    return { gasPrice, baseFee: gasPrice };
   }
 
   // ========================================================================
@@ -117,7 +131,7 @@ export class Provider {
       if (receipt) return receipt;
       await sleep(100);
     }
-    throw new Error(`Receipt not available after ${timeoutMs}ms for tx ${txHash}`);
+    throw new TimeoutError(`Receipt not available after ${timeoutMs}ms for tx ${txHash}`);
   }
 
   /** Send raw tx and wait for receipt. Throws on revert. */
@@ -125,7 +139,7 @@ export class Provider {
     const txHash = await this.sendRawTransaction(signedTxHex);
     const receipt = await this.waitForReceipt(txHash, timeoutMs);
     if (!receipt.success) {
-      throw new Error(`Transaction reverted (gas=${receipt.gasUsed})`);
+      throw new CallExceptionError(receipt.gasUsed, receipt.returnData || "0x");
     }
     return receipt;
   }
@@ -158,21 +172,21 @@ export class Provider {
         body: JSON.stringify(body),
       });
     } catch (e: unknown) {
-      throw new Error(`Connection error: ${e instanceof Error ? e.message : String(e)}`);
+      throw new ConnectionError(e instanceof Error ? e.message : String(e));
     }
 
     if (!resp.ok) {
-      throw new Error(`RPC HTTP error ${resp.status}: ${resp.statusText}`);
+      throw new RpcError(`HTTP ${resp.status}: ${resp.statusText}`);
     }
 
     let json: { result?: unknown; error?: unknown } = {};
     try {
       json = await resp.json() as { result?: unknown; error?: unknown };
     } catch {
-      throw new Error(`RPC error: invalid JSON response from ${method}`);
+      throw new RpcError(`invalid JSON response from ${method}`);
     }
     if (json.error) {
-      throw new Error(`RPC error: ${JSON.stringify(json.error)}`);
+      throw new RpcError(JSON.stringify(json.error), json.error);
     }
     return json.result;
   }

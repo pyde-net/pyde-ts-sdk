@@ -54,7 +54,50 @@ export const ReceiptUtils = {
     if (buf.length < 8 + len) return null;
     return buf.subarray(8, 8 + len).toString("utf-8");
   },
+
+  /** Decode returnData as i64. */
+  decodeI64(receipt: Receipt): bigint | null {
+    const buf = receiptBuf(receipt);
+    return buf && buf.length >= 8 ? buf.readBigInt64LE() : null;
+  },
+
+  /** Decode returnData as u128. */
+  decodeU128(receipt: Receipt): bigint | null {
+    const buf = receiptBuf(receipt);
+    if (!buf || buf.length < 16) return null;
+    return buf.readBigUInt64LE(0) | (buf.readBigUInt64LE(8) << 64n);
+  },
+
+  /** Decode returnData as i128. */
+  decodeI128(receipt: Receipt): bigint | null {
+    const buf = receiptBuf(receipt);
+    if (!buf || buf.length < 16) return null;
+    let val = buf.readBigUInt64LE(0) | (buf.readBigUInt64LE(8) << 64n);
+    if (val >= (1n << 127n)) val -= (1n << 128n);
+    return val;
+  },
+
+  /** Decode returnData as u256. */
+  decodeU256(receipt: Receipt): bigint | null {
+    const buf = receiptBuf(receipt);
+    if (!buf || buf.length < 32) return null;
+    let val = 0n;
+    for (let i = 0; i < 4; i++) val |= buf.readBigUInt64LE(i * 8) << BigInt(i * 64);
+    return val;
+  },
+
+  /** Decode returnData as Address (hex string). */
+  decodeAddress(receipt: Receipt): string | null {
+    const buf = receiptBuf(receipt);
+    return buf && buf.length >= 32 ? "0x" + buf.subarray(0, 32).toString("hex") : null;
+  },
 };
+
+function receiptBuf(receipt: Receipt): Buffer | null {
+  const hex = receipt.returnData;
+  if (!hex || hex === "0x") return null;
+  return Buffer.from(hex.startsWith("0x") ? hex.slice(2) : hex, "hex");
+}
 
 export interface Log {
   address: string;
@@ -88,4 +131,26 @@ export interface TxFields {
   nonce: number;
   chainId: number;
   txType: number;
+}
+
+/** Transaction info returned by getTransaction. */
+export interface TransactionInfo {
+  hash: string;
+  from: string;
+  to: string;
+  value: string;
+  data: string;
+  gasLimit: string;
+  nonce: number;
+  chainId: number;
+  txType: number;
+  blockNumber?: number;
+}
+
+/** Fee data from the network. */
+export interface FeeData {
+  /** Current gas price (same as base fee in Pyde's EIP-1559 model, no tips). */
+  gasPrice: bigint;
+  /** Current base fee per gas unit. */
+  baseFee: bigint;
 }
