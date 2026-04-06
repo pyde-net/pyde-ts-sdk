@@ -29,6 +29,31 @@ export const ReceiptUtils = {
   returnHex(receipt: Receipt): string {
     return receipt.returnData || "0x";
   },
+
+  /** Decode returnData as u64. */
+  decodeU64(receipt: Receipt): bigint | null {
+    const hex = receipt.returnData;
+    if (!hex) return null;
+    const buf = Buffer.from(hex.startsWith("0x") ? hex.slice(2) : hex, "hex");
+    return buf.length >= 8 ? buf.readBigUInt64LE() : null;
+  },
+
+  /** Decode returnData as bool. */
+  decodeBool(receipt: Receipt): boolean | null {
+    const v = ReceiptUtils.decodeU64(receipt);
+    return v !== null ? v !== 0n : null;
+  },
+
+  /** Decode returnData as string. */
+  decodeString(receipt: Receipt): string | null {
+    const hex = receipt.returnData;
+    if (!hex) return null;
+    const buf = Buffer.from(hex.startsWith("0x") ? hex.slice(2) : hex, "hex");
+    if (buf.length < 8) return null;
+    const len = Number(buf.readBigUInt64LE());
+    if (buf.length < 8 + len) return null;
+    return buf.subarray(8, 8 + len).toString("utf-8");
+  },
 };
 
 export interface Log {

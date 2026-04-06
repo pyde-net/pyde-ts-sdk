@@ -9,6 +9,11 @@ import {
   Contract,
   ContractCall,
   DeployData,
+  Address,
+  parseUnits,
+  formatUnits,
+  parseQuanta,
+  formatQuanta,
   decodeU64,
   decodeI64,
   decodeU128,
@@ -19,6 +24,9 @@ import {
   decodeAddress,
   decodeString,
   decodeBytes,
+  decodeVecU64,
+  decodeVecBool,
+  decodeVecAddress,
 } from "../src";
 import type { Keystore } from "../src";
 import { existsSync, unlinkSync, mkdirSync } from "fs";
@@ -90,6 +98,126 @@ describe("Wallet", () => {
     const msg = "0x" + "42".repeat(32);
     const sig = w.sign(msg);
     expect(verifySignature(w.publicKey, msg, sig)).toBe(true);
+  });
+});
+
+describe("Wallet extras", () => {
+  test("generatePrivateKey returns valid key", () => {
+    const pk = Wallet.generatePrivateKey();
+    expect(pk).toMatch(/^0x[0-9a-f]+$/);
+    const w = Wallet.fromPrivateKey(pk);
+    expect(w.address).toMatch(/^0x[0-9a-f]{64}$/);
+  });
+
+  test("isValidPrivateKey validates correctly", () => {
+    const pk = Wallet.generatePrivateKey();
+    expect(Wallet.isValidPrivateKey(pk)).toBe(true);
+    expect(Wallet.isValidPrivateKey("0xdeadbeef")).toBe(false);
+    expect(Wallet.isValidPrivateKey("not hex")).toBe(false);
+  });
+
+  test("connect binds provider, getBalance/getNonce throw without", () => {
+    const w = Wallet.generate();
+    expect(() => w.provider).toThrow("No provider");
+  });
+});
+
+describe("Address utilities", () => {
+  test("zero returns 32 zero bytes", () => {
+    expect(Address.zero()).toBe("0x" + "00".repeat(32));
+  });
+
+  test("isZero detects zero address", () => {
+    expect(Address.isZero("0x" + "00".repeat(32))).toBe(true);
+    expect(Address.isZero("0x" + "01".repeat(32))).toBe(false);
+  });
+
+  test("isValid validates addresses", () => {
+    expect(Address.isValid("0x" + "ab".repeat(32))).toBe(true);
+    expect(Address.isValid("0x" + "zz".repeat(32))).toBe(false);
+    expect(Address.isValid("0xshort")).toBe(false);
+    expect(Address.isValid("ab".repeat(32))).toBe(true); // no prefix ok
+  });
+
+  test("validate returns normalized address", () => {
+    const addr = "ab".repeat(32);
+    expect(Address.validate(addr)).toBe("0x" + addr);
+    expect(() => Address.validate("bad")).toThrow("Invalid address");
+  });
+
+  test("equals is case-insensitive", () => {
+    const a = "0x" + "AB".repeat(32);
+    const b = "0x" + "ab".repeat(32);
+    expect(Address.equals(a, b)).toBe(true);
+  });
+
+  test("isValidPrivateKey", () => {
+    const pk = Wallet.generatePrivateKey();
+    expect(Address.isValidPrivateKey(pk)).toBe(true);
+    expect(Address.isValidPrivateKey("0xshort")).toBe(false);
+  });
+});
+
+describe("Unit formatting", () => {
+  test("parseUnits whole number", () => {
+    expect(parseUnits("100", 9)).toBe(100_000_000_000n);
+  });
+  test("parseUnits with decimals", () => {
+    expect(parseUnits("1.5", 9)).toBe(1_500_000_000n);
+  });
+  test("parseUnits small fraction", () => {
+    expect(parseUnits("0.001", 9)).toBe(1_000_000n);
+  });
+  test("parseUnits zero", () => {
+    expect(parseUnits("0", 9)).toBe(0n);
+  });
+  test("parseUnits rejects too many decimals", () => {
+    expect(() => parseUnits("1.0000000001", 9)).toThrow("Too many decimal places");
+  });
+  test("parseUnits custom decimals", () => {
+    expect(parseUnits("1.0", 18)).toBe(1_000_000_000_000_000_000n);
+  });
+  test("formatUnits basic", () => {
+    expect(formatUnits(1_500_000_000n, 9)).toBe("1.5");
+  });
+  test("formatUnits small", () => {
+    expect(formatUnits(1_000_000n, 9)).toBe("0.001");
+  });
+  test("formatUnits zero", () => {
+    expect(formatUnits(0n, 9)).toBe("0.0");
+  });
+  test("formatUnits whole number", () => {
+    expect(formatUnits(1_000_000_000n, 9)).toBe("1.0");
+  });
+  test("parseQuanta shorthand", () => {
+    expect(parseQuanta("2.5")).toBe(2_500_000_000n);
+  });
+  test("formatQuanta shorthand", () => {
+    expect(formatQuanta(2_500_000_000n)).toBe("2.5");
+  });
+  test("roundtrip", () => {
+    expect(formatUnits(parseUnits("123.456789", 9), 9)).toBe("123.456789");
+  });
+});
+
+describe("Contract payable validation", () => {
+  const payableAbi = JSON.stringify({
+    abi: {
+      functions: [
+        { name: "deposit", selector: "0x00000000", params: [{ name: "amount", type: "u64" }], returns: "()", view: false, payable: true, constructor: false },
+        { name: "withdraw", selector: "0x00000000", params: [{ name: "amount", type: "u64" }], returns: "()", view: false, payable: false, constructor: false },
+      ],
+      structs: [],
+      enums: [],
+    },
+  });
+
+  test("write rejects value on non-payable function", async () => {
+    const c = Contract.fromJson(payableAbi, "0x" + "aa".repeat(32), null as any);
+    const w = Wallet.generate();
+    const connected = c.connect(w);
+    await expect(connected.write("withdraw", { amount: 100 }, { value: 1000n }))
+      .rejects.toThrow("not payable");
   });
 });
 
@@ -345,6 +473,146 @@ describe("DeployData", () => {
     // Check header: clen=3, rlen=4
     expect(data.slice(2, 10)).toBe("03000000"); // clen LE
     expect(data.slice(10, 18)).toBe("04000000"); // rlen LE
+  });
+});
+
+describe("ABI Tuple + Array encoding", () => {
+  const tupleAbi = JSON.stringify({
+    abi: {
+      functions: [
+        { name: "set_pair", selector: "0x00000000", params: [{ name: "pair", type: "(u64, bool)" }], returns: "(u64, bool)", view: false, constructor: false },
+        { name: "set_arr", selector: "0x00000000", params: [{ name: "arr", type: "[u64; 3]" }], returns: "[u64; 3]", view: false, constructor: false },
+        { name: "set_handle", selector: "0x00000000", params: [{ name: "h", type: "MyContract" }], returns: "()", view: false, constructor: false },
+      ],
+      structs: [],
+      enums: [],
+    },
+  });
+
+  test("encodeCall with tuple arg", () => {
+    const c = Contract.fromJson(tupleAbi, "0x" + "aa".repeat(32), null as any);
+    const data = c.encodeCall("set_pair", { pair: [42, true] });
+    expect(data).toMatch(/^0x[0-9a-f]+$/);
+    // 4 selector + 8 u64 + 8 bool = 20 bytes = 40 hex + 2 prefix
+    expect(data.length).toBe(2 + 40);
+  });
+
+  test("encodeCall with array arg", () => {
+    const c = Contract.fromJson(tupleAbi, "0x" + "aa".repeat(32), null as any);
+    const data = c.encodeCall("set_arr", { arr: [1, 2, 3] });
+    // 4 selector + 3*8 = 28 bytes = 56 hex
+    expect(data.length).toBe(2 + 56);
+  });
+
+  test("encodeCall validates array length", () => {
+    const c = Contract.fromJson(tupleAbi, "0x" + "aa".repeat(32), null as any);
+    expect(() => c.encodeCall("set_arr", { arr: [1, 2] })).toThrow("expects 3 elements");
+  });
+
+  test("encodeCall with Contract/Interface type as Address", () => {
+    const c = Contract.fromJson(tupleAbi, "0x" + "aa".repeat(32), null as any);
+    const addr = "0x" + "cc".repeat(32);
+    const data = c.encodeCall("set_handle", { h: addr });
+    // 4 selector + 32 address = 36 bytes
+    expect(data.length).toBe(2 + 72);
+  });
+});
+
+describe("DeployData.fromJson", () => {
+  test("extracts bytecodes from artifact JSON", () => {
+    const artifact = JSON.stringify({
+      constructorBytecode: "0x0102030405",
+      deployedBytecode: "0x06070809",
+    });
+    const data = DeployData.fromJson(artifact).argU64(42).build();
+    expect(data).toMatch(/^0x[0-9a-f]+$/);
+    // 8 header + 5 constructor + 4 runtime + 8 arg = 25 bytes
+    expect(data.length).toBe(2 + 50);
+  });
+
+  test("throws on missing bytecodes", () => {
+    expect(() => DeployData.fromJson("{}")).toThrow("missing");
+  });
+
+  test("fromJson with named constructor args from ABI", () => {
+    const artifact = JSON.stringify({
+      constructorBytecode: "0x0102",
+      deployedBytecode: "0x0304",
+      abi: {
+        functions: [
+          { name: "init", params: [{ name: "supply", type: "u64" }, { name: "name", type: "String" }], returns: "()", view: false, payable: false, constructor: true },
+        ],
+        structs: [],
+        enums: [],
+      },
+    });
+    const data = DeployData.fromJson(artifact, { supply: 1000, name: "Token" }).build();
+    expect(data).toMatch(/^0x[0-9a-f]+$/);
+    // 8 header + 2 constructor + 2 runtime + 8 u64 + 8 string_len + 8 "Token"(5+3pad) = 36 bytes
+    expect(data.length).toBe(2 + 72);
+  });
+
+  test("fromJson validates missing constructor arg", () => {
+    const artifact = JSON.stringify({
+      constructorBytecode: "0x01",
+      deployedBytecode: "0x02",
+      abi: {
+        functions: [
+          { name: "init", params: [{ name: "supply", type: "u64" }], returns: "()", view: false, payable: false, constructor: true },
+        ],
+        structs: [],
+        enums: [],
+      },
+    });
+    expect(() => DeployData.fromJson(artifact, {})).toThrow("missing arg 'supply'");
+  });
+
+  test("DeployData supports all arg types", () => {
+    const d = new DeployData("0x01", "0x02")
+      .argU8(255)
+      .argI64(-1n)
+      .argU128(100n)
+      .argI128(-50n)
+      .argU256(999n)
+      .argI256(-1n)
+      .argBool(true)
+      .argAddress("0x" + "ab".repeat(32))
+      .argString("hello")
+      .build();
+    expect(d).toMatch(/^0x[0-9a-f]+$/);
+  });
+});
+
+describe("Vec decoders", () => {
+  test("decodeVecU64", () => {
+    // [byte_len:8][count:8][cap:8][elem0:8][elem1:8]
+    const buf = Buffer.alloc(40);
+    buf.writeBigUInt64LE(32n, 0);  // byte_len = 16 + 16
+    buf.writeBigUInt64LE(2n, 8);   // count
+    buf.writeBigUInt64LE(2n, 16);  // cap
+    buf.writeBigUInt64LE(100n, 24);
+    buf.writeBigUInt64LE(200n, 32);
+    expect(decodeVecU64("0x" + buf.toString("hex"))).toEqual([100n, 200n]);
+  });
+
+  test("decodeVecBool", () => {
+    const buf = Buffer.alloc(40);
+    buf.writeBigUInt64LE(32n, 0);
+    buf.writeBigUInt64LE(2n, 8);
+    buf.writeBigUInt64LE(2n, 16);
+    buf.writeBigUInt64LE(1n, 24);
+    buf.writeBigUInt64LE(0n, 32);
+    expect(decodeVecBool("0x" + buf.toString("hex"))).toEqual([true, false]);
+  });
+
+  test("decodeVecAddress", () => {
+    const buf = Buffer.alloc(24 + 32);
+    buf.writeBigUInt64LE(48n, 0);
+    buf.writeBigUInt64LE(1n, 8);
+    buf.writeBigUInt64LE(1n, 16);
+    Buffer.from("aa".repeat(32), "hex").copy(buf, 24);
+    const result = decodeVecAddress("0x" + buf.toString("hex"));
+    expect(result).toEqual(["0x" + "aa".repeat(32)]);
   });
 });
 
