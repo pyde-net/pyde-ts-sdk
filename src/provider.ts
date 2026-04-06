@@ -1,4 +1,4 @@
-import { Receipt, Log, LogFilter, BlockHeader, TransactionInfo, FeeData } from "./types";
+import { Receipt, Log, LogFilter, BlockHeader, TransactionInfo, TransactionResponse, FeeData } from "./types";
 import { CallExceptionError, ConnectionError, TimeoutError, RpcError } from "./errors";
 
 /** JSON-RPC client for interacting with a Pyde node. */
@@ -102,16 +102,24 @@ export class Provider {
   // ========================================================================
 
   /** Send a raw signed transaction. Returns tx hash hex. */
-  async sendRawTransaction(signedTxHex: string): Promise<string> {
+  /** Send a raw signed transaction. Returns a TransactionResponse with hash and wait(). */
+  async sendRawTransaction(signedTxHex: string): Promise<TransactionResponse> {
     const result = await this.rpc("pyde_sendRawTransaction", [signedTxHex]);
     const s = result as string;
-    // May be nested JSON
+    let hash: string;
     try {
       const inner = JSON.parse(s);
-      return inner.txHash || s;
+      hash = inner.txHash || s;
     } catch {
-      return s;
+      hash = s;
     }
+    const provider = this;
+    return {
+      hash,
+      async wait(timeoutMs = 10000): Promise<Receipt> {
+        return provider.waitForReceipt(hash, timeoutMs);
+      },
+    };
   }
 
   // ========================================================================
@@ -136,8 +144,8 @@ export class Provider {
 
   /** Send raw tx and wait for receipt. Throws on revert. */
   async sendAndWait(signedTxHex: string, timeoutMs = 10000): Promise<Receipt> {
-    const txHash = await this.sendRawTransaction(signedTxHex);
-    const receipt = await this.waitForReceipt(txHash, timeoutMs);
+    const tx = await this.sendRawTransaction(signedTxHex);
+    const receipt = await this.waitForReceipt(tx.hash, timeoutMs);
     if (!receipt.success) {
       throw new CallExceptionError(receipt.gasUsed, receipt.returnData || "0x");
     }

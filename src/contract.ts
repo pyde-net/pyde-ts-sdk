@@ -39,6 +39,27 @@ interface AbiEnumDef {
   variants: { name: string; discriminant: number }[];
 }
 
+interface AbiEvent {
+  name: string;
+  fields: AbiEventField[];
+}
+
+interface AbiEventField {
+  name: string;
+  type: string;
+  indexed: boolean;
+}
+
+/** Decoded event log with named args. */
+export interface EventLog {
+  /** Event name (e.g., "Transfer"). */
+  name: string;
+  /** Decoded event arguments as named fields. */
+  args: Record<string, any>;
+  /** Raw log data. */
+  log: import("./types").Log;
+}
+
 // ============================================================================
 // Contract — ABI-aware interface
 // ============================================================================
@@ -49,6 +70,8 @@ export class Contract {
   readonly provider: Provider;
   private wallet: Wallet | null = null;
   private functions: Map<string, AbiFunction> = new Map();
+  private events: Map<string, AbiEvent> = new Map();
+  private eventsByTopic: Map<string, AbiEvent> = new Map();
   private structs: Map<string, AbiStructDef> = new Map();
   private enums: Map<string, AbiEnumDef> = new Map();
 
@@ -86,6 +109,15 @@ export class Contract {
       contract.enums.set(e.name, e);
     }
 
+    // Parse event definitions
+    for (const ev of abi.events || []) {
+      contract.events.set(ev.name, ev);
+      // topic[0] = FNV-1a selector of event name, zero-extended to 64 hex chars
+      const sel = computeSelector(ev.name);
+      const topic0 = "0x" + sel.toString(16).padStart(8, "0") + "0".repeat(56);
+      contract.eventsByTopic.set(topic0, ev);
+    }
+
     return contract;
   }
 
@@ -113,6 +145,8 @@ export class Contract {
     const c = new Contract(this.address, this.provider);
     c.wallet = wallet;
     c.functions = this.functions;
+    c.events = this.events;
+    c.eventsByTopic = this.eventsByTopic;
     c.structs = this.structs;
     c.enums = this.enums;
     return c;
@@ -183,6 +217,92 @@ export class Contract {
         return contract.decodeReturn(retType, rd);
       },
     });
+  }
+
+  // ========================================================================
+  // Events
+  // ========================================================================
+
+  /**
+   * Query historical event logs, decoded into typed EventLog objects.
+   *
+   * ```ts
+   * const transfers = await contract.queryFilter("Transfer", 0, 1000);
+   * for (const e of transfers) {
+   *   console.log(e.name, e.args.from, e.args.to, e.args.amount);
+   * }
+   * ```
+   */
+  async queryFilter(eventName: string, fromBlock?: number, toBlock?: number): Promise<EventLog[]> {
+    const ev = this.events.get(eventName);
+    if (!ev) throw new Error(`Unknown event '${eventName}'. Load ABI with events.`);
+
+    const sel = computeSelector(eventName);
+    const topic0 = "0x" + sel.toString(16).padStart(8, "0") + "0".repeat(56);
+
+    const logs = await this.provider.getLogs({
+      address: this.address,
+      fromBlock,
+      toBlock,
+      topics: [topic0],
+    });
+
+    return logs.map(log => this.decodeEventLog(ev, log));
+  }
+
+  /**
+   * Parse a raw Log into a decoded EventLog. Returns null if the event is unknown.
+   *
+   * ```ts
+   * const decoded = contract.parseLog(rawLog);
+   * if (decoded) console.log(decoded.name, decoded.args);
+   * ```
+   */
+  parseLog(log: import("./types").Log): EventLog | null {
+    if (!log.topics || log.topics.length === 0) return null;
+    const ev = this.eventsByTopic.get(log.topics[0]);
+    if (!ev) return null;
+    return this.decodeEventLog(ev, log);
+  }
+
+  /** Get the topic0 hash for an event name (for building custom filters). */
+  getEventTopic(eventName: string): string {
+    const sel = computeSelector(eventName);
+    return "0x" + sel.toString(16).padStart(8, "0") + "0".repeat(56);
+  }
+
+  private decodeEventLog(ev: AbiEvent, log: import("./types").Log): EventLog {
+    const args: Record<string, any> = {};
+    const data = log.data ? Buffer.from(log.data.startsWith("0x") ? log.data.slice(2) : log.data, "hex") : Buffer.alloc(0);
+
+    // Non-indexed fields are in data, 8 bytes each (GP register width)
+    let dataOffset = 0;
+    for (const field of ev.fields) {
+      if (!field.indexed) {
+        if (dataOffset + 8 <= data.length) {
+          const { value, bytesRead } = this.decodeValue(data, field.type, dataOffset);
+          args[field.name] = value;
+          dataOffset += bytesRead;
+        }
+      }
+    }
+
+    // Indexed fields are in topics[1], topics[2], etc.
+    let topicIdx = 1;
+    for (const field of ev.fields) {
+      if (field.indexed && topicIdx < log.topics.length) {
+        const topicBuf = Buffer.from(log.topics[topicIdx].replace("0x", ""), "hex");
+        if (field.type === "Address") {
+          args[field.name] = "0x" + topicBuf.subarray(0, 32).toString("hex");
+        } else {
+          const { value } = this.decodeValue(topicBuf, field.type, 0);
+          args[field.name] = value;
+        }
+        topicIdx++;
+      }
+    }
+
+    return { name: ev.name, args, log };
   }
 
   // ========================================================================
@@ -618,6 +738,65 @@ export class Contract {
 // ============================================================================
 
 /** Low-level calldata builder. For most cases, use Contract.read/write instead. */
+// ============================================================================
+// Interface — standalone ABI encoder/decoder (no contract instance needed)
+// ============================================================================
+
+/**
+ * Standalone ABI encoder/decoder. Use when you need to encode/decode without
+ * a contract address or provider.
+ *
+ * ```ts
+ * const iface = Interface.fromArtifact("out/Counter.json");
+ * const calldata = iface.encodeFunctionData("deposit", { amount: 500 });
+ * const result = iface.decodeFunctionResult("get_count", "0x2a00000000000000");
+ * ```
+ */
+export class Interface {
+  private contract: Contract;
+
+  private constructor(contract: Contract) {
+    this.contract = contract;
+  }
+
+  /** Load from a build artifact JSON file. */
+  static fromArtifact(artifactPath: string): Interface {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const fs = require("fs");
+    const json = fs.readFileSync(artifactPath, "utf-8");
+    return Interface.fromJson(json);
+  }
+
+  /** Load from ABI JSON string. */
+  static fromJson(json: string): Interface {
+    const contract = Contract.fromJson(json, "0x" + "00".repeat(32), null as any);
+    return new Interface(contract);
+  }
+
+  /** Encode a function call to calldata hex. */
+  encodeFunctionData(method: string, args: Record<string, any> = {}): string {
+    return this.contract.encodeCall(method, args);
+  }
+
+  /** Decode function return data using the ABI return type. */
+  decodeFunctionResult(method: string, data: string): any {
+    return (this.contract as any).decodeReturn(
+      (this.contract as any).functions.get(method)?.returns || "u64",
+      data,
+    );
+  }
+
+  /** Parse a raw Log into a decoded EventLog. */
+  parseLog(log: import("./types").Log): EventLog | null {
+    return this.contract.parseLog(log);
+  }
+
+  /** Get the topic0 hash for an event name. */
+  getEventTopic(eventName: string): string {
+    return this.contract.getEventTopic(eventName);
+  }
+}
+
 export class ContractCall {
   private selector: number;
   private _args: Buffer;
