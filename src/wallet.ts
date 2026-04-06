@@ -20,6 +20,7 @@ export class Wallet {
   readonly address: string;
   readonly publicKey: string;
   private secretKey: string;
+  private _provider: Provider | null = null;
 
   private constructor(address: string, publicKey: string, secretKey: string) {
     this.address = address;
@@ -112,76 +113,142 @@ export class Wallet {
   }
 
   // ========================================================================
-  // High-level helpers
+  // Provider binding (optional — enables shorter method signatures)
   // ========================================================================
 
+  /** Bind a provider so you don't need to pass it on every call.
+   *  Returns the same wallet instance (mutates in place). */
+  connect(provider: Provider): this {
+    this._provider = provider;
+    return this;
+  }
+
+  /** Get the bound provider, or throw if none is connected. */
+  get provider(): Provider {
+    if (!this._provider) throw new Error("No provider connected. Use wallet.connect(provider) first.");
+    return this._provider;
+  }
+
+  // ========================================================================
+  // Validation utilities
+  // ========================================================================
+
+  /** Generate a random FALCON-512 private key hex (pk + sk combined).
+   *  Use with Wallet.fromPrivateKey() to create a wallet later. */
+  static generatePrivateKey(): string {
+    return Wallet.generate().exportPrivateKey();
+  }
+
+  /** Validate a FALCON-512 private key hex string (pk + sk, 2178 bytes). */
+  static isValidPrivateKey(hex: string): boolean {
+    const clean = hex.startsWith("0x") ? hex.slice(2) : hex;
+    if (clean.length !== (897 + 1281) * 2) return false;
+    return /^[0-9a-fA-F]+$/.test(clean);
+  }
+
+  // ========================================================================
+  // High-level helpers (provider arg is optional if connected)
+  // ========================================================================
+
+  private resolveProvider(provider?: Provider): Provider {
+    const p = provider ?? this._provider;
+    if (!p) throw new Error("No provider. Either pass it as argument or call wallet.connect(provider) first.");
+    return p;
+  }
+
   /** Build, sign, send a native transfer. Returns receipt. */
-  async transfer(provider: Provider, to: string, amount: bigint | number): Promise<Receipt> {
-    const nonce = await provider.getNonce(this.address);
-    const chainId = await provider.getChainId();
-
-    const tx: TxFields = {
-      from: this.address,
-      to,
-      value: amount.toString(),
-      data: "0x",
-      gasLimit: 21000,
-      nonce,
-      chainId,
-      txType: 0,
-    };
-
-    const signedHex = this.signTransaction(tx);
-    return provider.sendAndWait(signedHex);
+  async transfer(providerOrTo: Provider | string, toOrAmount?: string | bigint | number, amount?: bigint | number): Promise<Receipt> {
+    let p: Provider;
+    let to: string;
+    let amt: bigint | number;
+    if (typeof providerOrTo === "string") {
+      // Called as wallet.transfer(to, amount) — uses connected provider
+      p = this.resolveProvider();
+      to = providerOrTo;
+      amt = toOrAmount as bigint | number;
+    } else {
+      // Called as wallet.transfer(provider, to, amount)
+      p = providerOrTo;
+      to = toOrAmount as string;
+      amt = amount!;
+    }
+    const nonce = await p.getNonce(this.address);
+    const chainId = await p.getChainId();
+    const tx: TxFields = { from: this.address, to, value: amt.toString(), data: "0x", gasLimit: 21000, nonce, chainId, txType: 0 };
+    return p.sendAndWait(this.signTransaction(tx));
   }
 
   /** Build, sign, send a contract call. Returns receipt. */
   async sendCall(
-    provider: Provider,
-    to: string,
-    data: string,
-    gasLimit = 100_000_000
+    providerOrTo: Provider | string,
+    toOrData?: string,
+    dataOrGasLimit?: string | number,
+    gasLimitOrValue?: number | bigint | string,
+    value?: bigint | number | string,
   ): Promise<Receipt> {
-    const nonce = await provider.getNonce(this.address);
-    const chainId = await provider.getChainId();
-
-    const tx: TxFields = {
-      from: this.address,
-      to,
-      value: "0",
-      data,
-      gasLimit,
-      nonce,
-      chainId,
-      txType: 0,
-    };
-
-    const signedHex = this.signTransaction(tx);
-    return provider.sendAndWait(signedHex);
+    let p: Provider;
+    let to: string;
+    let data: string;
+    let gasLimit: number;
+    let val: bigint | number | string;
+    if (typeof providerOrTo === "string") {
+      // wallet.sendCall(to, data, gasLimit?, value?)
+      p = this.resolveProvider();
+      to = providerOrTo;
+      data = toOrData as string;
+      gasLimit = (dataOrGasLimit as number) ?? 100_000_000;
+      val = (gasLimitOrValue as bigint | number | string) ?? 0;
+    } else {
+      // wallet.sendCall(provider, to, data, gasLimit?, value?)
+      p = providerOrTo;
+      to = toOrData as string;
+      data = dataOrGasLimit as string;
+      gasLimit = (gasLimitOrValue as number) ?? 100_000_000;
+      val = value ?? 0;
+    }
+    const nonce = await p.getNonce(this.address);
+    const chainId = await p.getChainId();
+    const tx: TxFields = { from: this.address, to, value: val.toString(), data, gasLimit, nonce, chainId, txType: 0 };
+    return p.sendAndWait(this.signTransaction(tx));
   }
 
-  /** Build, sign, send a contract deployment. Returns receipt. */
+  /** Build, sign, send a contract deployment. Returns receipt.
+   *  Pass options.value for payable constructors. */
   async deploy(
-    provider: Provider,
-    deployData: string,
-    gasLimit = 100_000_000
+    providerOrData: Provider | string,
+    dataOrOptions?: string | { gasLimit?: number; value?: bigint | number | string },
+    options?: { gasLimit?: number; value?: bigint | number | string },
   ): Promise<Receipt> {
-    const nonce = await provider.getNonce(this.address);
-    const chainId = await provider.getChainId();
+    let p: Provider;
+    let deployData: string;
+    let opts: { gasLimit?: number; value?: bigint | number | string };
+    if (typeof providerOrData === "string") {
+      // wallet.deploy(deployData, options?)
+      p = this.resolveProvider();
+      deployData = providerOrData;
+      opts = (typeof dataOrOptions === "object" ? dataOrOptions : {}) ?? {};
+    } else {
+      // wallet.deploy(provider, deployData, options?)
+      p = providerOrData;
+      deployData = dataOrOptions as string;
+      opts = options ?? {};
+    }
+    const gas = opts.gasLimit ?? 100_000_000;
+    const value = opts.value ?? 0;
+    const nonce = await p.getNonce(this.address);
+    const chainId = await p.getChainId();
+    const tx: TxFields = { from: this.address, to: "0x" + "00".repeat(32), value: value.toString(), data: deployData, gasLimit: gas, nonce, chainId, txType: 1 };
+    return p.sendAndWait(this.signTransaction(tx));
+  }
 
-    const tx: TxFields = {
-      from: this.address,
-      to: "0x" + "00".repeat(32),
-      value: "0",
-      data: deployData,
-      gasLimit,
-      nonce,
-      chainId,
-      txType: 1, // Deploy
-    };
+  /** Get balance using the connected provider. */
+  async getBalance(provider?: Provider): Promise<bigint> {
+    return this.resolveProvider(provider).getBalance(this.address);
+  }
 
-    const signedHex = this.signTransaction(tx);
-    return provider.sendAndWait(signedHex);
+  /** Get nonce using the connected provider. */
+  async getNonce(provider?: Provider): Promise<number> {
+    return this.resolveProvider(provider).getNonce(this.address);
   }
 }
 

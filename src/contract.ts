@@ -13,6 +13,7 @@ interface AbiFunction {
   params: AbiParam[];
   returns: string;
   view: boolean;
+  payable: boolean;
   constructor: boolean;
 }
 
@@ -87,13 +88,14 @@ export class Contract {
   }
 
   /** Register a function manually (when no artifact is available). */
-  addFunction(name: string, params: AbiParam[], returns: string, view = false): this {
+  addFunction(name: string, params: AbiParam[], returns: string, view = false, payable = false): this {
     this.functions.set(name, {
       name,
       selector: "0x" + computeSelector(name).toString(16).padStart(8, "0"),
       params,
       returns,
       view,
+      payable,
       constructor: false,
     });
     return this;
@@ -123,18 +125,43 @@ export class Contract {
     return this.decodeReturn(fn.returns, resultHex);
   }
 
+  /** Static-call ANY function (view or setter) without sending a tx.
+   *  Simulates execution and returns the decoded return value. */
+  async simulate(method: string, args: Record<string, any> = {}): Promise<any> {
+    return this.read(method, args);
+  }
+
+  /** Estimate gas for a contract call using the ABI. */
+  async estimateGas(method: string, args: Record<string, any> = {}): Promise<number> {
+    const calldata = this.encodeCall(method, args);
+    return this.provider.estimateGas(this.address, calldata);
+  }
+
   // ========================================================================
   // Write (state-changing — wallet required)
   // ========================================================================
 
-  /** Send a state-changing transaction. Auto-encodes args, signs, sends, waits. */
-  async write(method: string, args: Record<string, any> = {}, gasLimit = 100_000_000): Promise<Receipt> {
+  /** Send a state-changing transaction. Auto-encodes args, signs, sends, waits.
+   *  Pass options.value to send native tokens (validates payable from ABI). */
+  async write(
+    method: string,
+    args: Record<string, any> = {},
+    options: { gasLimit?: number; value?: bigint | number | string } = {},
+  ): Promise<Receipt> {
     if (!this.wallet) {
       throw new Error("No wallet connected. Use contract.connect(wallet) first.");
     }
-
+    const value = options.value ?? 0;
+    const gasLimit = options.gasLimit ?? 100_000_000;
+    // Validate payable
+    if (BigInt(value) > 0n) {
+      const fn = this.functions.get(method);
+      if (fn && !fn.payable) {
+        throw new Error(`${method}() is not payable — cannot send value`);
+      }
+    }
     const calldata = this.encodeCall(method, args);
-    return this.wallet.sendCall(this.provider, this.address, calldata, gasLimit);
+    return this.wallet.sendCall(this.provider, this.address, calldata, gasLimit, value);
   }
 
   // ========================================================================
@@ -271,6 +298,41 @@ export class Contract {
       return;
     }
 
+    // Tuple "(T1, T2, ...)" — sequential fields, no length prefix
+    if (type.startsWith("(") && type.endsWith(")")) {
+      const inner = type.slice(1, -1);
+      if (inner && inner !== "()") {
+        const types = parseTupleTypes(inner);
+        if (!Array.isArray(value)) {
+          throw new Error(`${path}: expected array for tuple ${type}, got ${typeof value}`);
+        }
+        if (value.length !== types.length) {
+          throw new Error(`${path}: tuple ${type} expects ${types.length} elements, got ${value.length}`);
+        }
+        for (let i = 0; i < types.length; i++) {
+          this.encodeValue(buf, value[i], types[i], `${path}.${i}`);
+        }
+      }
+      return;
+    }
+
+    // Array "[T; N]" — N sequential elements, no length prefix
+    if (type.startsWith("[") && type.endsWith("]")) {
+      const parsed = parseArrayType(type.slice(1, -1));
+      if (!parsed) throw new Error(`${path}: bad array type '${type}'`);
+      const [elemType, count] = parsed;
+      if (!Array.isArray(value)) {
+        throw new Error(`${path}: expected array for ${type}, got ${typeof value}`);
+      }
+      if (value.length !== count) {
+        throw new Error(`${path}: array ${type} expects ${count} elements, got ${value.length}`);
+      }
+      for (let i = 0; i < count; i++) {
+        this.encodeValue(buf, value[i], elemType, `${path}[${i}]`);
+      }
+      return;
+    }
+
     // Vec<T>
     if (type.startsWith("Vec<") && type.endsWith(">")) {
       if (!Array.isArray(value)) {
@@ -331,6 +393,15 @@ export class Contract {
       b.writeBigUInt64LE(BigInt(disc));
       buf.push(...b);
       return;
+    }
+
+    // Unknown type (Contract/Interface) → treat as Address
+    if (typeof value === "string") {
+      const hex = value.startsWith("0x") ? value.slice(2) : value;
+      if (/^[0-9a-fA-F]{64}$/.test(hex)) {
+        buf.push(...Buffer.from(hex, "hex"));
+        return;
+      }
     }
 
     throw new Error(`${path}: unsupported type '${type}'`);
@@ -439,6 +510,36 @@ export class Contract {
       const aligned = 8 + len + ((8 - (len % 8)) % 8);
       return { value: bytes, bytesRead: aligned };
     }
+    // Tuple "(T1, T2, ...)" — sequential decode
+    if (type.startsWith("(") && type.endsWith(")")) {
+      const inner = type.slice(1, -1);
+      if (!inner || inner === "()") return { value: null, bytesRead: 0 };
+      const types = parseTupleTypes(inner);
+      let cursor = offset;
+      const items: any[] = [];
+      for (const t of types) {
+        const { value, bytesRead } = this.decodeValue(data, t, cursor);
+        items.push(value);
+        cursor += bytesRead;
+      }
+      return { value: items, bytesRead: cursor - offset };
+    }
+    // Array "[T; N]" — N sequential elements
+    if (type.startsWith("[") && type.endsWith("]")) {
+      const parsed = parseArrayType(type.slice(1, -1));
+      if (parsed) {
+        const [elemType, count] = parsed;
+        let cursor = offset;
+        const items: any[] = [];
+        for (let i = 0; i < count; i++) {
+          if (cursor >= data.length) break;
+          const { value, bytesRead } = this.decodeValue(data, elemType, cursor);
+          items.push(value);
+          cursor += bytesRead;
+        }
+        return { value: items, bytesRead: cursor - offset };
+      }
+    }
     if (type.startsWith("Vec<") && type.endsWith(">")) {
       const elemType = type.slice(4, -1);
       if (data.length < offset + 24) return { value: [], bytesRead: 24 };
@@ -480,6 +581,11 @@ export class Contract {
 
     if (type === "()" || type === "unit") {
       return { value: null, bytesRead: 0 };
+    }
+
+    // Unknown type (Contract/Interface) → decode as Address (32 bytes)
+    if (data.length >= offset + 32) {
+      return { value: "0x" + data.subarray(offset, offset + 32).toString("hex"), bytesRead: 32 };
     }
 
     return { value: "0x" + data.subarray(offset).toString("hex"), bytesRead: data.length - offset };
@@ -778,6 +884,68 @@ function stripHex(s: string): string {
   return s.startsWith("0x") ? s.slice(2) : s;
 }
 
+/** Parse comma-separated tuple types, handling nested generics. */
+function parseTupleTypes(s: string): string[] {
+  const types: string[] = [];
+  let depth = 0;
+  let start = 0;
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (c === "<" || c === "(" || c === "[") depth++;
+    else if (c === ">" || c === ")" || c === "]") depth--;
+    else if (c === "," && depth === 0) {
+      const t = s.slice(start, i).trim();
+      if (t) types.push(t);
+      start = i + 1;
+    }
+  }
+  const t = s.slice(start).trim();
+  if (t) types.push(t);
+  return types;
+}
+
+/** Parse "[T; N]" inner string → [elementType, count]. */
+function parseArrayType(s: string): [string, number] | null {
+  const semi = s.lastIndexOf(";");
+  if (semi < 0) return null;
+  const elem = s.slice(0, semi).trim();
+  const count = parseInt(s.slice(semi + 1).trim(), 10);
+  if (isNaN(count)) return null;
+  return [elem, count];
+}
+
+// ============================================================================
+// Standalone Vec decoders
+// ============================================================================
+
+export function decodeVecU64(hex: string): bigint[] {
+  const buf = Buffer.from(stripHex(hex), "hex");
+  if (buf.length < 24) return [];
+  const count = Number(buf.readBigUInt64LE(8));
+  const maxCount = Math.floor((buf.length - 24) / 8);
+  const safe = Math.min(count, maxCount);
+  const result: bigint[] = [];
+  for (let i = 0; i < safe; i++) result.push(buf.readBigUInt64LE(24 + i * 8));
+  return result;
+}
+
+export function decodeVecBool(hex: string): boolean[] {
+  return decodeVecU64(hex).map(v => v !== 0n);
+}
+
+export function decodeVecAddress(hex: string): string[] {
+  const buf = Buffer.from(stripHex(hex), "hex");
+  if (buf.length < 24) return [];
+  const count = Number(buf.readBigUInt64LE(8));
+  const maxCount = Math.floor((buf.length - 24) / 32);
+  const safe = Math.min(count, maxCount);
+  const result: string[] = [];
+  for (let i = 0; i < safe; i++) {
+    result.push("0x" + buf.subarray(24 + i * 32, 24 + (i + 1) * 32).toString("hex"));
+  }
+  return result;
+}
+
 // ============================================================================
 // DeployData — build deploy transaction payloads
 // ============================================================================
@@ -786,10 +954,15 @@ function stripHex(s: string): string {
  * Build deploy transaction data: [clen:4 LE][rlen:4 LE][constructor][runtime][args].
  *
  * ```ts
+ * // From artifact with named constructor args (recommended)
+ * const data = DeployData.fromArtifact("out/Counter.json", {
+ *   initial_supply: 1000,
+ *   name: "MyToken",
+ * }).build();
+ *
+ * // From raw bytecodes with manual args
  * const data = new DeployData(constructorHex, runtimeHex)
- *   .argU64(1000)
- *   .argString("hello")
- *   .build();
+ *   .argU64(1000).build();
  * ```
  */
 export class DeployData {
@@ -802,19 +975,111 @@ export class DeployData {
     this.runtime = Buffer.from(stripHex(runtimeHex), "hex");
   }
 
+  /** Load from artifact JSON file with ABI-validated constructor args.
+   *  Pass {} if the constructor takes no args. */
+  static fromArtifact(artifactPath: string, args: Record<string, any> = {}): DeployData {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const fs = require("fs");
+    const json = fs.readFileSync(artifactPath, "utf-8");
+    return DeployData.fromJson(json, args);
+  }
+
+  /** Load from artifact JSON string with ABI-validated constructor args. */
+  static fromJson(json: string, args: Record<string, any> = {}): DeployData {
+    const artifact = JSON.parse(json);
+    const constructorHex = artifact.constructorBytecode;
+    const runtimeHex = artifact.deployedBytecode;
+    if (!constructorHex || !runtimeHex) {
+      throw new Error("Artifact missing 'constructorBytecode' or 'deployedBytecode'");
+    }
+    const deploy = new DeployData(constructorHex, runtimeHex);
+
+    // Encode constructor args from ABI
+    const abi = artifact.abi || artifact;
+    const fns = abi.functions || [];
+    const ctor = fns.find((f: any) => f.constructor === true);
+    if (ctor && ctor.params && ctor.params.length > 0) {
+      // Use a temporary Contract to leverage encodeValue
+      const tempContract = Contract.fromJson(json, "0x" + "00".repeat(32), null as any);
+      const buf: number[] = [];
+      for (const param of ctor.params) {
+        const val = args[param.name];
+        if (val === undefined) {
+          throw new Error(`constructor: missing arg '${param.name}' (${param.type})`);
+        }
+        (tempContract as any).encodeValue(buf, val, param.type, `constructor.${param.name}`);
+      }
+      deploy.argsBuf = Buffer.concat([deploy.argsBuf, Buffer.from(buf)]);
+    }
+
+    return deploy;
+  }
+
+  // GP integers (8 bytes LE)
+  argU8(val: number): this { return this.argU64(val); }
+  argU16(val: number): this { return this.argU64(val); }
+  argU32(val: number): this { return this.argU64(val); }
   argU64(val: number | bigint): this {
     const buf = Buffer.alloc(8);
     buf.writeBigUInt64LE(BigInt(val));
     this.argsBuf = Buffer.concat([this.argsBuf, buf]);
     return this;
   }
+  argI8(val: number): this { return this.argI64(BigInt(val)); }
+  argI16(val: number): this { return this.argI64(BigInt(val)); }
+  argI32(val: number): this { return this.argI64(BigInt(val)); }
+  argI64(val: number | bigint): this {
+    const buf = Buffer.alloc(8);
+    buf.writeBigInt64LE(BigInt(val));
+    this.argsBuf = Buffer.concat([this.argsBuf, buf]);
+    return this;
+  }
   argBool(val: boolean): this { return this.argU64(val ? 1 : 0); }
+  // Wide integers
+  argU128(val: bigint): this {
+    const buf = Buffer.alloc(16);
+    buf.writeBigUInt64LE(val & 0xFFFFFFFFFFFFFFFFn, 0);
+    buf.writeBigUInt64LE((val >> 64n) & 0xFFFFFFFFFFFFFFFFn, 8);
+    this.argsBuf = Buffer.concat([this.argsBuf, buf]);
+    return this;
+  }
+  argI128(val: bigint): this {
+    const unsigned = val & ((1n << 128n) - 1n);
+    const buf = Buffer.alloc(16);
+    buf.writeBigUInt64LE(unsigned & 0xFFFFFFFFFFFFFFFFn, 0);
+    buf.writeBigUInt64LE((unsigned >> 64n) & 0xFFFFFFFFFFFFFFFFn, 8);
+    this.argsBuf = Buffer.concat([this.argsBuf, buf]);
+    return this;
+  }
+  argU256(val: bigint): this {
+    const buf = Buffer.alloc(32);
+    for (let i = 0; i < 4; i++) buf.writeBigUInt64LE((val >> BigInt(i * 64)) & 0xFFFFFFFFFFFFFFFFn, i * 8);
+    this.argsBuf = Buffer.concat([this.argsBuf, buf]);
+    return this;
+  }
+  argI256(val: bigint): this {
+    const unsigned = val & ((1n << 256n) - 1n);
+    const buf = Buffer.alloc(32);
+    for (let i = 0; i < 4; i++) buf.writeBigUInt64LE((unsigned >> BigInt(i * 64)) & 0xFFFFFFFFFFFFFFFFn, i * 8);
+    this.argsBuf = Buffer.concat([this.argsBuf, buf]);
+    return this;
+  }
+  argAddress(hex: string): this {
+    const clean = hex.startsWith("0x") ? hex.slice(2) : hex;
+    if (!/^[0-9a-fA-F]{64}$/.test(clean)) throw new Error("argAddress: expected 64 hex chars");
+    this.argsBuf = Buffer.concat([this.argsBuf, Buffer.from(clean, "hex")]);
+    return this;
+  }
   argString(val: string): this {
     const bytes = Buffer.from(val, "utf-8");
     const lenBuf = Buffer.alloc(8);
     lenBuf.writeBigUInt64LE(BigInt(bytes.length));
     const padding = (8 - (bytes.length % 8)) % 8;
     this.argsBuf = Buffer.concat([this.argsBuf, lenBuf, bytes, Buffer.alloc(padding)]);
+    return this;
+  }
+  argBytes(data: Buffer): this {
+    this.argsBuf = Buffer.concat([this.argsBuf, data]);
     return this;
   }
 
