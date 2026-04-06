@@ -13,6 +13,8 @@ TypeScript SDK for interacting with the Pyde blockchain. Post-quantum secure via
   - [Chain Queries](#chain-queries)
   - [Account Queries](#account-queries)
   - [Block Queries](#block-queries)
+  - [Transaction Lookup](#transaction-lookup)
+  - [Fee Data](#fee-data)
   - [Static Calls](#static-calls)
   - [Gas Estimation](#gas-estimation)
 - [Wallet](#wallet)
@@ -43,10 +45,12 @@ TypeScript SDK for interacting with the Pyde blockchain. Post-quantum secure via
   - [Payable Functions](#payable-functions)
   - [Arg Validation (before broadcast)](#arg-validation-before-broadcast)
   - [Decoding Return Values](#decoding-return-values)
+  - [Decoding Write Return Data](#decoding-write-return-data)
   - [DeployData Builder](#deploydata-builder)
   - [Receipt Utilities](#receipt-utilities)
 - [Events & Logs](#events--logs)
 - [Error Handling](#error-handling)
+- [Hex Utilities](#hex-utilities)
 - [Unit Formatting](#unit-formatting)
 - [Cryptographic Primitives](#cryptographic-primitives)
   - [Key Generation](#key-generation)
@@ -145,6 +149,29 @@ if (block) {
   console.log("Timestamp:", block.timestamp);
   console.log("Proposer:", block.proposer);
 }
+```
+
+### Transaction Lookup
+
+```typescript
+const tx = await provider.getTransaction("0xtxhash...");
+if (tx) {
+  console.log("From:", tx.from);
+  console.log("To:", tx.to);
+  console.log("Value:", tx.value);
+}
+```
+
+Note: `returnData` is ephemeral — only available in the receipt immediately after execution, not in transaction lookups.
+
+### Fee Data
+
+Get current network fee info (Pyde uses EIP-1559 with no tips).
+
+```typescript
+const fees = await provider.getFeeData();
+console.log("Gas price:", fees.gasPrice);  // bigint (quanta per gas)
+console.log("Base fee:", fees.baseFee);    // same as gasPrice in Pyde
 ```
 
 ### Static Calls
@@ -670,6 +697,22 @@ await readOnly.write("deposit", { amount: 500 });
 // Error: No wallet connected. Use contract.connect(wallet) first.
 ```
 
+### Decoding Write Return Data
+
+`Contract.write()` returns a `ContractReceipt` with a `decodeReturnData()` method
+that auto-decodes using the ABI return type.
+
+```typescript
+const receipt = await contract.write("deposit", { amount: 500 });
+console.log(receipt.success);           // true (standard receipt field)
+
+const val = receipt.decodeReturnData(); // auto-decoded from ABI (e.g., 42n)
+// Returns null if returnData is absent or function returns ()
+```
+
+Note: `returnData` is ephemeral — only available in the receipt immediately after
+tx execution. It is not persisted on-chain.
+
 ### Decoding Return Values
 
 Manual decoders for raw hex return data (low-level alternative to Contract.read).
@@ -823,31 +866,76 @@ const logs = await provider.getLogs({
 
 ## Error Handling
 
-All async methods throw standard JavaScript errors with descriptive messages.
+All SDK errors extend `PydeError` with a typed `code` field for programmatic handling.
 
 ```typescript
-try {
-  const receipt = await wallet.transfer(provider, to, amount);
-  console.log("Success! Gas:", receipt.gasUsed);
-} catch (error) {
-  const msg = (error as Error).message;
+import {
+  PydeError, CallExceptionError, ConnectionError, TimeoutError,
+  RpcError, isError, isCallException,
+} from "pyde-ts-sdk";
 
-  if (msg.includes("reverted")) {
-    // Transaction executed but reverted (e.g., require! failed)
-    console.log("Transaction reverted");
-  } else if (msg.includes("Connection")) {
-    // Can't reach the node
+try {
+  const receipt = await contract.write("deposit", { amount: 500 });
+} catch (e) {
+  // Type-safe error checking
+  if (isCallException(e)) {
+    console.log("Reverted! Gas:", e.gasUsed);
+    console.log("Reason:", e.reason);    // auto-decoded revert string (or null)
+    console.log("Data:", e.data);        // raw return data hex
+  }
+
+  // Or check by error code
+  if (isError(e, "CONNECTION_ERROR")) {
     console.log("Node unreachable");
-  } else if (msg.includes("Receipt not available")) {
-    // Timeout waiting for block confirmation
-    console.log("Timeout — tx may still be pending");
-  } else if (msg.includes("RPC error")) {
-    // Node returned an error (invalid params, etc.)
-    console.log("RPC error:", msg);
-  } else {
-    console.log("Unexpected error:", msg);
+  }
+  if (isError(e, "TIMEOUT")) {
+    console.log("Timed out waiting for receipt");
+  }
+  if (isError(e, "RPC_ERROR")) {
+    console.log("RPC error:", (e as RpcError).rpcError);
   }
 }
+```
+
+**Error codes:** `CALL_EXCEPTION`, `CONNECTION_ERROR`, `TIMEOUT`, `RPC_ERROR`, `SIGNING_ERROR`, `INVALID_ARGUMENT`, `INSUFFICIENT_FUNDS`, `UNKNOWN_ERROR`
+
+---
+
+## Hex Utilities
+
+```typescript
+import {
+  isHexString, hexlify, getBytes, toBeHex,
+  concat, zeroPadValue, stripZeros, dataLength, dataSlice,
+} from "pyde-ts-sdk";
+
+// Check if valid hex
+isHexString("0xdeadbeef");          // true
+isHexString("0xgg");                 // false
+isHexString("0xaabb", 2);           // true (2 bytes)
+
+// Convert to hex
+hexlify(Buffer.from([0xde, 0xad])); // "0xdead"
+hexlify(255n);                       // "0xff"
+hexlify(42);                         // "0x2a"
+
+// Convert from hex to Buffer
+getBytes("0xdeadbeef");             // Buffer<deadbeef>
+
+// BigInt to big-endian hex (with optional width)
+toBeHex(255n);                       // "0xff"
+toBeHex(255n, 4);                    // "0x000000ff" (4 bytes padded)
+
+// Concatenate
+concat(["0xdead", "0xbeef"]);       // "0xdeadbeef"
+
+// Pad / strip
+zeroPadValue("0xff", 4);            // "0x000000ff"
+stripZeros("0x000000ff");           // "0xff"
+
+// Slice
+dataLength("0xdeadbeef");           // 4
+dataSlice("0xdeadbeef", 1, 3);     // "0xadbe"
 ```
 
 ---

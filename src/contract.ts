@@ -3,6 +3,13 @@ import { Provider } from "./provider";
 import { Wallet } from "./wallet";
 import { Receipt } from "./types";
 
+/** Receipt from a Contract.write() call — extends Receipt with ABI-aware decoding. */
+export interface ContractReceipt extends Receipt {
+  /** Decode returnData using the ABI return type. Returns null if returnData is absent.
+   *  Note: returnData is ephemeral — only available right after tx execution. */
+  decodeReturnData(): any;
+}
+
 // ============================================================================
 // ABI types (parsed from artifact JSON)
 // ============================================================================
@@ -142,12 +149,13 @@ export class Contract {
   // ========================================================================
 
   /** Send a state-changing transaction. Auto-encodes args, signs, sends, waits.
-   *  Pass options.value to send native tokens (validates payable from ABI). */
+   *  Pass options.value to send native tokens (validates payable from ABI).
+   *  Returns a ContractReceipt with a decodeReturnData() method. */
   async write(
     method: string,
     args: Record<string, any> = {},
     options: { gasLimit?: number; value?: bigint | number | string } = {},
-  ): Promise<Receipt> {
+  ): Promise<ContractReceipt> {
     if (!this.wallet) {
       throw new Error("No wallet connected. Use contract.connect(wallet) first.");
     }
@@ -161,7 +169,20 @@ export class Contract {
       }
     }
     const calldata = this.encodeCall(method, args);
-    return this.wallet.sendCall(this.provider, this.address, calldata, gasLimit, value);
+    const receipt = await this.wallet.sendCall(this.provider, this.address, calldata, gasLimit, value);
+
+    // Wrap with ABI-aware decode
+    const fn = this.functions.get(method);
+    const retType = fn?.returns;
+    const contract = this;
+    return Object.assign(receipt, {
+      decodeReturnData(): any {
+        const rd = receipt.returnData;
+        if (!rd || rd === "0x" || rd === "") return null;
+        if (!retType || retType === "()" || retType === "unit") return null;
+        return contract.decodeReturn(retType, rd);
+      },
+    });
   }
 
   // ========================================================================
