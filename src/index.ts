@@ -1,5 +1,6 @@
-export { Provider } from "./provider";
+export { Provider, type ProviderOptions } from "./provider";
 export { WebSocketProvider } from "./ws-provider";
+export { AbstractSigner } from "./signer";
 export { Wallet } from "./wallet";
 export type { Keystore } from "./wallet";
 export { Address } from "./address";
@@ -9,6 +10,6 @@ export { PydeError, CallExceptionError, ConnectionError, TimeoutError, InvalidAr
 export type { ErrorCode } from "./errors";
 export { Contract, ContractCall, DeployData, Interface, type ContractReceipt, type EventLog, decodeU64, decodeI64, decodeU128, decodeI128, decodeU256, decodeI256, decodeBool, decodeAddress, decodeString, decodeBytes, decodeVecU64, decodeVecBool, decodeVecAddress } from "./contract";
 export { generateKeypair, deriveAddress, signMessage, verifySignature, poseidon2Hash, computeSelector, hashTransaction, signTransaction } from "./crypto";
-export type { Receipt, Log, LogFilter, BlockHeader, TxFields, TransactionInfo, TransactionResponse, FeeData } from "./types";
+export type { Receipt, Log, LogFilter, BlockHeader, TxFields, TransactionInfo, TransactionResponse, FeeData, CallOverrides } from "./types";
 export { ReceiptUtils } from "./types";
 export type { Keypair } from "./crypto";

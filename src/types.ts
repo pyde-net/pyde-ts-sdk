@@ -155,6 +155,13 @@ export interface TransactionInfo {
   blockNumber?: number;
 }
 
+/** Override params for call/estimateGas. */
+export interface CallOverrides {
+  from?: string;
+  value?: bigint | number | string;
+  gasLimit?: number;
+}
+
 /** Fee data from the network. */
 export interface FeeData {
   /** Current gas price (same as base fee in Pyde's EIP-1559 model, no tips). */

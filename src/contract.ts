@@ -220,6 +220,41 @@ export class Contract {
   }
 
   // ========================================================================
+  // Populate (build unsigned tx without sending)
+  // ========================================================================
+
+  /**
+   * Build an unsigned transaction for a contract call. Useful for multisig,
+   * offline signing, or transaction review.
+   *
+   * ```ts
+   * const tx = await contract.populateTransaction("deposit", { amount: 500 });
+   * console.log(tx.to, tx.data, tx.nonce); // review before signing
+   * ```
+   */
+  async populateTransaction(
+    method: string,
+    args: Record<string, any> = {},
+    options: { gasLimit?: number; value?: bigint | number | string } = {},
+  ): Promise<import("./types").TxFields> {
+    if (!this.wallet) throw new Error("No wallet connected. Use contract.connect(wallet) first.");
+    const calldata = this.encodeCall(method, args);
+    const p = (this.wallet as any).resolveProvider();
+    const nonce = await p.getNonce(this.wallet.address);
+    const chainId = await p.getChainId();
+    return {
+      from: this.wallet.address,
+      to: this.address,
+      value: (options.value ?? 0).toString(),
+      data: calldata,
+      gasLimit: options.gasLimit ?? 100_000_000,
+      nonce,
+      chainId,
+      txType: 0,
+    };
+  }
+
+  // ========================================================================
   // Events
   // ========================================================================
 

@@ -17,6 +17,7 @@ TypeScript SDK for interacting with the Pyde blockchain. Post-quantum secure via
   - [Fee Data](#fee-data)
   - [Static Calls](#static-calls)
   - [Gas Estimation](#gas-estimation)
+  - [Batch RPC](#batch-rpc)
 - [Wallet](#wallet)
   - [Creating a Wallet](#creating-a-wallet)
   - [Restoring a Wallet](#restoring-a-wallet)
@@ -50,7 +51,9 @@ TypeScript SDK for interacting with the Pyde blockchain. Post-quantum secure via
   - [Receipt Utilities](#receipt-utilities)
   - [Contract Events](#contract-events)
   - [Interface (Standalone ABI)](#interface-standalone-abi)
+  - [Populate Transaction](#populate-transaction)
 - [WebSocket Provider](#websocket-provider)
+- [Abstract Signer](#abstract-signer)
 - [Events & Logs](#events--logs)
 - [Error Handling](#error-handling)
 - [Hex Utilities](#hex-utilities)
@@ -195,11 +198,36 @@ const resultHex = await provider.call("0xcontract...", "0xcalldata...");
 Estimate how much gas a transaction will consume.
 
 ```typescript
-const estimatedGas = await provider.estimateGas(
-  "0xcontract...",
-  "0xcalldata...",
-);
-console.log("Estimated gas:", estimatedGas);
+// Basic
+const gas = await provider.estimateGas("0xcontract...", "0xcalldata...");
+
+// With overrides (simulate from a specific sender, with value)
+const gas2 = await provider.estimateGas("0xcontract...", "0xcalldata...", {
+  from: wallet.address,
+  value: 1000000n,
+});
+```
+
+### Batch RPC
+
+Send multiple calls in a single HTTP request to reduce round trips.
+
+```typescript
+const [balance, nonce, chainId] = await provider.batch([
+  { method: "pyde_getBalance", params: [addr] },
+  { method: "pyde_getTransactionCount", params: [addr] },
+  { method: "pyde_chainId", params: [] },
+]);
+```
+
+The provider also supports configurable timeout, retries, and headers:
+
+```typescript
+const provider = new Provider("http://127.0.0.1:8545", {
+  timeout: 10000,    // 10s timeout (default: 30s)
+  retries: 3,        // retry 3 times on failure (default: 0)
+  headers: { "X-Api-Key": "my-key" },
+});
 ```
 
 ---
@@ -849,6 +877,18 @@ const topic = iface.getEventTopic("Transfer");
 
 ---
 
+### Populate Transaction
+
+Build an unsigned transaction without sending — for multisig, offline signing, or review.
+
+```typescript
+const tx = await contract.populateTransaction("deposit", { amount: 500 });
+console.log(tx.from, tx.to, tx.data, tx.nonce);
+// Sign later: wallet.signTransaction(tx)
+```
+
+---
+
 ## WebSocket Provider
 
 Real-time subscriptions via WebSocket. Supports new blocks, pending transactions, and log filters.
@@ -886,6 +926,32 @@ const balance = await ws.getBalance("0xaddress...");
 // Cleanup
 ws.destroy();
 ```
+
+---
+
+## Abstract Signer
+
+Base class for custom signers (hardware wallets, remote signers, custodial).
+
+```typescript
+import { AbstractSigner } from "pyde-ts-sdk";
+
+class LedgerSigner extends AbstractSigner {
+  readonly address = "0x...";
+
+  signTransaction(tx: TxFields): string {
+    return this.ledger.sign(tx); // your hardware wallet logic
+  }
+
+  sign(messageHex: string): string {
+    return this.ledger.signMessage(messageHex);
+  }
+}
+
+const signer = new LedgerSigner().connect(provider);
+```
+
+`Wallet` extends `AbstractSigner` conceptually — same interface, same `connect()` method.
 
 ---
 

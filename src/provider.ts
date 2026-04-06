@@ -1,13 +1,29 @@
-import { Receipt, Log, LogFilter, BlockHeader, TransactionInfo, TransactionResponse, FeeData } from "./types";
+import { Receipt, Log, LogFilter, BlockHeader, TransactionInfo, TransactionResponse, FeeData, CallOverrides } from "./types";
 import { CallExceptionError, ConnectionError, TimeoutError, RpcError } from "./errors";
+
+/** Provider options for configuring HTTP behavior. */
+export interface ProviderOptions {
+  /** Request timeout in milliseconds (default: 30000). */
+  timeout?: number;
+  /** Number of retry attempts on failure (default: 0). */
+  retries?: number;
+  /** Custom HTTP headers. */
+  headers?: Record<string, string>;
+}
 
 /** JSON-RPC client for interacting with a Pyde node. */
 export class Provider {
   private rpcUrl: string;
   private rpcId = 0;
+  private options: Required<Omit<ProviderOptions, "headers">> & { headers: Record<string, string> };
 
-  constructor(rpcUrl: string) {
+  constructor(rpcUrl: string, options?: ProviderOptions) {
     this.rpcUrl = rpcUrl;
+    this.options = {
+      timeout: options?.timeout ?? 30000,
+      retries: options?.retries ?? 0,
+      headers: options?.headers ?? {},
+    };
   }
 
   // ========================================================================
@@ -76,21 +92,25 @@ export class Provider {
   // Static calls & gas estimation
   // ========================================================================
 
-  async call(to: string, data: string): Promise<string> {
-    const params = {
-      from: "0x" + "00".repeat(32),
+  async call(to: string, data: string, overrides?: CallOverrides): Promise<string> {
+    const params: Record<string, any> = {
+      from: overrides?.from ?? "0x" + "00".repeat(32),
       to,
       data,
     };
+    if (overrides?.value !== undefined) params.value = "0x" + BigInt(overrides.value).toString(16);
+    if (overrides?.gasLimit !== undefined) params.gas = "0x" + overrides.gasLimit.toString(16);
     return (await this.rpc("pyde_call", [params])) as string;
   }
 
-  async estimateGas(to: string, data: string): Promise<number> {
-    const params = {
-      from: "0x" + "00".repeat(32),
+  async estimateGas(to: string, data: string, overrides?: CallOverrides): Promise<number> {
+    const params: Record<string, any> = {
+      from: overrides?.from ?? "0x" + "00".repeat(32),
       to,
       data,
     };
+    if (overrides?.value !== undefined) params.value = "0x" + BigInt(overrides.value).toString(16);
+    if (overrides?.gasLimit !== undefined) params.gas = "0x" + overrides.gasLimit.toString(16);
     const result = await this.rpc("pyde_estimateGas", [params]);
     const n = parseInt(result as string, 16);
     if (Number.isNaN(n)) throw new Error(`Invalid estimateGas response: ${result}`);
@@ -161,6 +181,52 @@ export class Provider {
   }
 
   // ========================================================================
+  // Batch RPC
+  // ========================================================================
+
+  /**
+   * Send multiple RPC calls in a single HTTP request.
+   *
+   * ```ts
+   * const [balance, nonce, chainId] = await provider.batch([
+   *   { method: "pyde_getBalance", params: [addr] },
+   *   { method: "pyde_getTransactionCount", params: [addr] },
+   *   { method: "pyde_chainId", params: [] },
+   * ]);
+   * ```
+   */
+  async batch(calls: { method: string; params: unknown[] }[]): Promise<unknown[]> {
+    const bodies = calls.map((c, i) => ({
+      jsonrpc: "2.0",
+      id: ++this.rpcId,
+      method: c.method,
+      params: c.params,
+    }));
+
+    let resp: Response;
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), this.options.timeout);
+      resp = await fetch(this.rpcUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...this.options.headers },
+        body: JSON.stringify(bodies),
+        signal: controller.signal,
+      });
+      clearTimeout(timer);
+    } catch (e: unknown) {
+      throw new ConnectionError(e instanceof Error ? e.message : String(e));
+    }
+
+    if (!resp.ok) throw new RpcError(`HTTP ${resp.status}: ${resp.statusText}`);
+    const results = await resp.json() as any[];
+    return results.map(r => {
+      if (r.error) throw new RpcError(JSON.stringify(r.error), r.error);
+      return r.result;
+    });
+  }
+
+  // ========================================================================
   // Internal
   // ========================================================================
 
@@ -172,13 +238,30 @@ export class Provider {
       params,
     };
 
+    let lastError: Error | null = null;
+    for (let attempt = 0; attempt <= this.options.retries; attempt++) {
+      try {
+        return await this.doRpc(body);
+      } catch (e) {
+        lastError = e as Error;
+        if (attempt < this.options.retries) await sleep(100 * (attempt + 1));
+      }
+    }
+    throw lastError;
+  }
+
+  private async doRpc(body: Record<string, unknown>): Promise<unknown> {
     let resp: Response;
     try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), this.options.timeout);
       resp = await fetch(this.rpcUrl, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...this.options.headers },
         body: JSON.stringify(body),
+        signal: controller.signal,
       });
+      clearTimeout(timer);
     } catch (e: unknown) {
       throw new ConnectionError(e instanceof Error ? e.message : String(e));
     }
@@ -191,7 +274,7 @@ export class Provider {
     try {
       json = await resp.json() as { result?: unknown; error?: unknown };
     } catch {
-      throw new RpcError(`invalid JSON response from ${method}`);
+      throw new RpcError(`invalid JSON response`);
     }
     if (json.error) {
       throw new RpcError(JSON.stringify(json.error), json.error);
