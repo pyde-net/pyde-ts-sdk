@@ -14,7 +14,10 @@ export function hexlify(value: string | Buffer | Uint8Array | bigint | number): 
     if (!/^[0-9a-fA-F]*$/.test(hex)) throw new Error(`Invalid hex string: "${value}"`);
     return "0x" + hex.toLowerCase();
   }
-  if (typeof value === "bigint") return "0x" + value.toString(16);
+  if (typeof value === "bigint") {
+    if (value < 0n) throw new Error(`Cannot hexlify negative bigint: ${value}`);
+    return "0x" + value.toString(16);
+  }
   if (typeof value === "number") {
     if (!Number.isInteger(value) || value < 0) throw new Error(`Invalid number for hex: ${value}`);
     return "0x" + value.toString(16);
@@ -69,6 +72,7 @@ export function stripZeros(value: string | Buffer | Uint8Array): string {
 /** Get the byte length of a hex string. */
 export function dataLength(value: string): number {
   const hex = value.startsWith("0x") ? value.slice(2) : value;
+  if (hex.length % 2 !== 0) throw new Error(`Hex string must have even length: "${value}"`);
   return hex.length / 2;
 }
 

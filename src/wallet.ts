@@ -1,5 +1,6 @@
 import { Provider } from "./provider";
 import { Receipt, TxFields } from "./types";
+import { AbstractSigner } from "./signer";
 import * as crypto from "./crypto";
 import { createCipheriv, createDecipheriv, randomBytes } from "crypto";
 import { readFileSync, writeFileSync, mkdirSync, chmodSync } from "fs";
@@ -15,14 +16,14 @@ export interface Keystore {
   version: number;
 }
 
-/** FALCON-512 wallet for signing transactions. */
-export class Wallet {
+/** FALCON-512 wallet for signing transactions. Extends AbstractSigner. */
+export class Wallet extends AbstractSigner {
   readonly address: string;
   readonly publicKey: string;
   private secretKey: string;
-  private _provider: Provider | null = null;
 
   private constructor(address: string, publicKey: string, secretKey: string) {
+    super();
     this.address = address;
     this.publicKey = publicKey;
     this.secretKey = secretKey;
@@ -113,23 +114,6 @@ export class Wallet {
   }
 
   // ========================================================================
-  // Provider binding (optional — enables shorter method signatures)
-  // ========================================================================
-
-  /** Bind a provider so you don't need to pass it on every call.
-   *  Returns the same wallet instance (mutates in place). */
-  connect(provider: Provider): this {
-    this._provider = provider;
-    return this;
-  }
-
-  /** Get the bound provider, or throw if none is connected. */
-  get provider(): Provider {
-    if (!this._provider) throw new Error("No provider connected. Use wallet.connect(provider) first.");
-    return this._provider;
-  }
-
-  // ========================================================================
   // Validation utilities
   // ========================================================================
 
@@ -172,8 +156,7 @@ export class Wallet {
       to = toOrAmount as string;
       amt = amount!;
     }
-    const nonce = await p.getNonce(this.address);
-    const chainId = await p.getChainId();
+    const [nonce, chainId] = await p.getNonceAndChainId(this.address);
     const tx: TxFields = { from: this.address, to, value: amt.toString(), data: "0x", gasLimit: 21000, nonce, chainId, txType: 0 };
     return p.sendAndWait(this.signTransaction(tx));
   }
@@ -206,8 +189,7 @@ export class Wallet {
       gasLimit = (gasLimitOrValue as number) ?? 100_000_000;
       val = value ?? 0;
     }
-    const nonce = await p.getNonce(this.address);
-    const chainId = await p.getChainId();
+    const [nonce, chainId] = await p.getNonceAndChainId(this.address);
     const tx: TxFields = { from: this.address, to, value: val.toString(), data, gasLimit, nonce, chainId, txType: 0 };
     return p.sendAndWait(this.signTransaction(tx));
   }
@@ -235,8 +217,7 @@ export class Wallet {
     }
     const gas = opts.gasLimit ?? 100_000_000;
     const value = opts.value ?? 0;
-    const nonce = await p.getNonce(this.address);
-    const chainId = await p.getChainId();
+    const [nonce, chainId] = await p.getNonceAndChainId(this.address);
     const tx: TxFields = { from: this.address, to: "0x" + "00".repeat(32), value: value.toString(), data: deployData, gasLimit: gas, nonce, chainId, txType: 1 };
     return p.sendAndWait(this.signTransaction(tx));
   }
