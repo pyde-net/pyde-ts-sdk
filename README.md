@@ -466,11 +466,12 @@ const tx = {
 // 2. Sign (returns wire-encoded hex)
 const signedHex = wallet.signTransaction(tx);
 
-// 3. Send
-const txHash = await provider.sendRawTransaction(signedHex);
+// 3. Send — returns TransactionResponse with hash + wait()
+const tx = await provider.sendRawTransaction(signedHex);
+console.log("Tx hash:", tx.hash);
 
 // 4. Wait for confirmation
-const receipt = await provider.waitForReceipt(txHash, 10000);
+const receipt = await tx.wait(10000);
 ```
 
 ### Waiting for Receipts

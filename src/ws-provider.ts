@@ -222,13 +222,20 @@ export class WebSocketProvider {
   // Internal RPC
   // ========================================================================
 
-  private rpc(method: string, params: unknown[]): Promise<unknown> {
+  private rpc(method: string, params: unknown[], timeoutMs = 30000): Promise<unknown> {
     return new Promise((resolve, reject) => {
       if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
         return reject(new ConnectionError("WebSocket not connected"));
       }
       const id = ++this.rpcId;
-      this.pending.set(id, { resolve, reject });
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        reject(new ConnectionError(`WebSocket RPC timeout after ${timeoutMs}ms for ${method}`));
+      }, timeoutMs);
+      this.pending.set(id, {
+        resolve: (v: any) => { clearTimeout(timer); resolve(v); },
+        reject: (e: Error) => { clearTimeout(timer); reject(e); },
+      });
       this.ws.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }));
     });
   }

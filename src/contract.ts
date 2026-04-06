@@ -61,6 +61,20 @@ export interface EventLog {
 }
 
 // ============================================================================
+// Range constants (allocated once, not per-call)
+// ============================================================================
+
+const INT_RANGES: Record<string, [bigint, bigint]> = {
+  u8: [0n, 255n], u16: [0n, 65535n], u32: [0n, 4294967295n], u64: [0n, 18446744073709551615n],
+  i8: [-128n, 127n], i16: [-32768n, 32767n], i32: [-2147483648n, 2147483647n], i64: [-9223372036854775808n, 9223372036854775807n],
+};
+
+const WIDE_RANGES: Record<string, [bigint, bigint]> = {
+  u128: [0n, (1n << 128n) - 1n], i128: [-(1n << 127n), (1n << 127n) - 1n],
+  u256: [0n, (1n << 256n) - 1n], i256: [-(1n << 255n), (1n << 255n) - 1n],
+};
+
+// ============================================================================
 // Contract — ABI-aware interface
 // ============================================================================
 
@@ -239,9 +253,7 @@ export class Contract {
   ): Promise<import("./types").TxFields> {
     if (!this.wallet) throw new Error("No wallet connected. Use contract.connect(wallet) first.");
     const calldata = this.encodeCall(method, args);
-    const p = (this.wallet as any).resolveProvider();
-    const nonce = await p.getNonce(this.wallet.address);
-    const chainId = await p.getChainId();
+    const [nonce, chainId] = await this.provider.getNonceAndChainId(this.wallet.address);
     return {
       from: this.wallet.address,
       to: this.address,
@@ -584,30 +596,14 @@ export class Contract {
   }
 
   private validateIntRange(n: bigint, type: string, path: string): void {
-    const ranges: Record<string, [bigint, bigint]> = {
-      u8: [0n, 255n],
-      u16: [0n, 65535n],
-      u32: [0n, 4294967295n],
-      u64: [0n, 18446744073709551615n],
-      i8: [-128n, 127n],
-      i16: [-32768n, 32767n],
-      i32: [-2147483648n, 2147483647n],
-      i64: [-9223372036854775808n, 9223372036854775807n],
-    };
-    const range = ranges[type];
+    const range = INT_RANGES[type];
     if (range && (n < range[0] || n > range[1])) {
       throw new Error(`${path}: value ${n} out of range for ${type} (${range[0]} to ${range[1]})`);
     }
   }
 
   private validateWideRange(n: bigint, type: string, path: string): void {
-    const ranges: Record<string, [bigint, bigint]> = {
-      u128: [0n, (1n << 128n) - 1n],
-      i128: [-(1n << 127n), (1n << 127n) - 1n],
-      u256: [0n, (1n << 256n) - 1n],
-      i256: [-(1n << 255n), (1n << 255n) - 1n],
-    };
-    const range = ranges[type];
+    const range = WIDE_RANGES[type];
     if (range && (n < range[0] || n > range[1])) {
       throw new Error(`${path}: value out of range for ${type}`);
     }
@@ -815,10 +811,9 @@ export class Interface {
 
   /** Decode function return data using the ABI return type. */
   decodeFunctionResult(method: string, data: string): any {
-    return (this.contract as any).decodeReturn(
-      (this.contract as any).functions.get(method)?.returns || "u64",
-      data,
-    );
+    const fn = (this.contract as any).functions.get(method);
+    if (!fn) throw new Error(`Unknown function '${method}'.`);
+    return (this.contract as any).decodeReturn(fn.returns, data);
   }
 
   /** Parse a raw Log into a decoded EventLog. */
@@ -834,16 +829,18 @@ export class Interface {
 
 export class ContractCall {
   private selector: number;
-  private _args: Buffer;
+  private _parts: Buffer[] = [];
   readonly methodName: string;
 
   constructor(method: string) {
     this.methodName = method;
     this.selector = computeSelector(method);
-    this._args = Buffer.alloc(0);
   }
 
+  get _args(): Buffer { return Buffer.concat(this._parts); }
   get args(): Buffer { return this._args; }
+
+  private push(buf: Buffer): void { this._parts.push(buf); }
 
   /** Unsigned 8-bit integer. Range: 0 to 255. Encoded as 8 bytes LE (zero-extended). */
   argU8(val: number): this {
@@ -864,7 +861,7 @@ export class ContractCall {
   argU64(val: number | bigint): this {
     const buf = Buffer.alloc(8);
     buf.writeBigUInt64LE(BigInt(val));
-    this._args = Buffer.concat([this._args, buf]);
+    this.push(buf);
     return this;
   }
   /** Signed 8-bit integer. Range: -128 to 127. Sign-extended to 8 bytes LE. */
@@ -886,7 +883,7 @@ export class ContractCall {
   argI64(val: number | bigint): this {
     const buf = Buffer.alloc(8);
     buf.writeBigInt64LE(BigInt(val));
-    this._args = Buffer.concat([this._args, buf]);
+    this.push(buf);
     return this;
   }
   /** Boolean. Encoded as u64: true = 1, false = 0. */
@@ -897,7 +894,7 @@ export class ContractCall {
     const buf = Buffer.alloc(16);
     buf.writeBigUInt64LE(val & 0xFFFFFFFFFFFFFFFFn, 0);
     buf.writeBigUInt64LE((val >> 64n) & 0xFFFFFFFFFFFFFFFFn, 8);
-    this._args = Buffer.concat([this._args, buf]);
+    this.push(buf);
     return this;
   }
   /** Signed 128-bit integer. Range: -2^127 to 2^127 - 1. Encoded as 16 bytes LE (two's complement). */
@@ -907,7 +904,7 @@ export class ContractCall {
     const buf = Buffer.alloc(16);
     buf.writeBigUInt64LE(unsigned & 0xFFFFFFFFFFFFFFFFn, 0);
     buf.writeBigUInt64LE((unsigned >> 64n) & 0xFFFFFFFFFFFFFFFFn, 8);
-    this._args = Buffer.concat([this._args, buf]);
+    this.push(buf);
     return this;
   }
   /** Unsigned 256-bit integer. Range: 0 to 2^256 - 1. Encoded as 32 bytes LE. */
@@ -917,7 +914,7 @@ export class ContractCall {
     for (let i = 0; i < 4; i++) {
       buf.writeBigUInt64LE((val >> BigInt(i * 64)) & 0xFFFFFFFFFFFFFFFFn, i * 8);
     }
-    this._args = Buffer.concat([this._args, buf]);
+    this.push(buf);
     return this;
   }
   /** Signed 256-bit integer. Range: -2^255 to 2^255 - 1. Encoded as 32 bytes LE (two's complement). */
@@ -928,7 +925,7 @@ export class ContractCall {
     for (let i = 0; i < 4; i++) {
       buf.writeBigUInt64LE((unsigned >> BigInt(i * 64)) & 0xFFFFFFFFFFFFFFFFn, i * 8);
     }
-    this._args = Buffer.concat([this._args, buf]);
+    this.push(buf);
     return this;
   }
   /** 32-byte address. Validates hex length. */
@@ -937,7 +934,7 @@ export class ContractCall {
     if (!/^[0-9a-fA-F]{64}$/.test(clean)) {
       throw new Error(`argAddress: expected 64 hex chars, got "${clean.length > 20 ? clean.slice(0, 20) + "..." : clean}"`);
     }
-    this._args = Buffer.concat([this._args, Buffer.from(clean, "hex")]);
+    this.push(Buffer.from(clean, "hex"));
     return this;
   }
   /** Length-prefixed string (8-byte aligned). */
@@ -946,12 +943,12 @@ export class ContractCall {
     const lenBuf = Buffer.alloc(8);
     lenBuf.writeBigUInt64LE(BigInt(bytes.length));
     const padding = (8 - (bytes.length % 8)) % 8;
-    this._args = Buffer.concat([this._args, lenBuf, bytes, Buffer.alloc(padding)]);
+    this.push(lenBuf); this.push(bytes); if (padding > 0) this.push(Buffer.alloc(padding));
     return this;
   }
   /** Raw bytes appended directly (no length prefix). */
   argBytes(data: Buffer): this {
-    this._args = Buffer.concat([this._args, data]);
+    this.push(data);
     return this;
   }
 
@@ -968,7 +965,7 @@ export class ContractCall {
     header.writeBigUInt64LE(BigInt(vals.length), 16);
     const elems = Buffer.alloc(vals.length * 8);
     for (let i = 0; i < vals.length; i++) elems.writeBigUInt64LE(BigInt(vals[i]), i * 8);
-    this._args = Buffer.concat([this._args, header, elems]);
+    this.push(header); this.push(elems);
     return this;
   }
   /** Vec<bool>: encoded as Vec<u64>. */
@@ -987,7 +984,7 @@ export class ContractCall {
       if (clean.length !== 64) throw new Error(`argVecAddress: expected 64 hex chars per address`);
       return Buffer.from(clean, "hex");
     });
-    this._args = Buffer.concat([this._args, header, ...elems]);
+    this.push(header); for (const e of elems) this.push(e);
     return this;
   }
   /**
@@ -1011,7 +1008,7 @@ export class ContractCall {
     header.writeBigUInt64LE(BigInt(dataLen), 0);
     header.writeBigUInt64LE(BigInt(count), 8);
     header.writeBigUInt64LE(BigInt(count), 16);
-    this._args = Buffer.concat([this._args, header, elements]);
+    this.push(header); this.push(elements);
     return this;
   }
 
@@ -1032,7 +1029,7 @@ export class ContractCall {
     const fields = inner._args;
     const lenBuf = Buffer.alloc(8);
     lenBuf.writeBigUInt64LE(BigInt(fields.length));
-    this._args = Buffer.concat([this._args, lenBuf, fields]);
+    this.push(lenBuf); this.push(fields);
     return this;
   }
   /**
@@ -1044,7 +1041,7 @@ export class ContractCall {
    */
   argTuple(buildFn: (b: ContractCall) => ContractCall): this {
     const inner = buildFn(new ContractCall("_tuple_"));
-    this._args = Buffer.concat([this._args, inner._args]);
+    this.push(inner._args);
     return this;
   }
 

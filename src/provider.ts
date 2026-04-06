@@ -15,6 +15,7 @@ export interface ProviderOptions {
 export class Provider {
   private rpcUrl: string;
   private rpcId = 0;
+  private cachedChainId: number | null = null;
   private options: Required<Omit<ProviderOptions, "headers">> & { headers: Record<string, string> };
 
   constructor(rpcUrl: string, options?: ProviderOptions) {
@@ -48,10 +49,21 @@ export class Provider {
   }
 
   async getChainId(): Promise<number> {
+    if (this.cachedChainId !== null) return this.cachedChainId;
     const result = await this.rpc("pyde_chainId", []);
     const n = parseInt(result as string, 16);
     if (Number.isNaN(n)) throw new Error(`Invalid chainId response: ${result}`);
+    this.cachedChainId = n;
     return n;
+  }
+
+  /** Fetch nonce and chainId in parallel (saves one round trip). */
+  async getNonceAndChainId(address: string): Promise<[number, number]> {
+    const [nonce, chainId] = await Promise.all([
+      this.getNonce(address),
+      this.getChainId(),
+    ]);
+    return [nonce, chainId];
   }
 
   async getBlockNumber(): Promise<number> {
