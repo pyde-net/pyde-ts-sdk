@@ -133,6 +133,14 @@ export interface TxFields {
   txType: number;
 }
 
+/** Pending transaction handle with wait(). */
+export interface TransactionResponse {
+  /** Transaction hash. */
+  hash: string;
+  /** Wait for the transaction to be included in a block. Returns receipt. */
+  wait(timeoutMs?: number): Promise<Receipt>;
+}
+
 /** Transaction info returned by getTransaction. */
 export interface TransactionInfo {
   hash: string;

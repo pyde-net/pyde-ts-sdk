@@ -48,6 +48,9 @@ TypeScript SDK for interacting with the Pyde blockchain. Post-quantum secure via
   - [Decoding Write Return Data](#decoding-write-return-data)
   - [DeployData Builder](#deploydata-builder)
   - [Receipt Utilities](#receipt-utilities)
+  - [Contract Events](#contract-events)
+  - [Interface (Standalone ABI)](#interface-standalone-abi)
+- [WebSocket Provider](#websocket-provider)
 - [Events & Logs](#events--logs)
 - [Error Handling](#error-handling)
 - [Hex Utilities](#hex-utilities)
@@ -799,6 +802,93 @@ const name = ReceiptUtils.decodeString(receipt); // string | null
 
 ---
 
+### Contract Events
+
+Query and decode contract events using the ABI.
+
+```typescript
+// Query historical events (decoded with named args)
+const transfers = await contract.queryFilter("Transfer", 0, 1000);
+for (const e of transfers) {
+  console.log(e.name);           // "Transfer"
+  console.log(e.args.from);     // "0xaabb..."
+  console.log(e.args.to);       // "0xccdd..."
+  console.log(e.args.amount);   // 1000n
+}
+
+// Parse a single raw log
+const decoded = contract.parseLog(rawLog);
+if (decoded) console.log(decoded.name, decoded.args);
+
+// Get topic0 hash for building custom filters
+const topic = contract.getEventTopic("Transfer");
+```
+
+### Interface (Standalone ABI)
+
+Encode/decode without a contract address or provider — useful for off-chain encoding,
+multisig transaction building, or log parsing.
+
+```typescript
+import { Interface } from "pyde-ts-sdk";
+
+const iface = Interface.fromArtifact("out/Counter.json");
+
+// Encode calldata
+const data = iface.encodeFunctionData("deposit", { amount: 500 });
+
+// Decode return value
+const val = iface.decodeFunctionResult("get_count", "0x2a00000000000000");
+
+// Parse logs
+const event = iface.parseLog(rawLog);
+
+// Get event topic hash
+const topic = iface.getEventTopic("Transfer");
+```
+
+---
+
+## WebSocket Provider
+
+Real-time subscriptions via WebSocket. Supports new blocks, pending transactions, and log filters.
+
+```typescript
+import { WebSocketProvider } from "pyde-ts-sdk";
+
+const ws = new WebSocketProvider("ws://127.0.0.1:8546");
+await ws.ready;
+
+// Subscribe to new block headers
+ws.onBlock((header) => {
+  console.log("New block:", header.slot);
+});
+
+// Subscribe to pending transactions
+ws.onPendingTransaction((txHash) => {
+  console.log("Pending tx:", txHash);
+});
+
+// Subscribe to contract event logs
+ws.onLogs({ address: "0xcontract..." }, (log) => {
+  console.log("Event:", log.topics, log.data);
+});
+
+// Generic event listener
+ws.on("block", (header) => console.log(header));
+ws.once("block", (header) => console.log("First block only:", header));
+ws.off("block", myListener);
+ws.removeAllListeners();
+
+// Standard queries also work over WebSocket
+const balance = await ws.getBalance("0xaddress...");
+
+// Cleanup
+ws.destroy();
+```
+
+---
+
 ## Events & Logs
 
 Query event logs from the chain with optional topic filtering.
@@ -1051,11 +1141,14 @@ pyde-ts-sdk/
 │   ├── contract.ts    — calldata encoding + ABI-aware reads/writes
 │   ├── address.ts     — Address utilities (zero, validation, equality)
 │   ├── units.ts       — Unit formatting (parseUnits, formatUnits, parseQuanta)
+│   ├── errors.ts      — Typed error classes (PydeError, CallExceptionError, etc.)
+│   ├── hex.ts         — Hex utilities (hexlify, getBytes, toBeHex, concat, etc.)
+│   ├── ws-provider.ts — WebSocket provider with subscriptions
 │   ├── crypto.ts      — WASM bridge wrapper
-│   └── types.ts       — Receipt, Log, TxFields, ReceiptUtils
+│   └── types.ts       — Receipt, Log, TxFields, ReceiptUtils, TransactionResponse
 ├── wasm/              — compiled Rust → WASM (FALCON-512, Poseidon2)
 └── tests/
-    └── sdk.test.ts    — 85 unit tests
+    └── sdk.test.ts    — 85+ unit tests
 ```
 
 All cryptographic operations are compiled from Rust to WebAssembly, guaranteeing exact compatibility with the Pyde node:
