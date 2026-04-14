@@ -666,8 +666,17 @@ export class Contract {
       return { value: data.readBigUInt64LE(offset) !== 0n, bytesRead: 8 };
     }
     if (type === "Address") {
-      if (data.length < offset + 32) return { value: "0x" + "00".repeat(32), bytesRead: 32 };
-      return { value: "0x" + data.subarray(offset, offset + 32).toString("hex"), bytesRead: 32 };
+      // Full 32-byte address if available; otherwise read what's available
+      // (PVM event data may use 8-byte GP register format for Address fields)
+      if (data.length >= offset + 32) {
+        return { value: "0x" + data.subarray(offset, offset + 32).toString("hex"), bytesRead: 32 };
+      }
+      if (data.length >= offset + 8) {
+        // Compact GP format: 8 bytes (truncated address or pointer)
+        const partial = data.subarray(offset, offset + 8).toString("hex");
+        return { value: "0x" + partial.padEnd(64, "0"), bytesRead: 8 };
+      }
+      return { value: "0x" + "00".repeat(32), bytesRead: 8 };
     }
     if (type === "String") {
       if (data.length < offset + 8) return { value: "", bytesRead: 8 };
