@@ -126,9 +126,11 @@ export class Contract {
     // Parse event definitions
     for (const ev of abi.events || []) {
       contract.events.set(ev.name, ev);
-      // topic[0] = FNV-1a selector of event name, zero-extended to 64 hex chars
+      // topic[0] = FNV-1a selector of event name, stored as LE u32 zero-padded to 32 bytes
       const sel = computeSelector(ev.name);
-      const topic0 = "0x" + sel.toString(16).padStart(8, "0") + "0".repeat(56);
+      const selBuf = Buffer.alloc(4);
+      selBuf.writeUInt32LE(sel);
+      const topic0 = "0x" + selBuf.toString("hex") + "0".repeat(56);
       contract.eventsByTopic.set(topic0, ev);
     }
 
@@ -284,8 +286,7 @@ export class Contract {
     const ev = this.events.get(eventName);
     if (!ev) throw new Error(`Unknown event '${eventName}'. Load ABI with events.`);
 
-    const sel = computeSelector(eventName);
-    const topic0 = "0x" + sel.toString(16).padStart(8, "0") + "0".repeat(56);
+    const topic0 = this.getEventTopic(eventName);
 
     const logs = await this.provider.getLogs({
       address: this.address,
@@ -315,7 +316,9 @@ export class Contract {
   /** Get the topic0 hash for an event name (for building custom filters). */
   getEventTopic(eventName: string): string {
     const sel = computeSelector(eventName);
-    return "0x" + sel.toString(16).padStart(8, "0") + "0".repeat(56);
+    const buf = Buffer.alloc(4);
+    buf.writeUInt32LE(sel);
+    return "0x" + buf.toString("hex") + "0".repeat(56);
   }
 
   private decodeEventLog(ev: AbiEvent, log: import("./types").Log): EventLog {

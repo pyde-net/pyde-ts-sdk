@@ -159,8 +159,14 @@ export class Provider {
   // ========================================================================
 
   async getReceipt(txHash: string): Promise<Receipt | null> {
-    const result = await this.rpc("pyde_getTransactionReceipt", [txHash]);
-    return result ? (result as Receipt) : null;
+    try {
+      const result = await this.rpc("pyde_getTransactionReceipt", [txHash]);
+      return result ? (result as Receipt) : null;
+    } catch (e: any) {
+      // "receipt not found" is expected during polling — treat as null
+      if (e?.rpcError?.message?.includes("receipt not found")) return null;
+      throw e;
+    }
   }
 
   /** Poll for receipt until available or timeout. */
