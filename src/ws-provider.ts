@@ -88,7 +88,7 @@ export class WebSocketProvider {
   }
 
   private handleSubscription(data: any): void {
-    const subId = data.params?.subscription;
+    const subId = String(data.params?.subscription);
     const result = data.params?.result;
     const eventType = this.subscriptions.get(subId);
     if (eventType && result) {
@@ -104,7 +104,7 @@ export class WebSocketProvider {
   async onBlock(listener: (header: BlockHeader) => void): Promise<void> {
     await this.ready;
     const subId = await this.rpc("pyde_subscribe", ["newHeads"]);
-    this.subscriptions.set(subId as string, "block");
+    this.subscriptions.set(String(subId), "block");
     this.addListener("block", listener);
   }
 
@@ -112,7 +112,7 @@ export class WebSocketProvider {
   async onPendingTransaction(listener: (txHash: string) => void): Promise<void> {
     await this.ready;
     const subId = await this.rpc("pyde_subscribePending", []);
-    this.subscriptions.set(subId as string, "pending");
+    this.subscriptions.set(String(subId), "pending");
     this.addListener("pending", listener);
   }
 
@@ -120,7 +120,7 @@ export class WebSocketProvider {
   async onLogs(filter: LogFilter, listener: (log: Log) => void): Promise<void> {
     await this.ready;
     const subId = await this.rpc("pyde_subscribeLogs", [filter]);
-    this.subscriptions.set(subId as string, "logs");
+    this.subscriptions.set(String(subId), "logs");
     this.addListener("logs", listener);
   }
 
