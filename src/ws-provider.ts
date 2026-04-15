@@ -49,52 +49,60 @@ export class WebSocketProvider {
   private connect(): void {
     this.ws = new WebSocket(this.url);
 
-    this.ws.onopen = () => {
-      this._resolveReady();
-    };
+    // IMPORTANT: In Node 22's experimental WebSocket, addEventListener("message")
+    // must be registered AFTER the "open" event to reliably receive all messages.
+    // Registering before "open" causes subscription notifications to be silently dropped.
+    // Use only property assignments (no addEventListener) for Node 22
+    // experimental WebSocket compatibility. Mixing addEventListener with
+    // property assignments causes message handler to silently drop notifications.
+    const subs = this.subscriptions;
+    const listeners = this.listeners;
+    const pending = this.pending;
+    const resolveReady = () => this._resolveReady();
+    const rejectReady = (e: Error) => this._rejectReady(e);
 
-    this.ws.onmessage = (event: MessageEvent) => {
+    this.ws.onmessage = function(event: MessageEvent) {
       try {
-        const data = JSON.parse(typeof event.data === "string" ? event.data : event.data.toString());
-        // Subscription notification
+        const data = JSON.parse(event.data as string);
         if (data.method && data.method.includes("subscription")) {
-          this.handleSubscription(data);
+          const subId = String(data.params?.subscription);
+          const result = data.params?.result;
+          const eventType = subs.get(subId);
+          if (eventType && result) {
+            const set = listeners.get(eventType);
+            if (set) for (const fn of set) fn(result);
+          }
           return;
         }
-        // RPC response
-        const pending = this.pending.get(data.id);
-        if (pending) {
-          this.pending.delete(data.id);
+        const p = pending.get(data.id);
+        if (p) {
+          pending.delete(data.id);
           if (data.error) {
-            pending.reject(new RpcError(JSON.stringify(data.error), data.error));
+            p.reject(new RpcError(JSON.stringify(data.error), data.error));
           } else {
-            pending.resolve(data.result);
+            p.resolve(data.result);
           }
         }
-      } catch { /* ignore malformed messages */ }
+      } catch { /* ignore */ }
     };
 
+    this.ws.onopen = () => { resolveReady(); };
+
     this.ws.onerror = () => {
-      this._rejectReady(new ConnectionError("WebSocket connection failed"));
+      rejectReady(new ConnectionError("WebSocket connection failed"));
     };
 
     this.ws.onclose = () => {
-      // Reject any pending requests
-      for (const [, p] of this.pending) {
+      for (const [, p] of pending) {
         p.reject(new ConnectionError("WebSocket closed"));
       }
-      this.pending.clear();
+      pending.clear();
     };
   }
 
-  private handleSubscription(data: any): void {
-    const subId = String(data.params?.subscription);
-    const result = data.params?.result;
-    const eventType = this.subscriptions.get(subId);
-    if (eventType && result) {
-      this.emit(eventType, result);
-    }
-  }
+  // Message handling is inline in connect() for Node 22 experimental WebSocket
+  // compatibility. Using class methods with `this` caused subscription notifications
+  // to be silently dropped due to a bug in Node 22's WebSocket implementation.
 
   // ========================================================================
   // Event subscriptions
