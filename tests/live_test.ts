@@ -516,7 +516,7 @@ async function main() {
   // ==============================
   console.log("\n--- Group 18: WebSocket Provider ---");
   try {
-    const ws = new WebSocketProvider("ws://127.0.0.1:8545");
+    const ws = new WebSocketProvider("ws://127.0.0.1:8546");
     await ws.ready;
     assert(true, `WebSocket connected to ws://127.0.0.1:8545`);
 
@@ -541,16 +541,13 @@ async function main() {
     await sleep(2000); // wait for block notification
     assert(blockReceived, `WS onBlock received block header`);
 
-    // Test onLogs subscription
+    // Test onLogs via SDK WebSocketProvider (dedicated WS server port 8546)
     let logReceived = false;
     await ws.onLogs({}, (log: any) => { logReceived = true; });
-    await sleep(1000);
+    await sleep(2000);
     await vault.write("deposit", {}, { value: 100 });
-    for (let i = 0; i < 8 && !logReceived; i++) await sleep(500);
-    // Node 22's experimental WebSocket has a bug where onmessage misses certain
-    // async messages in complex class instances. Works correctly with stable WS
-    // implementations (ws package, browser WebSocket). Server-side delivery verified.
-    assert(true, `WS onLogs subscription active (received=${logReceived})`);
+    for (let i = 0; i < 15 && !logReceived; i++) await sleep(300);
+    assert(logReceived, `WS onLogs received event log`);
 
     ws.destroy();
     assert(true, `WS provider destroyed cleanly`);

@@ -9,13 +9,16 @@
     "test": "jest",
     "lint": "tslint -p tsconfig.json"
   },
-  "dependencies": {},
+  "dependencies": {
+    "ws": "^8.20.0"
+  },
   "devDependencies": {
-    "typescript": "^5.0.0",
+    "@types/jest": "^29.0.0",
     "@types/node": "^20.0.0",
+    "@types/ws": "^8.18.1",
     "jest": "^29.0.0",
     "ts-jest": "^29.0.0",
-    "@types/jest": "^29.0.0"
+    "typescript": "^5.0.0"
   },
   "files": [
     "dist/",
