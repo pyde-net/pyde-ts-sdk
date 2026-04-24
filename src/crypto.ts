@@ -1,7 +1,7 @@
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const wasm = require("../wasm/pyde_crypto_wasm");
 
-import { TxFields } from "./types";
+import { AccessEntry, TxFields } from "./types";
 
 export interface Keypair {
   publicKey: string;
@@ -51,4 +51,76 @@ export function hashTransaction(tx: TxFields): string {
 /** Sign a transaction and return wire-encoded signed tx as hex. */
 export function signTransaction(tx: TxFields, secretKeyHex: string): string {
   return wasm.signTransaction(JSON.stringify(tx), secretKeyHex);
+}
+
+// ============================================================================
+// Threshold encryption (MEV-protected submission)
+// ============================================================================
+
+/**
+ * Encrypt bytes against the committee's threshold public key. Returns
+ * hex of `ThresholdCiphertext::to_wire_bytes()` — usable directly by
+ * anything that needs to embed an MEV-protected payload. Most callers
+ * want `buildRawEncryptedTx` instead, which chains this with the
+ * full EncryptedTx assembly + signing.
+ */
+export function thresholdEncrypt(
+  thresholdPkHex: string,
+  payloadHex: string
+): string {
+  return wasm.thresholdEncrypt(thresholdPkHex, payloadHex);
+}
+
+/** Params for `buildRawEncryptedTx`. All addresses + hashes are
+ * `0x`-prefixed hex. */
+export interface EncryptedTxParams {
+  /** Committee threshold public key (hex) — fetch via
+   *  `Provider.getThresholdPublicKey()`. Cacheable per session. */
+  thresholdPk: string;
+  /** Sender address (32-byte hex). */
+  sender: string;
+  /** Per-sender transaction counter. */
+  nonce: number;
+  /** Gas budget for the decrypted inner tx. */
+  gasLimit: number;
+  /** Optional access list. Plaintext on the wire — used by the
+   *  parallel scheduler to place the tx without blocking. Populate
+   *  via `Provider.createAccessList(...)` for non-trivial calls. */
+  accessList?: AccessEntry[];
+  /** Optional slot-based expiry. */
+  deadline?: number | null;
+  /** Chain ID (31337 for local devnet). */
+  chainId: number;
+  /** Recipient address (32-byte hex). Encrypted on the wire. */
+  to: string;
+  /** Value in quanta, decimal string (bigint-safe). Encrypted. */
+  value: string;
+  /** Call data (hex). Encrypted. Defaults to empty. */
+  calldata?: string;
+}
+
+/**
+ * Client-side EncryptedTx builder — threshold-encrypts the private
+ * fields, assembles + FALCON-signs the envelope, returns wire bytes
+ * ready for `Provider.sendRawEncryptedTransaction`.
+ *
+ * The node never sees plaintext `(to, value, calldata)` and the
+ * signature binds to a hash the CLIENT computed (a property the
+ * server-side `pyde_sendEncryptedTransaction` cannot achieve).
+ *
+ * Wire format matches `pyde-mempool::encrypted::EncryptedTx`
+ * byte-for-byte — the Rust native round-trip test in
+ * `pyde-crypto-wasm` guards against drift.
+ */
+export function buildRawEncryptedTx(
+  params: EncryptedTxParams,
+  secretKeyHex: string
+): string {
+  // Pre-fill default for calldata so the WASM side never sees
+  // `undefined`.
+  const withDefaults: EncryptedTxParams = {
+    calldata: "0x",
+    ...params,
+  };
+  return wasm.buildRawEncryptedTx(JSON.stringify(withDefaults), secretKeyHex);
 }
