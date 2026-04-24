@@ -122,6 +122,12 @@ export interface BlockHeader {
   txCount?: string;
 }
 
+export interface AccessEntry {
+  address: string;
+  reads: string[];
+  writes: string[];
+}
+
 export interface TxFields {
   from: string;
   to: string;
@@ -131,6 +137,7 @@ export interface TxFields {
   nonce: number;
   chainId: number;
   txType: number;
+  accessList?: AccessEntry[];
 }
 
 /** Pending transaction handle with wait(). */

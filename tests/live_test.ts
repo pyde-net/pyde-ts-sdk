@@ -574,24 +574,27 @@ async function main() {
     await wallet0.sendCall(provider, cxAddr!, setBig);
     const getBig = new ContractCall("get_big").build();
     const bigHex = await provider.call(cxAddr!, getBig);
-    const bigVal = BigInt(bigHex);  // parse BE hex directly
+    // Wide return is raw LE bytes hex — decode as u256 LE
+    const bigBuf = Buffer.from(bigHex.replace("0x", ""), "hex");
+    let bigVal = 0n;
+    for (let i = 0; i < Math.min(4, Math.ceil(bigBuf.length / 8)); i++) {
+      if (i * 8 + 8 <= bigBuf.length) bigVal |= bigBuf.readBigUInt64LE(i * 8) << BigInt(i * 64);
+    }
     assert(bigVal === 123456789n, `u256 set/get = ${bigVal}`);
   } catch (e: any) {
     console.log(`  [FAIL] u256: ${e.message.slice(0, 60)}`);
     failed++;
   }
 
-  // Address (low-level — RPC returns BE hex of the U256 address value)
+  // Address (low-level — RPC returns raw LE bytes as hex)
   try {
     const setAddr = new ContractCall("set_addr").argAddress(account1.address).build();
     await wallet0.sendCall(provider, cxAddr!, setAddr);
     const getAddr = new ContractCall("get_addr").build();
     const addrHex = await provider.call(cxAddr!, getAddr);
-    // Address is returned as 0x{u256_hex}. Pad to 64 chars to compare with the LE address.
-    const addrPadded = addrHex.replace("0x", "").padStart(64, "0");
-    // The address is stored as LE bytes in the VM, but returned as BE hex from the RPC.
-    // Just verify it's non-zero and has content.
-    assert(addrPadded.length === 64 && addrPadded !== "0".repeat(64), `Address stored and read back (non-zero)`);
+    // Address returned as raw LE hex — should match account1.address directly
+    const returned = "0x" + addrHex.replace("0x", "").slice(0, 64);
+    assert(returned.toLowerCase() === account1.address.toLowerCase(), `Address matches: ${returned.slice(0, 20)}...`);
   } catch (e: any) {
     console.log(`  [FAIL] Address: ${e.message.slice(0, 60)}`);
     failed++;

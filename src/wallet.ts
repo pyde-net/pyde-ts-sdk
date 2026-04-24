@@ -190,7 +190,17 @@ export class Wallet extends AbstractSigner {
       val = value ?? 0;
     }
     const [nonce, chainId] = await p.getNonceAndChainId(this.address);
-    const tx: TxFields = { from: this.address, to, value: val.toString(), data, gasLimit, nonce, chainId, txType: 0 };
+
+    // Auto-fetch access list for parallel scheduling
+    let accessList: import("./types").AccessEntry[] | undefined;
+    try {
+      accessList = await p.createAccessList({
+        to, data, from: this.address,
+        value: BigInt(val) > 0n ? "0x" + BigInt(val).toString(16) : undefined,
+      });
+    } catch { /* non-critical — proceed without */ }
+
+    const tx: TxFields = { from: this.address, to, value: val.toString(), data, gasLimit, nonce, chainId, txType: 0, accessList };
     return p.sendAndWait(this.signTransaction(tx));
   }
 

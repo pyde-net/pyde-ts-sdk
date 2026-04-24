@@ -129,6 +129,24 @@ export class Provider {
     return n;
   }
 
+  /** Simulate a call and return the access list (storage keys touched).
+   *  Used internally by wallet.sendCall() to enable parallel scheduling. */
+  async createAccessList(params: {
+    to: string;
+    data: string;
+    from?: string;
+    value?: string;
+    gas?: string;
+  }): Promise<import("./types").AccessEntry[]> {
+    const result = await this.rpc("pyde_createAccessList", [params]) as any;
+    if (!result?.accessList) return [];
+    return (result.accessList as any[]).map((e: any) => ({
+      address: e.address ?? "",
+      reads: e.reads ?? [],
+      writes: e.writes ?? [],
+    }));
+  }
+
   // ========================================================================
   // Transaction submission
   // ========================================================================
@@ -145,6 +163,71 @@ export class Provider {
     } catch {
       hash = s;
     }
+    const provider = this;
+    return {
+      hash,
+      async wait(timeoutMs = 10000): Promise<Receipt> {
+        return provider.waitForReceipt(hash, timeoutMs);
+      },
+    };
+  }
+
+  // ========================================================================
+  // MEV-protected (encrypted) transaction submission
+  // ========================================================================
+
+  /**
+   * Fetch the committee's threshold public key (hex-encoded wire
+   * bytes). Cache this per session — the key only rotates when the
+   * committee does, and rotation preserves the public key (only
+   * the shares rotate).
+   *
+   * Intended pairing with `sendRawEncryptedTransaction` below: the
+   * client uses this pubkey to threshold-encrypt `(to, value,
+   * calldata)` locally, FALCON-signs `EncryptedTx.hash()`, and
+   * submits the serialized frame. Plaintext never leaves the
+   * client — a curious RPC operator cannot front-run.
+   *
+   * Full client-side construction requires `threshold_encrypt` +
+   * `EncryptedTx` helpers which are not yet in the shipped WASM
+   * bundle (TODO: extend `pyde-crypto-wasm` + rebuild
+   * `wasm/pyde_crypto_wasm*`). For now this method exposes the
+   * RPC so downstream tooling that builds frames out-of-band
+   * (Rust SDK, CLI) can submit through the TS SDK too.
+   */
+  async getThresholdPublicKey(): Promise<string> {
+    const result = await this.rpc("pyde_getThresholdPublicKey", []);
+    if (typeof result !== "string") {
+      throw new Error(
+        `pyde_getThresholdPublicKey returned non-string: ${JSON.stringify(result)}`
+      );
+    }
+    return result;
+  }
+
+  /**
+   * Submit a client-built, client-signed `EncryptedTx` (hex-encoded
+   * wire bytes). This is the canonical MEV-protected submission path
+   * — the node never sees plaintext and the signature binds to a
+   * ciphertext the client produced (unlike the legacy server-side
+   * `pyde_sendEncryptedTransaction` path).
+   *
+   * The `encTxHex` arg must be the output of
+   * `EncryptedTx::to_bytes` hex-encoded with a `0x` prefix. Today
+   * that's produced by the Rust SDK's
+   * `build_raw_encrypted_tx`. A WASM-bundle upgrade will make it
+   * available to pure-TS callers too.
+   *
+   * Returns a `TransactionResponse` whose `.hash` is the encrypted
+   * tx hash; use `.wait()` to poll for the decrypted receipt.
+   */
+  async sendRawEncryptedTransaction(
+    encTxHex: string
+  ): Promise<TransactionResponse> {
+    const result = await this.rpc("pyde_sendRawEncryptedTransaction", [
+      encTxHex,
+    ]);
+    const hash = result as string;
     const provider = this;
     return {
       hash,
