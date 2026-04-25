@@ -9,7 +9,7 @@ export { isHexString, hexlify, getBytes, toBeHex, concat, zeroPadValue, stripZer
 export { PydeError, CallExceptionError, ConnectionError, TimeoutError, InvalidArgumentError, InsufficientFundsError, RpcError, SigningError, isError, isCallException } from "./errors";
 export type { ErrorCode } from "./errors";
 export { Contract, ContractCall, DeployData, Interface, type ContractReceipt, type EventLog, decodeU64, decodeI64, decodeU128, decodeI128, decodeU256, decodeI256, decodeBool, decodeAddress, decodeString, decodeBytes, decodeVecU64, decodeVecBool, decodeVecAddress } from "./contract";
-export { generateKeypair, deriveAddress, signMessage, verifySignature, poseidon2Hash, computeSelector, hashTransaction, signTransaction, thresholdEncrypt, buildRawEncryptedTx } from "./crypto";
+export { generateKeypair, deriveAddress, signMessage, verifySignature, poseidon2Hash, computeSelector, hashTransaction, signTransaction, encodeRegisterPubkeyTx, thresholdEncrypt, buildRawEncryptedTx } from "./crypto";
 export type { EncryptedTxParams } from "./crypto";
 export type { Receipt, Log, LogFilter, BlockHeader, TxFields, TransactionInfo, TransactionResponse, FeeData, CallOverrides } from "./types";
 export { ReceiptUtils } from "./types";

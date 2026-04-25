@@ -53,6 +53,19 @@ export function signTransaction(tx: TxFields, secretKeyHex: string): string {
   return wasm.signTransaction(JSON.stringify(tx), secretKeyHex);
 }
 
+/**
+ * Wire-encode a `TransactionType::RegisterPubkey` (audit 229) tx
+ * without signing. The address-derivation check (`from ==
+ * Poseidon2(data)`) IS the proof of pubkey ownership for this
+ * tx type, so a FALCON sig is neither needed nor accepted.
+ *
+ * Refuses to encode any other tx type — accidental misuse on a
+ * signed-tx path would be a hard-to-debug protocol violation.
+ */
+export function encodeRegisterPubkeyTx(tx: TxFields): string {
+  return wasm.encodeRegisterPubkeyTx(JSON.stringify(tx));
+}
+
 // ============================================================================
 // Threshold encryption (MEV-protected submission)
 // ============================================================================

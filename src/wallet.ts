@@ -140,6 +140,46 @@ export class Wallet extends AbstractSigner {
     return p;
   }
 
+  /**
+   * Register this wallet's FALCON public key on-chain (audit 229).
+   *
+   * Required ONCE per address before the wallet can submit any
+   * signed tx. Pyde uses post-quantum FALCON-512 signatures, which
+   * (unlike ECDSA) don't support pubkey recovery from a sig — so
+   * the chain needs to know each address's pubkey separately. The
+   * `RegisterPubkey` tx is unsigned and free; the address-derivation
+   * check (`from == Poseidon2(pubkey)`) is the proof of pubkey
+   * ownership.
+   *
+   * Pre-conditions enforced by the chain:
+   *   - This account must exist with `balance > 0` (someone has to
+   *     send you funds first).
+   *   - The account must not be already registered.
+   *
+   * Typical first-tx flow for a new user:
+   *   1. Generate wallet locally (`Wallet.generate()`).
+   *   2. Receive funds at `wallet.address` from a faucet or
+   *      another user.
+   *   3. Call `await wallet.registerPubkey(provider)` once.
+   *   4. From now on, `transfer` / `sendCall` etc. work normally.
+   */
+  async registerPubkey(provider?: Provider): Promise<Receipt> {
+    const p = this.resolveProvider(provider);
+    const [nonce, chainId] = await p.getNonceAndChainId(this.address);
+    const tx: TxFields = {
+      from: this.address,
+      to: "0x" + "00".repeat(32),
+      value: "0",
+      data: this.publicKey, // 897 raw FALCON pubkey bytes
+      gasLimit: 0,
+      nonce,
+      chainId,
+      txType: 13, // TransactionType::RegisterPubkey
+    };
+    const signedHex = crypto.encodeRegisterPubkeyTx(tx);
+    return p.sendAndWait(signedHex);
+  }
+
   /** Build, sign, send a native transfer. Returns receipt. */
   async transfer(providerOrTo: Provider | string, toOrAmount?: string | bigint | number, amount?: bigint | number): Promise<Receipt> {
     let p: Provider;

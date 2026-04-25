@@ -1,0 +1,13 @@
+{
+  "name": "pyde-crypto-wasm",
+  "description": "WASM bindings for Pyde cryptographic primitives",
+  "version": "0.1.0",
+  "license": "Apache-2.0",
+  "files": [
+    "pyde_crypto_wasm_bg.wasm",
+    "pyde_crypto_wasm.js",
+    "pyde_crypto_wasm.d.ts"
+  ],
+  "main": "pyde_crypto_wasm.js",
+  "types": "pyde_crypto_wasm.d.ts"
+}
