@@ -118,7 +118,7 @@ export class Wallet extends AbstractSigner {
   // ========================================================================
 
   /** Generate a random FALCON-512 private key hex (pk + sk combined).
-   *  Use with Wallet.fromPrivateKey() to create a wallet later. */
+   * Use with Wallet.fromPrivateKey() to create a wallet later. */
   static generatePrivateKey(): string {
     return Wallet.generate().exportPrivateKey();
   }
@@ -141,7 +141,7 @@ export class Wallet extends AbstractSigner {
   }
 
   /**
-   * Register this wallet's FALCON public key on-chain (audit 229).
+   * Register this wallet's FALCON public key on-chain.
    *
    * Required ONCE per address before the wallet can submit any
    * signed tx. Pyde uses post-quantum FALCON-512 signatures, which
@@ -152,16 +152,16 @@ export class Wallet extends AbstractSigner {
    * ownership.
    *
    * Pre-conditions enforced by the chain:
-   *   - This account must exist with `balance > 0` (someone has to
-   *     send you funds first).
-   *   - The account must not be already registered.
+   * - This account must exist with `balance > 0` (someone has to
+   * send you funds first).
+   * - The account must not be already registered.
    *
    * Typical first-tx flow for a new user:
-   *   1. Generate wallet locally (`Wallet.generate()`).
-   *   2. Receive funds at `wallet.address` from a faucet or
-   *      another user.
-   *   3. Call `await wallet.registerPubkey(provider)` once.
-   *   4. From now on, `transfer` / `sendCall` etc. work normally.
+   * 1. Generate wallet locally (`Wallet.generate()`).
+   * 2. Receive funds at `wallet.address` from a faucet or
+   * another user.
+   * 3. Call `await wallet.registerPubkey(provider)` once.
+   * 4. From now on, `transfer` / `sendCall` etc. work normally.
    */
   async registerPubkey(provider?: Provider): Promise<Receipt> {
     const p = this.resolveProvider(provider);
@@ -245,7 +245,7 @@ export class Wallet extends AbstractSigner {
   }
 
   /** Build, sign, send a contract deployment. Returns receipt.
-   *  Pass options.value for payable constructors. */
+   * Pass options.value for payable constructors. */
   async deploy(
     providerOrData: Provider | string,
     dataOrOptions?: string | { gasLimit?: number; value?: bigint | number | string },

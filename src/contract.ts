@@ -6,7 +6,7 @@ import { Receipt } from "./types";
 /** Receipt from a Contract.write() call — extends Receipt with ABI-aware decoding. */
 export interface ContractReceipt extends Receipt {
   /** Decode returnData using the ABI return type. Returns null if returnData is absent.
-   *  Note: returnData is ephemeral — only available right after tx execution. */
+   * Note: returnData is ephemeral — only available right after tx execution. */
   decodeReturnData(): any;
 }
 
@@ -183,7 +183,7 @@ export class Contract {
   }
 
   /** Static-call ANY function (view or setter) without sending a tx.
-   *  Simulates execution and returns the decoded return value. */
+   * Simulates execution and returns the decoded return value. */
   async simulate(method: string, args: Record<string, any> = {}): Promise<any> {
     return this.read(method, args);
   }
@@ -199,8 +199,8 @@ export class Contract {
   // ========================================================================
 
   /** Send a state-changing transaction. Auto-encodes args, signs, sends, waits.
-   *  Pass options.value to send native tokens (validates payable from ABI).
-   *  Returns a ContractReceipt with a decodeReturnData() method. */
+   * Pass options.value to send native tokens (validates payable from ABI).
+   * Returns a ContractReceipt with a decodeReturnData() method. */
   async write(
     method: string,
     args: Record<string, any> = {},
@@ -278,7 +278,7 @@ export class Contract {
    * ```ts
    * const transfers = await contract.queryFilter("Transfer", 0, 1000);
    * for (const e of transfers) {
-   *   console.log(e.name, e.args.from, e.args.to, e.args.amount);
+   * console.log(e.name, e.args.from, e.args.to, e.args.amount);
    * }
    * ```
    */
@@ -1008,8 +1008,8 @@ export class ContractCall {
    * .argVecOf(2, b => b.argString("alice").argString("bob"))
    * // Vec<Struct>
    * .argVecOf(2, b => b
-   *   .argStruct(s => s.argString("alice").argU64(25))
-   *   .argStruct(s => s.argString("bob").argU64(30)))
+   * .argStruct(s => s.argString("alice").argU64(25))
+   * .argStruct(s => s.argString("bob").argU64(30)))
    * ```
    */
   argVecOf(count: number, buildFn: (b: ContractCall) => ContractCall): this {
@@ -1200,13 +1200,13 @@ export function decodeVecAddress(hex: string): string[] {
  * ```ts
  * // From artifact with named constructor args (recommended)
  * const data = DeployData.fromArtifact("out/Counter.json", {
- *   initial_supply: 1000,
- *   name: "MyToken",
+ * initial_supply: 1000,
+ * name: "MyToken",
  * }).build();
  *
  * // From raw bytecodes with manual args
  * const data = new DeployData(constructorHex, runtimeHex)
- *   .argU64(1000).build();
+ * .argU64(1000).build();
  * ```
  */
 export class DeployData {
@@ -1220,7 +1220,7 @@ export class DeployData {
   }
 
   /** Load from artifact JSON file with ABI-validated constructor args.
-   *  Pass {} if the constructor takes no args. */
+   * Pass {} if the constructor takes no args. */
   static fromArtifact(artifactPath: string, args: Record<string, any> = {}): DeployData {
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     const fs = require("fs");

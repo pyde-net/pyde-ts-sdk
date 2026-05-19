@@ -587,9 +587,9 @@ describe("Vec decoders", () => {
   test("decodeVecU64", () => {
     // [byte_len:8][count:8][cap:8][elem0:8][elem1:8]
     const buf = Buffer.alloc(40);
-    buf.writeBigUInt64LE(32n, 0);  // byte_len = 16 + 16
-    buf.writeBigUInt64LE(2n, 8);   // count
-    buf.writeBigUInt64LE(2n, 16);  // cap
+    buf.writeBigUInt64LE(32n, 0); // byte_len = 16 + 16
+    buf.writeBigUInt64LE(2n, 8); // count
+    buf.writeBigUInt64LE(2n, 16); // cap
     buf.writeBigUInt64LE(100n, 24);
     buf.writeBigUInt64LE(200n, 32);
     expect(decodeVecU64("0x" + buf.toString("hex"))).toEqual([100n, 200n]);

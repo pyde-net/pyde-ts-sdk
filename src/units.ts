@@ -5,8 +5,8 @@ const PYDE_DECIMALS = 9;
  * Parse a human-readable token amount to raw integer units.
  *
  * ```ts
- * parseUnits("1.5", 9)   // 1500000000n
- * parseUnits("100", 18)  // 100000000000000000000n
+ * parseUnits("1.5", 9) // 1500000000n
+ * parseUnits("100", 18) // 100000000000000000000n
  * parseUnits("0.001", 9) // 1000000n
  * ```
  */
@@ -41,9 +41,9 @@ export function parseUnits(value: string, decimals: number): bigint {
  * Format raw integer units to a human-readable token amount.
  *
  * ```ts
- * formatUnits(1500000000n, 9)   // "1.5"
- * formatUnits(1000000n, 9)      // "0.001"
- * formatUnits(0n, 9)            // "0.0"
+ * formatUnits(1500000000n, 9) // "1.5"
+ * formatUnits(1000000n, 9) // "0.001"
+ * formatUnits(0n, 9) // "0.0"
  * ```
  */
 export function formatUnits(

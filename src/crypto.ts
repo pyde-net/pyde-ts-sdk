@@ -54,7 +54,7 @@ export function signTransaction(tx: TxFields, secretKeyHex: string): string {
 }
 
 /**
- * Wire-encode a `TransactionType::RegisterPubkey` (audit 229) tx
+ * Wire-encode a `TransactionType::RegisterPubkey` tx
  * without signing. The address-derivation check (`from ==
  * Poseidon2(data)`) IS the proof of pubkey ownership for this
  * tx type, so a FALCON sig is neither needed nor accepted.
@@ -88,7 +88,7 @@ export function thresholdEncrypt(
  * `0x`-prefixed hex. */
 export interface EncryptedTxParams {
   /** Committee threshold public key (hex) — fetch via
-   *  `Provider.getThresholdPublicKey()`. Cacheable per session. */
+   * `Provider.getThresholdPublicKey()`. Cacheable per session. */
   thresholdPk: string;
   /** Sender address (32-byte hex). */
   sender: string;
@@ -97,8 +97,8 @@ export interface EncryptedTxParams {
   /** Gas budget for the decrypted inner tx. */
   gasLimit: number;
   /** Optional access list. Plaintext on the wire — used by the
-   *  parallel scheduler to place the tx without blocking. Populate
-   *  via `Provider.createAccessList(...)` for non-trivial calls. */
+   * parallel scheduler to place the tx without blocking. Populate
+   * via `Provider.createAccessList(...)` for non-trivial calls. */
   accessList?: AccessEntry[];
   /** Optional slot-based expiry. */
   deadline?: number | null;

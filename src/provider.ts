@@ -130,7 +130,7 @@ export class Provider {
   }
 
   /** Simulate a call and return the access list (storage keys touched).
-   *  Used internally by wallet.sendCall() to enable parallel scheduling. */
+   * Used internally by wallet.sendCall() to enable parallel scheduling. */
   async createAccessList(params: {
     to: string;
     data: string;
@@ -290,9 +290,9 @@ export class Provider {
    *
    * ```ts
    * const [balance, nonce, chainId] = await provider.batch([
-   *   { method: "pyde_getBalance", params: [addr] },
-   *   { method: "pyde_getTransactionCount", params: [addr] },
-   *   { method: "pyde_chainId", params: [] },
+   * { method: "pyde_getBalance", params: [addr] },
+   * { method: "pyde_getTransactionCount", params: [addr] },
+   * { method: "pyde_chainId", params: [] },
    * ]);
    * ```
    */

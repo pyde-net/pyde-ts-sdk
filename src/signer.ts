@@ -7,9 +7,9 @@ import { TxFields } from "./types";
  *
  * ```ts
  * class LedgerSigner extends AbstractSigner {
- *   get address() { return this.ledgerAddress; }
- *   async signTransaction(tx: TxFields) { return this.ledger.sign(tx); }
- *   async sign(messageHex: string) { return this.ledger.signMessage(messageHex); }
+ * get address() { return this.ledgerAddress; }
+ * async signTransaction(tx: TxFields) { return this.ledger.sign(tx); }
+ * async sign(messageHex: string) { return this.ledger.signMessage(messageHex); }
  * }
  * ```
  */

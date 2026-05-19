@@ -3,7 +3,7 @@
  * Covers: Provider queries, Wallet signing, transfers, contract deploy + calls.
  *
  * Usage: npx ts-node tests/live_test.ts
- *    or: node -e "require('./dist/index.js')" (after tsc)
+ * or: node -e "require('./dist/index.js')" (after tsc)
  */
 
 import {
@@ -34,10 +34,10 @@ let failed = 0;
 
 function assert(cond: boolean, msg: string) {
   if (cond) {
-    console.log(`  [PASS] ${msg}`);
+    console.log(` [PASS] ${msg}`);
     passed++;
   } else {
-    console.log(`  [FAIL] ${msg}`);
+    console.log(` [FAIL] ${msg}`);
     failed++;
   }
 }
@@ -184,7 +184,7 @@ async function main() {
     const count99 = decodeU64(countHex3);
     assert(count99 === 99n, `count after set = ${count99}`);
   } catch (e: any) {
-    console.log(`  [FAIL] count after set reverted: ${e.message}`);
+    console.log(` [FAIL] count after set reverted: ${e.message}`);
     failed++;
   }
 
@@ -196,7 +196,7 @@ async function main() {
     const count100 = decodeU64(countHex5);
     assert(count100 === 100n, `count after second increment = ${count100}`);
   } catch (e: any) {
-    console.log(`  [FAIL] second increment: ${e.message}`);
+    console.log(` [FAIL] second increment: ${e.message}`);
     failed++;
   }
 
@@ -205,7 +205,7 @@ async function main() {
     const gasEst = await provider.estimateGas(counterAddr!, incrCall);
     assert(gasEst > 0, `estimateGas(increment) = ${gasEst}`);
   } catch (e: any) {
-    console.log(`  [FAIL] estimateGas: ${e.message}`);
+    console.log(` [FAIL] estimateGas: ${e.message}`);
     failed++;
   }
 
@@ -409,7 +409,7 @@ async function main() {
       assert(depositLogs[0].name === "Deposit", `queryFilter event name = ${depositLogs[0].name}`);
     }
   } catch (e: any) {
-    console.log(`  [FAIL] queryFilter("Deposit"): ${e.message.slice(0, 60)}`);
+    console.log(` [FAIL] queryFilter("Deposit"): ${e.message.slice(0, 60)}`);
     failed++;
   }
 
@@ -417,7 +417,7 @@ async function main() {
     const withdrawLogs = await vault.queryFilter("Withdraw");
     assert(withdrawLogs.length >= 1, `queryFilter("Withdraw") returned ${withdrawLogs.length} events`);
   } catch (e: any) {
-    console.log(`  [FAIL] queryFilter("Withdraw"): ${e.message.slice(0, 60)}`);
+    console.log(` [FAIL] queryFilter("Withdraw"): ${e.message.slice(0, 60)}`);
     failed++;
   }
 
@@ -429,7 +429,7 @@ async function main() {
     const gasIncr = await contract.estimateGas("increment");
     assert(gasIncr > 0 && gasIncr < 10_000_000, `contract.estimateGas("increment") = ${gasIncr}`);
   } catch (e: any) {
-    console.log(`  [FAIL] estimateGas("increment"): ${e.message.slice(0, 60)}`);
+    console.log(` [FAIL] estimateGas("increment"): ${e.message.slice(0, 60)}`);
     failed++;
   }
 
@@ -437,7 +437,7 @@ async function main() {
     const gasDeposit = await vault.estimateGas("deposit");
     assert(gasDeposit > 0 && gasDeposit < 10_000_000, `vault.estimateGas("deposit") = ${gasDeposit}`);
   } catch (e: any) {
-    console.log(`  [FAIL] estimateGas("deposit"): ${e.message.slice(0, 60)}`);
+    console.log(` [FAIL] estimateGas("deposit"): ${e.message.slice(0, 60)}`);
     failed++;
   }
 
@@ -552,7 +552,7 @@ async function main() {
     ws.destroy();
     assert(true, `WS provider destroyed cleanly`);
   } catch (e: any) {
-    console.log(`  [FAIL] WebSocket: ${e.message.slice(0, 80)}`);
+    console.log(` [FAIL] WebSocket: ${e.message.slice(0, 80)}`);
     failed++;
   }
 
@@ -582,7 +582,7 @@ async function main() {
     }
     assert(bigVal === 123456789n, `u256 set/get = ${bigVal}`);
   } catch (e: any) {
-    console.log(`  [FAIL] u256: ${e.message.slice(0, 60)}`);
+    console.log(` [FAIL] u256: ${e.message.slice(0, 60)}`);
     failed++;
   }
 
@@ -596,7 +596,7 @@ async function main() {
     const returned = "0x" + addrHex.replace("0x", "").slice(0, 64);
     assert(returned.toLowerCase() === account1.address.toLowerCase(), `Address matches: ${returned.slice(0, 20)}...`);
   } catch (e: any) {
-    console.log(`  [FAIL] Address: ${e.message.slice(0, 60)}`);
+    console.log(` [FAIL] Address: ${e.message.slice(0, 60)}`);
     failed++;
   }
 
@@ -616,7 +616,7 @@ async function main() {
       assert(false, `String return too short: ${textBuf.length} bytes`);
     }
   } catch (e: any) {
-    console.log(`  [FAIL] String: ${e.message.slice(0, 60)}`);
+    console.log(` [FAIL] String: ${e.message.slice(0, 60)}`);
     failed++;
   }
 
@@ -641,7 +641,7 @@ async function main() {
       assert(false, `Vec return too short: ${numsBuf.length} bytes`);
     }
   } catch (e: any) {
-    console.log(`  [FAIL] Vec<u64>: ${e.message.slice(0, 60)}`);
+    console.log(` [FAIL] Vec<u64>: ${e.message.slice(0, 60)}`);
     failed++;
   }
 
@@ -670,7 +670,7 @@ async function main() {
     const zeroDeposit = await vault2.write("deposit", {}, { value: 0 });
     assert(zeroDeposit.success === true, `deposit with value=0 succeeded`);
   } catch (e: any) {
-    console.log(`  [FAIL] Payable constructor with value: ${e.message.slice(0, 60)}`);
+    console.log(` [FAIL] Payable constructor with value: ${e.message.slice(0, 60)}`);
     failed++;
   }
 
@@ -745,7 +745,7 @@ async function main() {
     });
     assert(gasWithOverride > 0, `estimateGas with overrides = ${gasWithOverride}`);
   } catch (e: any) {
-    console.log(`  [FAIL] estimateGas overrides: ${e.message.slice(0, 60)}`);
+    console.log(` [FAIL] estimateGas overrides: ${e.message.slice(0, 60)}`);
     failed++;
   }
 
@@ -780,9 +780,9 @@ async function main() {
   // Summary
   // ==============================
   console.log(`\n========== RESULTS ==========`);
-  console.log(`  Passed: ${passed}`);
-  console.log(`  Failed: ${failed}`);
-  console.log(`  Total:  ${passed + failed}`);
+  console.log(` Passed: ${passed}`);
+  console.log(` Failed: ${failed}`);
+  console.log(` Total: ${passed + failed}`);
   console.log(`==============================\n`);
 
   if (failed > 0) process.exit(1);

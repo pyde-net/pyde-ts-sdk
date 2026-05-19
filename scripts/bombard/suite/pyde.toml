@@ -1,0 +1,9 @@
+[project]
+name = "bombard-suite"
+version = "0.1.0"
+authors = []
+
+[compiler]
+optimize = true
+src = "src"
+out = "out"

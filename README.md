@@ -176,8 +176,8 @@ Get current network fee info (Pyde uses EIP-1559 with no tips).
 
 ```typescript
 const fees = await provider.getFeeData();
-console.log("Gas price:", fees.gasPrice);  // bigint (quanta per gas)
-console.log("Base fee:", fees.baseFee);    // same as gasPrice in Pyde
+console.log("Gas price:", fees.gasPrice); // bigint (quanta per gas)
+console.log("Base fee:", fees.baseFee); // same as gasPrice in Pyde
 ```
 
 ### Static Calls
@@ -224,8 +224,8 @@ The provider also supports configurable timeout, retries, and headers:
 
 ```typescript
 const provider = new Provider("http://127.0.0.1:8545", {
-  timeout: 10000,    // 10s timeout (default: 30s)
-  retries: 3,        // retry 3 times on failure (default: 0)
+  timeout: 10000, // 10s timeout (default: 30s)
+  retries: 3, // retry 3 times on failure (default: 0)
   headers: { "X-Api-Key": "my-key" },
 });
 ```
@@ -736,7 +736,7 @@ that auto-decodes using the ABI return type.
 
 ```typescript
 const receipt = await contract.write("deposit", { amount: 500 });
-console.log(receipt.success);           // true (standard receipt field)
+console.log(receipt.success); // true (standard receipt field)
 
 const val = receipt.decodeReturnData(); // auto-decoded from ABI (e.g., 42n)
 // Returns null if returnData is absent or function returns ()
@@ -839,10 +839,10 @@ Query and decode contract events using the ABI.
 // Query historical events (decoded with named args)
 const transfers = await contract.queryFilter("Transfer", 0, 1000);
 for (const e of transfers) {
-  console.log(e.name);           // "Transfer"
-  console.log(e.args.from);     // "0xaabb..."
-  console.log(e.args.to);       // "0xccdd..."
-  console.log(e.args.amount);   // 1000n
+  console.log(e.name); // "Transfer"
+  console.log(e.args.from); // "0xaabb..."
+  console.log(e.args.to); // "0xccdd..."
+  console.log(e.args.amount); // 1000n
 }
 
 // Parse a single raw log
@@ -1037,8 +1037,8 @@ try {
   // Type-safe error checking
   if (isCallException(e)) {
     console.log("Reverted! Gas:", e.gasUsed);
-    console.log("Reason:", e.reason);    // auto-decoded revert string (or null)
-    console.log("Data:", e.data);        // raw return data hex
+    console.log("Reason:", e.reason); // auto-decoded revert string (or null)
+    console.log("Data:", e.data); // raw return data hex
   }
 
   // Or check by error code
@@ -1067,32 +1067,32 @@ import {
 } from "pyde-ts-sdk";
 
 // Check if valid hex
-isHexString("0xdeadbeef");          // true
-isHexString("0xgg");                 // false
-isHexString("0xaabb", 2);           // true (2 bytes)
+isHexString("0xdeadbeef"); // true
+isHexString("0xgg"); // false
+isHexString("0xaabb", 2); // true (2 bytes)
 
 // Convert to hex
 hexlify(Buffer.from([0xde, 0xad])); // "0xdead"
-hexlify(255n);                       // "0xff"
-hexlify(42);                         // "0x2a"
+hexlify(255n); // "0xff"
+hexlify(42); // "0x2a"
 
 // Convert from hex to Buffer
-getBytes("0xdeadbeef");             // Buffer<deadbeef>
+getBytes("0xdeadbeef"); // Buffer<deadbeef>
 
 // BigInt to big-endian hex (with optional width)
-toBeHex(255n);                       // "0xff"
-toBeHex(255n, 4);                    // "0x000000ff" (4 bytes padded)
+toBeHex(255n); // "0xff"
+toBeHex(255n, 4); // "0x000000ff" (4 bytes padded)
 
 // Concatenate
-concat(["0xdead", "0xbeef"]);       // "0xdeadbeef"
+concat(["0xdead", "0xbeef"]); // "0xdeadbeef"
 
 // Pad / strip
-zeroPadValue("0xff", 4);            // "0x000000ff"
-stripZeros("0x000000ff");           // "0xff"
+zeroPadValue("0xff", 4); // "0x000000ff"
+stripZeros("0x000000ff"); // "0xff"
 
 // Slice
-dataLength("0xdeadbeef");           // 4
-dataSlice("0xdeadbeef", 1, 3);     // "0xadbe"
+dataLength("0xdeadbeef"); // 4
+dataSlice("0xdeadbeef", 1, 3); // "0xadbe"
 ```
 
 ---
@@ -1106,21 +1106,21 @@ Convert between human-readable token amounts and raw integer units.
 import { parseUnits, formatUnits, parseQuanta, formatQuanta } from "pyde-ts-sdk";
 
 // Parse human-readable → raw (with custom decimals)
-parseUnits("1.5", 9);    // 1500000000n
-parseUnits("100", 18);   // 100000000000000000000n
-parseUnits("0.001", 9);  // 1000000n
+parseUnits("1.5", 9); // 1500000000n
+parseUnits("100", 18); // 100000000000000000000n
+parseUnits("0.001", 9); // 1000000n
 
 // Format raw → human-readable
-formatUnits(1500000000n, 9);   // "1.5"
-formatUnits(1000000n, 9);      // "0.001"
+formatUnits(1500000000n, 9); // "1.5"
+formatUnits(1000000n, 9); // "0.001"
 
 // PYDE shortcuts (9 decimals)
-parseQuanta("2.5");            // 2500000000n
-formatQuanta(2500000000n);     // "2.5"
+parseQuanta("2.5"); // 2500000000n
+formatQuanta(2500000000n); // "2.5"
 
 // Custom token with 18 decimals
 const raw = parseUnits("0.5", 18);
-formatUnits(raw, 18);          // "0.5"
+formatUnits(raw, 18); // "0.5"
 
 // Validation
 parseUnits("1.0000000001", 9); // Error: Too many decimal places
@@ -1139,9 +1139,9 @@ import { generateKeypair, deriveAddress } from "pyde-ts-sdk";
 
 const keypair = generateKeypair();
 // {
-//   publicKey: "0x..." (897 bytes, FALCON-512 public key),
-//   secretKey: "0x..." (1281 bytes, FALCON-512 secret key),
-//   address: "0x..."   (32 bytes, Poseidon2 hash of public key)
+// publicKey: "0x..." (897 bytes, FALCON-512 public key),
+// secretKey: "0x..." (1281 bytes, FALCON-512 secret key),
+// address: "0x..." (32 bytes, Poseidon2 hash of public key)
 // }
 
 // Derive address from a public key
@@ -1202,20 +1202,20 @@ const selector2 = computeSelector("increment"); // 0x3812e73e
 ```
 pyde-ts-sdk/
 ├── src/
-│   ├── index.ts       — re-exports
-│   ├── provider.ts    — RPC client (fetch-based, async)
-│   ├── wallet.ts      — FALCON-512 key management + signing + provider binding
-│   ├── contract.ts    — calldata encoding + ABI-aware reads/writes
-│   ├── address.ts     — Address utilities (zero, validation, equality)
-│   ├── units.ts       — Unit formatting (parseUnits, formatUnits, parseQuanta)
-│   ├── errors.ts      — Typed error classes (PydeError, CallExceptionError, etc.)
-│   ├── hex.ts         — Hex utilities (hexlify, getBytes, toBeHex, concat, etc.)
-│   ├── ws-provider.ts — WebSocket provider with subscriptions
-│   ├── crypto.ts      — WASM bridge wrapper
-│   └── types.ts       — Receipt, Log, TxFields, ReceiptUtils, TransactionResponse
-├── wasm/              — compiled Rust → WASM (FALCON-512, Poseidon2)
+│ ├── index.ts — re-exports
+│ ├── provider.ts — RPC client (fetch-based, async)
+│ ├── wallet.ts — FALCON-512 key management + signing + provider binding
+│ ├── contract.ts — calldata encoding + ABI-aware reads/writes
+│ ├── address.ts — Address utilities (zero, validation, equality)
+│ ├── units.ts — Unit formatting (parseUnits, formatUnits, parseQuanta)
+│ ├── errors.ts — Typed error classes (PydeError, CallExceptionError, etc.)
+│ ├── hex.ts — Hex utilities (hexlify, getBytes, toBeHex, concat, etc.)
+│ ├── ws-provider.ts — WebSocket provider with subscriptions
+│ ├── crypto.ts — WASM bridge wrapper
+│ └── types.ts — Receipt, Log, TxFields, ReceiptUtils, TransactionResponse
+├── wasm/ — compiled Rust → WASM (FALCON-512, Poseidon2)
 └── tests/
-    └── sdk.test.ts    — 85+ unit tests
+    └── sdk.test.ts — 85+ unit tests
 ```
 
 All cryptographic operations are compiled from Rust to WebAssembly, guaranteeing exact compatibility with the Pyde node:
