@@ -50,8 +50,8 @@ export function computeSelector(name: string): number;
 export function deriveAddress(pk_hex: string): string;
 
 /**
- * Wire-encode a `TransactionType::RegisterPubkey` (audit 229) tx
- * without signing. The address-derivation check (`from ==
+ * Wire-encode a `TransactionType::RegisterPubkey` tx without signing.
+ * The address-derivation check (`from ==
  * Poseidon2(data)`) IS the proof of pubkey ownership for this
  * tx type, so a FALCON sig is neither needed nor accepted.
  * Refuses to encode any other tx type — accidental misuse on a
