@@ -25,10 +25,10 @@ post signed-int PVM ISA support.)
 
 ## One-time setup
 
-1. Build the contract artifacts (requires `pyde-dev` from the chain repo):
+1. Build the contract artifacts (requires `wright` from the chain repo):
    ```bash
    cd suite
-   pyde-dev build
+   wright build
    # → out/Helper.json, out/MegaContract.json, out/Spawner.json
    cd ..
    ```
@@ -107,7 +107,7 @@ Pass all three of `--mega/--helper/--spawner` to skip deploy.
    this tx type). Polls until `getTransactionCount >= 1`.
 
 4. **Deploy contracts** (or accept pre-deployed addresses). Reads
-   `suite/out/*.json` artifacts produced by `pyde-dev build`, assembles the
+   `suite/out/*.json` artifacts produced by `wright build`, assembles the
    on-chain Deploy data field
    (`[clen:4][rlen:4][constructor_bytes][runtime_bytes][ctor_args]`), signs
    via the SDK's `Wallet.deploy()`, polls for the receipt, parses the
