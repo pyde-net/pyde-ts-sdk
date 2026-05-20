@@ -1,4 +1,14 @@
-# pyde-ts-sdk
+<p align="center">
+  <img src="./assets/logo.png" width="120" alt="Pyde logo" />
+</p>
+
+<h1 align="center">pyde-ts-sdk</h1>
+
+<p align="center">
+  <em>TypeScript SDK for the Pyde blockchain</em>
+</p>
+
+---
 
 TypeScript SDK for interacting with the Pyde blockchain. Post-quantum secure via WASM-compiled FALCON-512 cryptography.
 
