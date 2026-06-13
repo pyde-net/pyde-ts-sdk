@@ -1,106 +1,202 @@
+/**
+ * Wallet + encrypted keystore.
+ *
+ * Spec sources:
+ *   - Chapter 8.2   — FALCON-512 signatures
+ *   - Chapter 11    — account model, tx types, RegisterPubkey flow
+ *   - Chapter 17    — `pyde keys generate` keystore format
+ *                     (Argon2id KDF + ChaCha20-Poly1305 AEAD)
+ *
+ * Default signing path: handle-based. `Wallet.generate()` retains the
+ * FALCON-512 secret key inside `pyde-crypto-wasm`'s WASM heap; the SK
+ * bytes never enter the JS heap. Use `Wallet.generateUnsafe()` only
+ * when you need the hex SK transiently to encrypt to a keystore.
+ *
+ * Crypto delegated to `pyde-crypto-wasm` (signing, address derivation)
+ * and `@noble/hashes` + `@noble/ciphers` (keystore KDF + AEAD —
+ * pure-JS, audited, isomorphic browser+Node).
+ *
+ * File I/O is opt-in via a dynamic Node `fs` import. The Wallet itself
+ * is isomorphic; browser callers can use `fromEncrypted` / `toKeystore`
+ * with their own storage layer.
+ */
+
+import { argon2id } from "@noble/hashes/argon2";
+import { chacha20poly1305 } from "@noble/ciphers/chacha";
+import { randomBytes } from "@noble/ciphers/webcrypto";
+import { utf8ToBytes } from "@noble/hashes/utils";
+
 import { Provider } from "./provider";
-import { Receipt, TxFields } from "./types";
 import { AbstractSigner } from "./signer";
 import * as crypto from "./crypto";
-import { createCipheriv, createDecipheriv, randomBytes } from "crypto";
-import { readFileSync, writeFileSync, mkdirSync, chmodSync } from "fs";
-import { dirname } from "path";
+import type { AccessEntry, Receipt, TxFields } from "./types";
+import { TxType } from "./types";
+import { SigningError } from "./errors";
 
-/** Encrypted keystore format (JSON file). Cross-compatible with Rust SDK. */
+// ============================================================================
+// Keystore format (matches `pyde keys generate`, per Chapter 17)
+// ============================================================================
+
+/** On-disk encrypted-keystore JSON shape.
+ *  KDF: Argon2id. AEAD: ChaCha20-Poly1305. */
 export interface Keystore {
+  /** 32-byte address hex. */
   address: string;
-  public_key: string;
-  encrypted_secret_key: string;
-  salt: string;
+  /** FALCON-512 public key hex (897 bytes). */
+  publicKey: string;
+  /** KDF identifier — `"argon2id"` in v1. */
+  kdf: "argon2id";
+  kdfParams: {
+    /** Memory cost in KB (default 65,536 = 64 MiB). */
+    m: number;
+    /** Iterations (default 3). */
+    t: number;
+    /** Parallelism (default 4). */
+    p: number;
+    /** Salt hex (16 bytes). */
+    salt: string;
+  };
+  /** Cipher identifier — `"chacha20-poly1305"` in v1. */
+  cipher: "chacha20-poly1305";
+  /** Cipher nonce hex (12 bytes). */
   nonce: string;
-  version: number;
+  /** Encrypted secret-key bytes (hex). Tag is appended; AEAD shape. */
+  ciphertext: string;
+  /** Schema version. */
+  version: 1;
 }
 
-/** FALCON-512 wallet for signing transactions. Extends AbstractSigner. */
+/** Default Argon2id parameters — ~250 ms on a modern laptop CPU
+ *  (Chapter 17 `pyde keys generate` reference). */
+const KDF_DEFAULTS = { m: 65_536, t: 3, p: 4 } as const;
+
+const KDF_KEY_LEN = 32; // 256-bit key for ChaCha20-Poly1305
+const SALT_LEN = 16;
+const NONCE_LEN = 12;
+
+// ============================================================================
+// Wallet
+// ============================================================================
+
+/** Internal key-material discriminator — either a WASM-retained handle or
+ *  an in-JS hex secret. Never both. */
+type KeyMaterial = { handle: number } | { hex: string };
+
+/**
+ * FALCON-512 wallet. Implements `AbstractSigner` so it can be passed
+ * anywhere a signer is expected.
+ *
+ * Lifecycle:
+ *   - `Wallet.generate()` (recommended) — handle-backed, SK in WASM heap.
+ *   - `Wallet.generateUnsafe()` — hex SK in JS heap. Encrypt + drop.
+ *   - `Wallet.fromKeys(pk, sk)` — restore from hex.
+ *   - `Wallet.fromEncrypted(keystore, password)` — restore from keystore.
+ *   - `Wallet.destroy()` — wipe + drop the WASM handle (for handle wallets).
+ *
+ * Provider:
+ *   - `wallet.connect(provider)` — bind; downstream `transfer` / `sendCall`
+ *     pull nonce + chainId from this provider.
+ *   - `wallet.provider` accessor — throws if not bound.
+ */
 export class Wallet extends AbstractSigner {
   readonly address: string;
   readonly publicKey: string;
-  private secretKey: string;
+  private key: KeyMaterial;
 
-  private constructor(address: string, publicKey: string, secretKey: string) {
+  private constructor(address: string, publicKey: string, key: KeyMaterial) {
     super();
     this.address = address;
     this.publicKey = publicKey;
-    this.secretKey = secretKey;
+    this.key = key;
   }
 
-  /** Generate a new random wallet. */
+  // ==========================================================================
+  // Constructors
+  // ==========================================================================
+
+  /** Generate a new keypair, SK retained in the WASM heap. Recommended. */
   static generate(): Wallet {
-    const kp = crypto.generateKeypair();
-    return new Wallet(kp.address, kp.publicKey, kp.secretKey);
+    const kp = crypto.generateKeypairHandle();
+    return new Wallet(kp.address, kp.publicKey, { handle: kp.handle });
   }
 
-  /** Create from existing keys. */
+  /** Generate a new keypair with hex SK in the JS heap.
+   *  ⚠️ Encrypt and discard the hex SK at the earliest opportunity. */
+  static generateUnsafe(): Wallet {
+    const kp = crypto.generateKeypair();
+    return new Wallet(kp.address, kp.publicKey, { hex: kp.secretKey });
+  }
+
+  /** Restore from a hex public + hex secret key. */
   static fromKeys(publicKey: string, secretKey: string): Wallet {
     const address = crypto.deriveAddress(publicKey);
-    return new Wallet(address, publicKey, secretKey);
+    return new Wallet(address, publicKey, { hex: secretKey });
   }
 
-  /** Create from combined private key hex (pk + sk concatenated). */
-  static fromPrivateKey(privateKeyHex: string): Wallet {
-    const hex = privateKeyHex.startsWith("0x") ? privateKeyHex.slice(2) : privateKeyHex;
-    // FALCON: pk = 897 bytes (1794 hex), sk = 1281 bytes (2562 hex)
-    if (hex.length !== (897 + 1281) * 2) {
-      throw new Error(`Invalid private key length: expected ${(897 + 1281) * 2} hex chars, got ${hex.length}`);
-    }
-    const publicKey = "0x" + hex.slice(0, 897 * 2);
-    const secretKey = "0x" + hex.slice(897 * 2);
-    const address = crypto.deriveAddress(publicKey);
-    return new Wallet(address, publicKey, secretKey);
+  /** Restore from an encrypted Keystore + password. The decrypted SK
+   *  lives in the JS heap until `destroy()` is called. */
+  static async fromEncrypted(keystore: Keystore, password: string): Promise<Wallet> {
+    validateKeystore(keystore);
+    const secret = await decryptKeystore(keystore, password);
+    return new Wallet(keystore.address, keystore.publicKey, { hex: secret });
   }
 
-  /** Create from an encrypted Keystore object (already in memory). */
-  static fromEncrypted(keystore: Keystore, password: string): Wallet {
-    const sk = decryptKey(keystore, password);
-    const address = crypto.deriveAddress(keystore.public_key);
-    return new Wallet(address, keystore.public_key, sk);
-  }
-
-  /** Load a wallet from an encrypted keystore JSON file. */
-  static fromKeystore(path: string, password: string): Wallet {
-    const content = readFileSync(path, "utf-8");
-    const keystore: Keystore = JSON.parse(content);
+  /** Node-only convenience: read a keystore JSON file from disk and decrypt. */
+  static async fromKeystoreFile(path: string, password: string): Promise<Wallet> {
+    const fs = await loadFsOrThrow("fromKeystoreFile");
+    const content = fs.readFileSync(path, "utf-8");
+    const keystore = JSON.parse(content) as Keystore;
     return Wallet.fromEncrypted(keystore, password);
   }
 
-  /** Generate a new wallet and save encrypted to a file. */
-  static createEncrypted(path: string, password: string): Wallet {
-    const wallet = Wallet.generate();
-    const keystore = wallet.toKeystore(password);
-    mkdirSync(dirname(path), { recursive: true });
-    writeFileSync(path, JSON.stringify(keystore, null, 2));
-    try { chmodSync(path, 0o600); } catch { /* non-unix */ }
-    return wallet;
+  // ==========================================================================
+  // Keystore export
+  // ==========================================================================
+
+  /** Encrypt the wallet's SK with `password` and return the keystore.
+   *  Throws on handle-only wallets (no hex SK to encrypt). */
+  async toKeystore(password: string, params?: Partial<typeof KDF_DEFAULTS>): Promise<Keystore> {
+    if (!("hex" in this.key)) {
+      throw new SigningError(
+        "Cannot export keystore from a handle-only wallet. Use Wallet.generateUnsafe() if you need a hex SK.",
+      );
+    }
+    return encryptKeystore(this.address, this.publicKey, this.key.hex, password, params);
   }
 
-  /** Export combined private key (pk + sk) as hex. */
-  exportPrivateKey(): string {
-    const pk = this.publicKey.startsWith("0x") ? this.publicKey.slice(2) : this.publicKey;
-    const sk = this.secretKey.startsWith("0x") ? this.secretKey.slice(2) : this.secretKey;
-    return "0x" + pk + sk;
+  /** Node-only convenience: encrypt + write to disk with mode 0600. */
+  async saveKeystoreFile(
+    path: string,
+    password: string,
+    params?: Partial<typeof KDF_DEFAULTS>,
+  ): Promise<void> {
+    const fs = await loadFsOrThrow("saveKeystoreFile");
+    const keystore = await this.toKeystore(password, params);
+    fs.mkdirSync(dirnameOf(path), { recursive: true });
+    fs.writeFileSync(path, JSON.stringify(keystore, null, 2));
+    try {
+      fs.chmodSync(path, 0o600);
+    } catch {
+      // chmod fails on non-POSIX filesystems; ignore.
+    }
   }
 
-  /** Export wallet as encrypted Keystore object. */
-  toKeystore(password: string): Keystore {
-    return encryptKeystore(this.publicKey, this.secretKey, this.address, password);
-  }
+  // ==========================================================================
+  // Signing — implements AbstractSigner
+  // ==========================================================================
 
-  /** Export wallet as encrypted keystore and save to a file. */
-  saveKeystore(path: string, password: string): void {
-    const keystore = this.toKeystore(password);
-    mkdirSync(dirname(path), { recursive: true });
-    writeFileSync(path, JSON.stringify(keystore, null, 2));
-    try { chmodSync(path, 0o600); } catch { /* non-unix */ }
-  }
-
-  /** Sign a transaction. Returns signed tx hex (wire format). */
+  /** Sign a transaction. Returns wire-encoded signed tx hex. */
   signTransaction(tx: TxFields): string {
-    return crypto.signTransaction(tx, this.secretKey);
+    return "handle" in this.key
+      ? crypto.signTransactionWithHandle(tx, this.key.handle)
+      : crypto.signTransaction(tx, this.key.hex);
+  }
+
+  /** Sign an arbitrary message. Returns signature hex. */
+  sign(messageHex: string): string {
+    return "handle" in this.key
+      ? crypto.signMessageWithHandle(this.key.handle, messageHex)
+      : crypto.signMessage(this.key.hex, messageHex);
   }
 
   /** Compute tx hash without signing. */
@@ -108,251 +204,256 @@ export class Wallet extends AbstractSigner {
     return crypto.hashTransaction(tx);
   }
 
-  /** Sign arbitrary message. Returns signature hex. */
-  sign(messageHex: string): string {
-    return crypto.signMessage(this.secretKey, messageHex);
+  // ==========================================================================
+  // Lifecycle
+  // ==========================================================================
+
+  /** Wipe + drop the WASM handle (handle wallets). Idempotent.
+   *  For hex wallets, drops the SK reference so GC can reclaim — V8
+   *  strings are immutable so the bytes themselves are not actively
+   *  zeroized in JS heap. Production callers holding sensitive SK
+   *  material should consider running in environments where the JS
+   *  heap is isolated (worker / iframe). */
+  destroy(): void {
+    if ("handle" in this.key) {
+      crypto.dropKeypair(this.key.handle);
+    }
+    // Replace key with a no-op placeholder so subsequent sign calls fail.
+    this.key = { hex: "" };
   }
 
-  // ========================================================================
-  // Validation utilities
-  // ========================================================================
+  // ==========================================================================
+  // Provider-bound conveniences
+  // ==========================================================================
 
-  /** Generate a random FALCON-512 private key hex (pk + sk combined).
-   * Use with Wallet.fromPrivateKey() to create a wallet later. */
-  static generatePrivateKey(): string {
-    return Wallet.generate().exportPrivateKey();
-  }
-
-  /** Validate a FALCON-512 private key hex string (pk + sk, 2178 bytes). */
-  static isValidPrivateKey(hex: string): boolean {
-    const clean = hex.startsWith("0x") ? hex.slice(2) : hex;
-    if (clean.length !== (897 + 1281) * 2) return false;
-    return /^[0-9a-fA-F]+$/.test(clean);
-  }
-
-  // ========================================================================
-  // High-level helpers (provider arg is optional if connected)
-  // ========================================================================
-
-  private resolveProvider(provider?: Provider): Provider {
-    const p = provider ?? this._provider;
-    if (!p) throw new Error("No provider. Either pass it as argument or call wallet.connect(provider) first.");
-    return p;
-  }
-
-  /**
-   * Register this wallet's FALCON public key on-chain.
-   *
-   * Required ONCE per address before the wallet can submit any
-   * signed tx. Pyde uses post-quantum FALCON-512 signatures, which
-   * (unlike ECDSA) don't support pubkey recovery from a sig — so
-   * the chain needs to know each address's pubkey separately. The
-   * `RegisterPubkey` tx is unsigned and free; the address-derivation
-   * check (`from == Poseidon2(pubkey)`) is the proof of pubkey
-   * ownership.
-   *
-   * Pre-conditions enforced by the chain:
-   * - This account must exist with `balance > 0` (someone has to
-   * send you funds first).
-   * - The account must not be already registered.
-   *
-   * Typical first-tx flow for a new user:
-   * 1. Generate wallet locally (`Wallet.generate()`).
-   * 2. Receive funds at `wallet.address` from a faucet or
-   * another user.
-   * 3. Call `await wallet.registerPubkey(provider)` once.
-   * 4. From now on, `transfer` / `sendCall` etc. work normally.
-   */
+  /** Register the FALCON pubkey on-chain. Required ONCE per address
+   *  before any signed tx is accepted. Spec: Chapter 11 §11.8 RegisterPubkey. */
   async registerPubkey(provider?: Provider): Promise<Receipt> {
     const p = this.resolveProvider(provider);
     const [nonce, chainId] = await p.getNonceAndChainId(this.address);
     const tx: TxFields = {
       from: this.address,
-      to: "0x" + "00".repeat(32),
+      to: ZERO_ADDR,
       value: "0",
-      data: this.publicKey, // 897 raw FALCON pubkey bytes
+      data: this.publicKey,
       gasLimit: 0,
       nonce,
       chainId,
-      txType: 13, // TransactionType::RegisterPubkey
+      txType: TxType.RegisterPubkey,
     };
-    const signedHex = crypto.encodeRegisterPubkeyTx(tx);
-    return p.sendAndWait(signedHex);
+    // RegisterPubkey carries no signature — pubkey ownership is proven
+    // by the chain's `from == Poseidon2(data)` check.
+    const wire = crypto.encodeRegisterPubkeyTx(tx);
+    return p.sendAndWait(wire);
   }
 
-  /** Build, sign, send a native transfer. Returns receipt. */
-  async transfer(providerOrTo: Provider | string, toOrAmount?: string | bigint | number, amount?: bigint | number): Promise<Receipt> {
-    let p: Provider;
-    let to: string;
-    let amt: bigint | number;
-    if (typeof providerOrTo === "string") {
-      // Called as wallet.transfer(to, amount) — uses connected provider
-      p = this.resolveProvider();
-      to = providerOrTo;
-      amt = toOrAmount as bigint | number;
-    } else {
-      // Called as wallet.transfer(provider, to, amount)
-      p = providerOrTo;
-      to = toOrAmount as string;
-      amt = amount!;
-    }
+  /** Build, sign, send a native PYDE transfer. */
+  async transfer(to: string, amount: bigint | number, provider?: Provider): Promise<Receipt> {
+    const p = this.resolveProvider(provider);
     const [nonce, chainId] = await p.getNonceAndChainId(this.address);
-    const tx: TxFields = { from: this.address, to, value: amt.toString(), data: "0x", gasLimit: 21000, nonce, chainId, txType: 0 };
+    const tx: TxFields = {
+      from: this.address,
+      to,
+      value: amount.toString(),
+      data: "0x",
+      gasLimit: 21_000,
+      nonce,
+      chainId,
+      txType: TxType.Transfer,
+    };
     return p.sendAndWait(this.signTransaction(tx));
   }
 
-  /** Build, sign, send a contract call. Returns receipt. */
+  /** Build, sign, send a contract call. Auto-fetches an access list via
+   *  `Provider.estimateAccess()`. */
   async sendCall(
-    providerOrTo: Provider | string,
-    toOrData?: string,
-    dataOrGasLimit?: string | number,
-    gasLimitOrValue?: number | bigint | string,
-    value?: bigint | number | string,
+    to: string,
+    data: string,
+    opts?: { gasLimit?: number; value?: bigint | number | string; provider?: Provider },
   ): Promise<Receipt> {
-    let p: Provider;
-    let to: string;
-    let data: string;
-    let gasLimit: number;
-    let val: bigint | number | string;
-    if (typeof providerOrTo === "string") {
-      // wallet.sendCall(to, data, gasLimit?, value?)
-      p = this.resolveProvider();
-      to = providerOrTo;
-      data = toOrData as string;
-      gasLimit = (dataOrGasLimit as number) ?? 100_000_000;
-      val = (gasLimitOrValue as bigint | number | string) ?? 0;
-    } else {
-      // wallet.sendCall(provider, to, data, gasLimit?, value?)
-      p = providerOrTo;
-      to = toOrData as string;
-      data = dataOrGasLimit as string;
-      gasLimit = (gasLimitOrValue as number) ?? 100_000_000;
-      val = value ?? 0;
-    }
+    const p = this.resolveProvider(opts?.provider);
+    const gasLimit = opts?.gasLimit ?? 100_000_000;
+    const value = opts?.value ?? 0;
     const [nonce, chainId] = await p.getNonceAndChainId(this.address);
 
-    // Auto-fetch access list for parallel scheduling
-    let accessList: import("./types").AccessEntry[] | undefined;
+    let accessList: AccessEntry[] | undefined;
     try {
       accessList = await p.estimateAccess({
-        to, data, from: this.address,
-        value: BigInt(val) > 0n ? "0x" + BigInt(val).toString(16) : undefined,
+        to,
+        data,
+        from: this.address,
+        value: BigInt(value) > 0n ? value : undefined,
       });
-    } catch { /* non-critical — proceed without */ }
-
-    const tx: TxFields = { from: this.address, to, value: val.toString(), data, gasLimit, nonce, chainId, txType: 0, accessList };
-    return p.sendAndWait(this.signTransaction(tx));
-  }
-
-  /** Build, sign, send a contract deployment. Returns receipt.
-   * Pass options.value for payable constructors. */
-  async deploy(
-    providerOrData: Provider | string,
-    dataOrOptions?: string | { gasLimit?: number; value?: bigint | number | string },
-    options?: { gasLimit?: number; value?: bigint | number | string },
-  ): Promise<Receipt> {
-    let p: Provider;
-    let deployData: string;
-    let opts: { gasLimit?: number; value?: bigint | number | string };
-    if (typeof providerOrData === "string") {
-      // wallet.deploy(deployData, options?)
-      p = this.resolveProvider();
-      deployData = providerOrData;
-      opts = (typeof dataOrOptions === "object" ? dataOrOptions : {}) ?? {};
-    } else {
-      // wallet.deploy(provider, deployData, options?)
-      p = providerOrData;
-      deployData = dataOrOptions as string;
-      opts = options ?? {};
+    } catch {
+      // estimateAccess is a hint; tx still executes without it (chain
+      // serializes against access-list-violating txs, costing throughput
+      // but not correctness). Fail open.
     }
-    const gas = opts.gasLimit ?? 100_000_000;
-    const value = opts.value ?? 0;
-    const [nonce, chainId] = await p.getNonceAndChainId(this.address);
-    const tx: TxFields = { from: this.address, to: "0x" + "00".repeat(32), value: value.toString(), data: deployData, gasLimit: gas, nonce, chainId, txType: 1 };
+
+    const tx: TxFields = {
+      from: this.address,
+      to,
+      value: value.toString(),
+      data,
+      gasLimit,
+      nonce,
+      chainId,
+      txType: TxType.ContractCall,
+      ...(accessList ? { accessList } : {}),
+    };
     return p.sendAndWait(this.signTransaction(tx));
   }
 
-  /** Get balance using the connected provider. */
+  /** Build, sign, send a contract deploy. */
+  async deploy(
+    deployData: string,
+    opts?: { gasLimit?: number; value?: bigint | number | string; provider?: Provider },
+  ): Promise<Receipt> {
+    const p = this.resolveProvider(opts?.provider);
+    const gasLimit = opts?.gasLimit ?? 100_000_000;
+    const value = opts?.value ?? 0;
+    const [nonce, chainId] = await p.getNonceAndChainId(this.address);
+    const tx: TxFields = {
+      from: this.address,
+      to: ZERO_ADDR,
+      value: value.toString(),
+      data: deployData,
+      gasLimit,
+      nonce,
+      chainId,
+      txType: TxType.ContractDeploy,
+    };
+    return p.sendAndWait(this.signTransaction(tx));
+  }
+
+  /** Get balance via the bound provider. */
   async getBalance(provider?: Provider): Promise<bigint> {
     return this.resolveProvider(provider).getBalance(this.address);
   }
 
-  /** Get nonce using the connected provider. */
+  /** Get nonce via the bound provider. */
   async getNonce(provider?: Provider): Promise<number> {
     return this.resolveProvider(provider).getNonce(this.address);
+  }
+
+  // ==========================================================================
+  // Internals
+  // ==========================================================================
+
+  private resolveProvider(provider?: Provider): Provider {
+    if (provider) return provider;
+    return this.provider; // throws if not bound — see AbstractSigner
   }
 }
 
 // ============================================================================
-// Encryption (AES-256-GCM + Poseidon2 key derivation)
-// Compatible with the Rust SDK keystore format.
+// Keystore helpers
 // ============================================================================
 
-function hexToBytes(hex: string): Buffer {
-  return Buffer.from(hex.startsWith("0x") ? hex.slice(2) : hex, "hex");
+const ZERO_ADDR = "0x" + "00".repeat(32);
+
+function validateKeystore(k: Keystore): void {
+  if (k.version !== 1) throw new SigningError(`unsupported keystore version: ${k.version}`);
+  if (k.kdf !== "argon2id") throw new SigningError(`unsupported KDF: ${k.kdf}`);
+  if (k.cipher !== "chacha20-poly1305") throw new SigningError(`unsupported cipher: ${k.cipher}`);
 }
 
-function bytesToHex(buf: Buffer): string {
-  return "0x" + buf.toString("hex");
-}
-
-function deriveAesKey(password: string, salt: Buffer): Buffer {
-  const passBytes = Buffer.from(password, "utf-8");
-  const combined = Buffer.concat([passBytes, salt]);
-  const hashHex = crypto.poseidon2Hash(bytesToHex(combined));
-  return hexToBytes(hashHex);
-}
-
-function encryptKeystore(
-  publicKey: string,
-  secretKey: string,
+async function encryptKeystore(
   address: string,
+  publicKey: string,
+  secretKeyHex: string,
   password: string,
-): Keystore {
-  const salt = randomBytes(16);
-  const nonceBytes = randomBytes(12);
-  const aesKey = deriveAesKey(password, salt);
+  params?: Partial<typeof KDF_DEFAULTS>,
+): Promise<Keystore> {
+  const m = params?.m ?? KDF_DEFAULTS.m;
+  const t = params?.t ?? KDF_DEFAULTS.t;
+  const p = params?.p ?? KDF_DEFAULTS.p;
 
-  const cipher = createCipheriv("aes-256-gcm", aesKey, nonceBytes);
-  const skBuf = hexToBytes(secretKey);
-  const encrypted = Buffer.concat([cipher.update(skBuf), cipher.final()]);
-  const tag = cipher.getAuthTag(); // 16 bytes
-  const ciphertext = Buffer.concat([encrypted, tag]);
+  const salt = randomBytes(SALT_LEN);
+  const nonce = randomBytes(NONCE_LEN);
+  const key = argon2id(utf8ToBytes(password), salt, { t, m, p, dkLen: KDF_KEY_LEN });
+
+  const sk = hexToBytes(secretKeyHex);
+  const aead = chacha20poly1305(key, nonce);
+  const ciphertext = aead.encrypt(sk);
 
   return {
     address,
-    public_key: publicKey,
-    encrypted_secret_key: bytesToHex(ciphertext),
-    salt: bytesToHex(salt),
-    nonce: bytesToHex(nonceBytes),
+    publicKey,
+    kdf: "argon2id",
+    kdfParams: { m, t, p, salt: bytesToHex(salt) },
+    cipher: "chacha20-poly1305",
+    nonce: bytesToHex(nonce),
+    ciphertext: bytesToHex(ciphertext),
     version: 1,
   };
 }
 
-function decryptKey(keystore: Keystore, password: string): string {
-  const salt = hexToBytes(keystore.salt);
-  const nonceBytes = hexToBytes(keystore.nonce);
-  const ciphertext = hexToBytes(keystore.encrypted_secret_key);
-
-  if (nonceBytes.length !== 12) {
-    throw new Error("bad nonce length");
-  }
-
-  const aesKey = deriveAesKey(password, salt);
-
-  // Last 16 bytes = GCM auth tag
-  const encrypted = ciphertext.subarray(0, ciphertext.length - 16);
-  const tag = ciphertext.subarray(ciphertext.length - 16);
-
-  const decipher = createDecipheriv("aes-256-gcm", aesKey, nonceBytes);
-  decipher.setAuthTag(tag);
-
-  let decrypted: Buffer;
+async function decryptKeystore(k: Keystore, password: string): Promise<string> {
+  const salt = hexToBytes(k.kdfParams.salt);
+  const nonce = hexToBytes(k.nonce);
+  const ciphertext = hexToBytes(k.ciphertext);
+  const key = argon2id(utf8ToBytes(password), salt, {
+    t: k.kdfParams.t,
+    m: k.kdfParams.m,
+    p: k.kdfParams.p,
+    dkLen: KDF_KEY_LEN,
+  });
+  const aead = chacha20poly1305(key, nonce);
+  let plaintext: Uint8Array;
   try {
-    decrypted = Buffer.concat([decipher.update(encrypted), decipher.final()]);
+    plaintext = aead.decrypt(ciphertext);
   } catch {
-    throw new Error("decryption failed — wrong password?");
+    throw new SigningError("keystore decryption failed — wrong password or corrupt file");
   }
+  return "0x" + bytesToHex(plaintext);
+}
 
-  return bytesToHex(decrypted);
+// ============================================================================
+// Local hex helpers (kept private; avoid coupling to src/hex.ts internals)
+// ============================================================================
+
+function bytesToHex(bytes: Uint8Array): string {
+  let out = "";
+  for (let i = 0; i < bytes.length; i++) {
+    const v = bytes[i];
+    if (v === undefined) continue;
+    out += v.toString(16).padStart(2, "0");
+  }
+  return out;
+}
+
+function hexToBytes(hex: string): Uint8Array {
+  const h = hex.startsWith("0x") || hex.startsWith("0X") ? hex.slice(2) : hex;
+  if (h.length % 2 !== 0) throw new SigningError(`invalid hex (odd length): ${hex.slice(0, 16)}…`);
+  const out = new Uint8Array(h.length / 2);
+  for (let i = 0; i < out.length; i++) {
+    out[i] = parseInt(h.slice(i * 2, i * 2 + 2), 16);
+  }
+  return out;
+}
+
+// ============================================================================
+// File I/O (Node-only — dynamic import keeps the module isomorphic at parse)
+// ============================================================================
+
+interface NodeFs {
+  readFileSync(path: string, encoding: "utf-8"): string;
+  writeFileSync(path: string, data: string): void;
+  mkdirSync(path: string, options: { recursive: boolean }): void;
+  chmodSync(path: string, mode: number): void;
+}
+
+async function loadFsOrThrow(method: string): Promise<NodeFs> {
+  if (typeof process === "undefined" || !process.versions?.node) {
+    throw new SigningError(
+      `${method} is Node-only. In a browser, use fromEncrypted() / toKeystore() with your own storage.`,
+    );
+  }
+  return (await import("node:fs")) as unknown as NodeFs;
+}
+
+function dirnameOf(path: string): string {
+  const idx = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
+  return idx < 0 ? "." : path.slice(0, idx);
 }
