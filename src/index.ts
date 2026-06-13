@@ -1,5 +1,10 @@
 export { Provider, type ProviderOptions } from "./provider";
-export { WebSocketProvider } from "./ws-provider";
+export {
+  WebSocketProvider,
+  type WebSocketProviderOptions,
+  type LogSubscriptionFilter,
+  type Unsubscribe,
+} from "./ws-provider";
 export { AbstractSigner } from "./signer";
 export { Wallet } from "./wallet";
 export type { Keystore } from "./wallet";
