@@ -1,5 +1,5 @@
 import { Provider } from "./provider";
-import { TxFields } from "./types";
+import type { TxFields } from "./types";
 
 /**
  * Abstract signer interface. Wallet implements this.

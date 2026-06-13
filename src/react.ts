@@ -26,15 +26,9 @@
 import * as React from "react";
 
 import { Provider as RpcProvider } from "./provider";
-import { WebSocketProvider, type Unsubscribe } from "./ws-provider";
+import { WebSocketProvider, type Unsubscribe, type LogSubscriptionFilter } from "./ws-provider";
 import { Wallet } from "./wallet";
-import type {
-  Account,
-  Wave,
-  WaveHeader,
-  Log,
-  LogSubscriptionFilter,
-} from "./types";
+import type { Account, Wave, WaveHeader, Log } from "./types";
 import { Contract } from "./contract";
 
 // ============================================================================
