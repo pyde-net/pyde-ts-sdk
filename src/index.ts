@@ -6,6 +6,14 @@ export {
   type Unsubscribe,
 } from "./ws-provider";
 export { AbstractSigner } from "./signer";
+export {
+  InMemoryWalletAdapter,
+  BrowserWalletAdapter,
+  type WalletAdapter,
+  type WalletAdapterEvent,
+  type EventListener as WalletAdapterEventListener,
+  type InjectedPydeProvider,
+} from "./wallet-adapter";
 export { Wallet } from "./wallet";
 export type { Keystore } from "./wallet";
 export { Address } from "./address";
