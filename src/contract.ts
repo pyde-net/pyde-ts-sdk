@@ -282,20 +282,23 @@ export class Contract {
    * }
    * ```
    */
-  async queryFilter(eventName: string, fromBlock?: number, toBlock?: number): Promise<EventLog[]> {
+  async queryFilter(eventName: string, fromWave?: number, toWave?: number): Promise<EventLog[]> {
     const ev = this.events.get(eventName);
     if (!ev) throw new Error(`Unknown event '${eventName}'. Load ABI with events.`);
 
     const topic0 = this.getEventTopic(eventName);
 
+    // Phase 8 will resolve omitted bounds via Provider.getWave() ("latest");
+    // for now the caller passes explicit bounds per HOST_FN_ABI §15.4
+    // (5,000-wave cap per request).
     const logs = await this.provider.getLogs({
-      address: this.address,
-      fromBlock,
-      toBlock,
-      topics: [topic0],
+      contract: this.address,
+      fromWave: fromWave ?? 0,
+      toWave: toWave ?? 0,
+      topics: [[topic0]],
     });
 
-    return logs.map(log => this.decodeEventLog(ev, log));
+    return logs.map((log) => this.decodeEventLog(ev, log));
   }
 
   /**

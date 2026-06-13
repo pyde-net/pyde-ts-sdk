@@ -1,6 +1,6 @@
 import WebSocket from "ws";
 import { Provider } from "./provider";
-import { Log, LogFilter, BlockHeader } from "./types";
+import { Log, LogFilter, WaveHeader } from "./types";
 import { ConnectionError, RpcError } from "./errors";
 
 type Listener = (...args: any[]) => void;
@@ -92,7 +92,7 @@ export class WebSocketProvider {
   // Subscriptions (via WS)
   // ========================================================================
 
-  async onBlock(listener: (header: BlockHeader) => void): Promise<void> {
+  async onBlock(listener: (header: WaveHeader) => void): Promise<void> {
     await this.ready;
     const subId = await this._rpc("pyde_subscribe", ["newHeads"]);
     this._subscriptions.set(String(subId), "block");

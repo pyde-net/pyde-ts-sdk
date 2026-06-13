@@ -1,4 +1,4 @@
-import { Receipt, Log, LogFilter, BlockHeader, TransactionInfo, TransactionResponse, FeeData, CallOverrides } from "./types";
+import { Receipt, Log, LogFilter, WaveHeader, TransactionInfo, TransactionResponse, FeeData, CallOverrides } from "./types";
 import { CallExceptionError, ConnectionError, TimeoutError, RpcError } from "./errors";
 
 /** Provider options for configuring HTTP behavior. */
@@ -82,9 +82,9 @@ export class Provider {
     return (await this.rpc("pyde_getStorageAt", [address, slot])) as string;
   }
 
-  async getBlockByNumber(slot: number): Promise<BlockHeader | null> {
+  async getBlockByNumber(slot: number): Promise<WaveHeader | null> {
     const result = await this.rpc("pyde_getBlockByNumber", [slot]);
-    return result ? (result as BlockHeader) : null;
+    return result ? (result as WaveHeader) : null;
   }
 
   /** Look up a transaction by its hash. Returns null if not found. */

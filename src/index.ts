@@ -27,5 +27,24 @@ export {
   buildRawEncryptedTx,
 } from "./crypto";
 export type { Keypair, KeypairHandle, EncryptedTxParams } from "./crypto";
-export type { Receipt, Log, LogFilter, BlockHeader, TxFields, TransactionInfo, TransactionResponse, FeeData, CallOverrides } from "./types";
-export { ReceiptUtils } from "./types";
+export type {
+  Wave,
+  Hash,
+  WaveHeader,
+  HardFinalityCert,
+  SnapshotManifest,
+  ChunkRef,
+  Receipt,
+  Log,
+  EventCursor,
+  LogFilter,
+  GetLogsResponse,
+  AccessEntry,
+  TxFields,
+  TxTypeDiscriminant,
+  TransactionInfo,
+  TransactionResponse,
+  FeeData,
+  CallOverrides,
+} from "./types";
+export { ReceiptUtils, TxType } from "./types";
