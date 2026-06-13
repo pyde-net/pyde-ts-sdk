@@ -1,7 +1,28 @@
+/**
+ * Contract interaction — ABI-aware read/write/event surface.
+ *
+ * Spec sources:
+ *   - HOST_FN_ABI_SPEC §3.7  — `pyde.abi` custom-section ContractAbi shape
+ *   - SDK_AUTHOR_GUIDE       — Borsh-canonical calldata + return encoding
+ *   - HOST_FN_ABI_SPEC §14   — event encoding (topics + data)
+ *
+ * Runtime note (v1): this module uses Node `Buffer` internally for byte
+ * manipulation. Public return types expose `Uint8Array`. The Buffer
+ * usage compiles in any TypeScript environment via @types/node but
+ * fails at runtime in browsers without a Buffer polyfill. v1.1 will
+ * complete the internal Uint8Array refactor.
+ *
+ * File-based factory methods (`Contract.fromArtifact`,
+ * `Interface.fromArtifact`, `DeployData.fromArtifact`) are Node-only —
+ * they dynamic-import `node:fs`. Browser callers should use
+ * `Contract.fromJson` / `Interface.fromJson` / `DeployData.fromJson`
+ * with their own file loading.
+ */
+
 import { computeSelector } from "./crypto";
 import { Provider } from "./provider";
 import { Wallet } from "./wallet";
-import { Receipt } from "./types";
+import { Receipt, TxType } from "./types";
 
 /** Receipt from a Contract.write() call — extends Receipt with ABI-aware decoding. */
 export interface ContractReceipt extends Receipt {
@@ -94,10 +115,10 @@ export class Contract {
     this.provider = provider;
   }
 
-  /** Load contract from a build artifact JSON file (Node.js). */
-  static fromArtifact(artifactPath: string, address: string, provider: Provider): Contract {
+  /** Load contract from a build artifact JSON file (Node-only). */
+  static async fromArtifact(artifactPath: string, address: string, provider: Provider): Promise<Contract> {
     // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const fs = require("fs");
+    const fs = await loadNodeFs("fromArtifact");
     const json = fs.readFileSync(artifactPath, "utf-8");
     return Contract.fromJson(json, address, provider);
   }
@@ -219,7 +240,11 @@ export class Contract {
       }
     }
     const calldata = this.encodeCall(method, args);
-    const receipt = await this.wallet.sendCall(this.provider, this.address, calldata, gasLimit, value);
+    const receipt = await this.wallet.sendCall(this.address, calldata, {
+      provider: this.provider,
+      gasLimit,
+      value,
+    });
 
     // Wrap with ABI-aware decode
     const fn = this.functions.get(method);
@@ -264,7 +289,7 @@ export class Contract {
       gasLimit: options.gasLimit ?? 100_000_000,
       nonce,
       chainId,
-      txType: 0,
+      txType: TxType.Standard,
     };
   }
 
@@ -805,10 +830,9 @@ export class Interface {
     this.contract = contract;
   }
 
-  /** Load from a build artifact JSON file. */
-  static fromArtifact(artifactPath: string): Interface {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const fs = require("fs");
+  /** Load from a build artifact JSON file (Node-only). */
+  static async fromArtifact(artifactPath: string): Promise<Interface> {
+    const fs = await loadNodeFs("fromArtifact");
     const json = fs.readFileSync(artifactPath, "utf-8");
     return Interface.fromJson(json);
   }
@@ -1222,11 +1246,10 @@ export class DeployData {
     this.runtime = Buffer.from(stripHex(runtimeHex), "hex");
   }
 
-  /** Load from artifact JSON file with ABI-validated constructor args.
-   * Pass {} if the constructor takes no args. */
-  static fromArtifact(artifactPath: string, args: Record<string, any> = {}): DeployData {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const fs = require("fs");
+  /** Load from artifact JSON file (Node-only) with ABI-validated
+   *  constructor args. Pass `{}` if the constructor takes no args. */
+  static async fromArtifact(artifactPath: string, args: Record<string, any> = {}): Promise<DeployData> {
+    const fs = await loadNodeFs("fromArtifact");
     const json = fs.readFileSync(artifactPath, "utf-8");
     return DeployData.fromJson(json, args);
   }
@@ -1338,4 +1361,22 @@ export class DeployData {
     const full = Buffer.concat([header, this.constructor_, this.runtime, this.argsBuf]);
     return "0x" + full.toString("hex");
   }
+}
+
+// ============================================================================
+// Node-only file I/O (used by `*.fromArtifact` factories)
+// ============================================================================
+
+interface NodeFsModule {
+  readFileSync(path: string, encoding: "utf-8"): string;
+}
+
+async function loadNodeFs(method: string): Promise<NodeFsModule> {
+  if (typeof process === "undefined" || !process.versions?.node) {
+    throw new Error(
+      `Contract.${method} / Interface.${method} / DeployData.${method} are Node-only. ` +
+        `In a browser, use fromJson() with your own file loading.`,
+    );
+  }
+  return (await import("node:fs")) as unknown as NodeFsModule;
 }
