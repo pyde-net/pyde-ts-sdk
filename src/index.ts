@@ -14,6 +14,14 @@ export {
   type EventListener as WalletAdapterEventListener,
   type InjectedPydeProvider,
 } from "./wallet-adapter";
+export {
+  simulateTransaction,
+  previewTransaction,
+  applySimulation,
+  receiptToSimulationView,
+  type SimulationResult,
+  type PreviewOptions,
+} from "./simulate";
 export { Wallet } from "./wallet";
 export type { Keystore } from "./wallet";
 export { Address } from "./address";
