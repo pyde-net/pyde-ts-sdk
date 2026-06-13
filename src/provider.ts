@@ -736,7 +736,7 @@ function fromWireSnapshotManifest(w: unknown): SnapshotManifest {
 
 function fromWireReceipt(w: unknown): Receipt {
   const o = w as Record<string, unknown>;
-  return {
+  const out: Receipt = {
     txHash: asString(o.tx_hash ?? o.txHash, "Receipt.txHash"),
     success: Boolean(o.success),
     gasUsed: asString(o.gas_used ?? o.gasUsed, "Receipt.gasUsed"),
@@ -744,12 +744,13 @@ function fromWireReceipt(w: unknown): Receipt {
     feePaid: asString(o.fee_paid ?? o.feePaid, "Receipt.feePaid"),
     feeBurned: asString(o.fee_burned ?? o.feeBurned, "Receipt.feeBurned"),
     feeValidator: asString(o.fee_validator ?? o.feeValidator, "Receipt.feeValidator"),
-    returnData:
-      o.return_data || o.returnData
-        ? asString(o.return_data ?? o.returnData, "Receipt.returnData")
-        : undefined,
     logs: ((o.logs ?? []) as unknown[]).map(fromWireLog),
   };
+  // exactOptionalPropertyTypes: only set returnData when present —
+  // assigning `undefined` would violate the Receipt type contract.
+  const rd = o.return_data ?? o.returnData;
+  if (rd) out.returnData = asString(rd, "Receipt.returnData");
+  return out;
 }
 
 function fromWireLog(w: unknown): Log {

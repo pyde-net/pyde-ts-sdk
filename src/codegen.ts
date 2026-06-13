@@ -20,15 +20,37 @@
  * Spec: SDK_AUTHOR_GUIDE + HOST_FN_ABI §3.7 (`pyde.abi` ContractAbi shape).
  */
 
-interface AbiFunction {
+/** Function shape — accepts either the lowercase `{type}` form (older
+ *  spec sketches + the SDK author guide examples) or the `otigen build`
+ *  canonical `{ty}` form with UpperCamelCase scalar names. */
+interface AbiFunctionRaw {
   name: string;
-  params: { name: string; type: string }[];
+  params?: { name?: string; type?: string; ty?: string }[];
+  returns?: string;
+  view?: boolean;
+  payable?: boolean;
+  attrs?: { bits?: number };
+}
+
+interface AbiEventRaw {
+  name: string;
+  fields?: { name?: string; type?: string; ty?: string; indexed?: boolean }[];
+}
+
+interface NormalisedParam {
+  name: string;
+  type: string;
+}
+
+interface NormalisedFunction {
+  name: string;
+  params: NormalisedParam[];
   returns: string;
   view: boolean;
   payable: boolean;
 }
 
-interface AbiEvent {
+interface NormalisedEvent {
   name: string;
   fields: { name: string; type: string; indexed: boolean }[];
 }
@@ -38,17 +60,20 @@ interface AbiArtifact {
   name?: string;
   /** Either `{abi: {...}}` or the abi object at root. */
   abi?: {
-    functions?: AbiFunction[];
-    events?: AbiEvent[];
+    functions?: AbiFunctionRaw[];
+    events?: AbiEventRaw[];
   };
-  functions?: AbiFunction[];
-  events?: AbiEvent[];
+  functions?: AbiFunctionRaw[];
+  events?: AbiEventRaw[];
 }
 
-/** Map an ABI scalar type to its TS type. */
-function tsType(abiType: string): string {
+/** Map an ABI scalar type to its TS type. Accepts the `otigen build`
+ *  UpperCamelCase form (`U64`, `Bool`, `Address`) and the older
+ *  lowercase form (`u64`, `bool`) transparently. */
+function tsType(abiType: string | undefined): string {
+  if (!abiType || typeof abiType !== "string") return "unknown";
   const t = abiType.trim();
-  switch (t) {
+  switch (t.toLowerCase()) {
     case "u8":
     case "u16":
     case "u32":
@@ -65,15 +90,13 @@ function tsType(abiType: string): string {
       return "bigint";
     case "bool":
       return "boolean";
-    case "String":
     case "string":
       return "string";
-    case "Address":
+    case "address":
       return "string";
-    case "Hash":
+    case "hash":
     case "hash32":
       return "string";
-    case "Bytes":
     case "bytes":
       return "Uint8Array";
     case "()":
@@ -81,11 +104,36 @@ function tsType(abiType: string): string {
     case "void":
       return "void";
   }
-  // Vec<T>
-  const vecMatch = /^Vec<(.+)>$/.exec(t);
+  // Vec<T> — case-insensitive match.
+  const vecMatch = /^Vec<(.+)>$/i.exec(t);
   if (vecMatch) return `${tsType(vecMatch[1]!)}[]`;
   // Fallback — pass through as unknown so consumers cast explicitly.
   return "unknown";
+}
+
+/** Normalise a raw ABI function entry into the codegen's internal shape.
+ *  Tolerates `{type}` vs `{ty}` divergence + missing optional fields. */
+function normaliseFunction(raw: AbiFunctionRaw): NormalisedFunction {
+  const params = (raw.params ?? []).map((p, i) => ({
+    name: p.name ?? `arg${i}`,
+    type: p.ty ?? p.type ?? "unknown",
+  }));
+  return {
+    name: raw.name,
+    params,
+    returns: raw.returns ?? "()",
+    view: Boolean(raw.view),
+    payable: Boolean(raw.payable),
+  };
+}
+
+function normaliseEvent(raw: AbiEventRaw): NormalisedEvent {
+  const fields = (raw.fields ?? []).map((f, i) => ({
+    name: f.name ?? `field${i}`,
+    type: f.ty ?? f.type ?? "unknown",
+    indexed: Boolean(f.indexed),
+  }));
+  return { name: raw.name, fields };
 }
 
 function safeIdent(name: string): string {
@@ -96,11 +144,10 @@ function paramSig(p: { name: string; type: string }): string {
   return `${safeIdent(p.name)}: ${tsType(p.type)}`;
 }
 
-function methodSig(fn: AbiFunction): string {
+function methodSig(fn: NormalisedFunction): string {
   const args = fn.params.map(paramSig).join(", ");
   const ret = tsType(fn.returns);
   const lines: string[] = [];
-  // TSDoc block — pulls flags from the ABI for the reader.
   const flags: string[] = [];
   if (fn.view) flags.push("view");
   if (fn.payable) flags.push("payable");
@@ -109,7 +156,7 @@ function methodSig(fn: AbiFunction): string {
   return lines.join("\n");
 }
 
-function eventInterface(prefix: string, ev: AbiEvent): string {
+function eventInterface(prefix: string, ev: NormalisedEvent): string {
   const fields = ev.fields
     .map((f) => `  /** ${f.indexed ? "indexed · " : ""}${f.type} */\n  ${safeIdent(f.name)}: ${tsType(f.type)};`)
     .join("\n");
@@ -128,8 +175,8 @@ function eventInterface(prefix: string, ev: AbiEvent): string {
 export function generateTypes(abiJson: string, contractName?: string): string {
   const artifact: AbiArtifact = JSON.parse(abiJson);
   const abi = artifact.abi ?? artifact;
-  const functions = abi.functions ?? [];
-  const events = abi.events ?? [];
+  const functions = (abi.functions ?? []).map(normaliseFunction);
+  const events = (abi.events ?? []).map(normaliseEvent);
   const name = contractName ?? artifact.name ?? "Contract";
 
   const header = [

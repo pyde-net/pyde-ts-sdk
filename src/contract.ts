@@ -22,7 +22,8 @@
 import { computeSelector } from "./crypto";
 import { Provider } from "./provider";
 import { Wallet } from "./wallet";
-import { Receipt, TxType } from "./types";
+import { TxType } from "./types";
+import type { Receipt } from "./types";
 
 /** Receipt from a Contract.write() call — extends Receipt with ABI-aware decoding. */
 export interface ContractReceipt extends Receipt {
@@ -336,7 +337,7 @@ export class Contract {
    */
   parseLog(log: import("./types").Log): EventLog | null {
     if (!log.topics || log.topics.length === 0) return null;
-    const ev = this.eventsByTopic.get(log.topics[0]);
+    const ev = this.eventsByTopic.get(log.topics[0]!);
     if (!ev) return null;
     return this.decodeEventLog(ev, log);
   }
@@ -369,7 +370,7 @@ export class Contract {
     let topicIdx = 1;
     for (const field of ev.fields) {
       if (field.indexed && topicIdx < log.topics.length) {
-        const topicBuf = Buffer.from(log.topics[topicIdx].replace("0x", ""), "hex");
+        const topicBuf = Buffer.from(log.topics[topicIdx]!.replace("0x", ""), "hex");
         if (field.type === "Address") {
           args[field.name] = "0x" + topicBuf.subarray(0, 32).toString("hex");
         } else {
@@ -529,7 +530,7 @@ export class Contract {
           throw new Error(`${path}: tuple ${type} expects ${types.length} elements, got ${value.length}`);
         }
         for (let i = 0; i < types.length; i++) {
-          this.encodeValue(buf, value[i], types[i], `${path}.${i}`);
+          this.encodeValue(buf, value[i], types[i]!, `${path}.${i}`);
         }
       }
       return;
@@ -1003,7 +1004,7 @@ export class ContractCall {
     header.writeBigUInt64LE(BigInt(vals.length), 8);
     header.writeBigUInt64LE(BigInt(vals.length), 16);
     const elems = Buffer.alloc(vals.length * 8);
-    for (let i = 0; i < vals.length; i++) elems.writeBigUInt64LE(BigInt(vals[i]), i * 8);
+    for (let i = 0; i < vals.length; i++) elems.writeBigUInt64LE(BigInt(vals[i]!), i * 8);
     this.push(header); this.push(elems);
     return this;
   }

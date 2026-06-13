@@ -280,12 +280,13 @@ export class Wallet extends AbstractSigner {
 
     let accessList: AccessEntry[] | undefined;
     try {
-      accessList = await p.estimateAccess({
+      const accessParams: Parameters<typeof p.estimateAccess>[0] = {
         to,
         data,
         from: this.address,
-        value: BigInt(value) > 0n ? value : undefined,
-      });
+      };
+      if (BigInt(value) > 0n) accessParams.value = value;
+      accessList = await p.estimateAccess(accessParams);
     } catch {
       // estimateAccess is a hint; tx still executes without it (the
       // chain serializes against access-list-violating txs, costing
