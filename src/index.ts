@@ -46,6 +46,7 @@ export {
   encodeRegisterPubkeyTx,
   thresholdEncrypt,
   buildRawEncryptedTx,
+  buildRawEncryptedTxWithHandle,
 } from "./crypto";
 export type { Keypair, KeypairHandle, EncryptedTxParams } from "./crypto";
 export type {

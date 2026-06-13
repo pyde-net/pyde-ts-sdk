@@ -285,6 +285,25 @@ export function buildRawEncryptedTx(
   }
 }
 
+/**
+ * Handle-based variant of `buildRawEncryptedTx`. Same params + same
+ * wire-format output, but signs using a key retained in the WASM heap
+ * via `generateKeypairHandle`. The SK bytes never enter the JS heap.
+ *
+ * Spec: Chapter 8.5 + Chapter 9.
+ */
+export function buildRawEncryptedTxWithHandle(
+  params: EncryptedTxParams,
+  handle: number,
+): string {
+  const withDefaults: EncryptedTxParams = { calldata: "0x", ...params };
+  try {
+    return wasm.buildRawEncryptedTxWithHandle(JSON.stringify(withDefaults), handle);
+  } catch (e) {
+    throw new SigningError(scrubError(e));
+  }
+}
+
 // ============================================================================
 // Helpers
 // ============================================================================
