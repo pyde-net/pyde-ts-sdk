@@ -24,7 +24,7 @@ export type Wave = number;
 export type Hash = string;
 
 /** 32-byte address.
- *  Spec: Chapter 11 §11.1 — EOA = Poseidon2(falcon_public_key_bytes);
+ *  Spec: Chapter 11 §11.2 — EOA = Poseidon2(falcon_public_key_bytes);
  *  contracts = Poseidon2(deployer || nonce) or Poseidon2(0xFF || deployer
  *  || salt || code_hash) for CREATE2. */
 export type Address = string;
