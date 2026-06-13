@@ -37,7 +37,14 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./codegen": {
+      "types": "./dist/codegen.d.ts",
+      "import": "./dist/codegen.js"
     }
+  },
+  "bin": {
+    "pyde-tsgen": "./dist/cli-tsgen.js"
   },
   "files": [
     "dist",
