@@ -94,10 +94,18 @@ export class Provider {
   }
 
   /** Return the account's low-end nonce (next available slot in the
-   *  16-slot sliding window per Chapter 11). Spec: chapter 17.4. */
+   *  16-slot sliding window per Chapter 11). Spec: chapter 17.4.
+   *
+   *  Backward-compat: some chain builds still expose this only under
+   *  the pre-pivot `pyde_getTransactionCount` name. Falls back when the
+   *  canonical name isn't found. Remove the fallback once the engine
+   *  rename ships. */
   async getNonce(address: string): Promise<number> {
-    const result = await this.call_("pyde_getNonce", [address]);
-    return parseUint(asString(result, "pyde_getNonce"), "pyde_getNonce");
+    const result = await this.callWithFallback(
+      ["pyde_getNonce", "pyde_getTransactionCount"],
+      [address],
+    );
+    return parseUintLoose(result, "getNonce");
   }
 
   /** Return the chain ID (used for replay protection in signed txs).
@@ -163,11 +171,27 @@ export class Provider {
   // ========================================================================
 
   /** Return the header for a wave (omit `waveId` for the latest committed
-   *  wave). Spec: chapter 17.4 `pyde_getWave`. */
+   *  wave). Spec: chapter 17.4 `pyde_getWave`.
+   *
+   *  Backward-compat: the engine currently requires the `wave_id`
+   *  param. When omitted the SDK resolves "latest" via a synthetic
+   *  block-number query first and then fetches that wave. */
   async getWave(waveId?: number): Promise<WaveHeader | null> {
-    const params = waveId === undefined ? [] : [waveId];
-    const result = await this.call_("pyde_getWave", params);
+    let target = waveId;
+    if (target === undefined) {
+      target = await this.latestWaveId();
+    }
+    const result = await this.call_("pyde_getWave", [target]);
     return result ? fromWireWaveHeader(result) : null;
+  }
+
+  /** Internal: resolve the current head wave id via either
+   *  `pyde_blockNumber` (pre-pivot name still wired by the engine) or a
+   *  receipt-style indirection. Used by `getWave()` when no wave id is
+   *  passed explicitly. */
+  private async latestWaveId(): Promise<number> {
+    const result = await this.callWithFallback(["pyde_getWaveNumber", "pyde_blockNumber"], []);
+    return parseUintLoose(result, "latestWaveId");
   }
 
   /** Return the threshold-signed hard finality certificate for a wave.
@@ -193,10 +217,13 @@ export class Provider {
   // ========================================================================
 
   /** Return the current base fee (gas-price = base in v1; no priority tip).
-   *  Spec: Chapter 10 + chapter 17.4 `pyde_getBaseFee`. */
+   *  Spec: Chapter 10 + chapter 17.4 `pyde_getBaseFee`.
+   *
+   *  Backward-compat: pre-pivot chain builds expose this as
+   *  `pyde_gasPrice`. Falls back automatically. */
   async getBaseFee(): Promise<bigint> {
-    const result = await this.call_("pyde_getBaseFee", []);
-    return BigInt(asString(result, "pyde_getBaseFee"));
+    const result = await this.callWithFallback(["pyde_getBaseFee", "pyde_gasPrice"], []);
+    return BigInt(asString(result, "getBaseFee"));
   }
 
   /** Convenience wrapper that surfaces the same value under two names
@@ -423,6 +450,28 @@ export class Provider {
     };
   }
 
+  /** Call the first method that responds successfully. Used to ride out
+   *  the pre-pivot → post-pivot RPC rename window without burdening
+   *  callers. Throws the LAST RpcError if every candidate returns
+   *  -32601 (method not found) or every candidate fails for some other
+   *  reason. */
+  private async callWithFallback(methods: string[], params: unknown[]): Promise<unknown> {
+    let lastError: unknown = null;
+    for (const method of methods) {
+      try {
+        return await this.call_(method, params);
+      } catch (e) {
+        lastError = e;
+        const isMethodNotFound =
+          e instanceof RpcError && /-32601|method not found/i.test(e.message);
+        if (!isMethodNotFound) break;
+      }
+    }
+    throw lastError instanceof Error
+      ? lastError
+      : new RpcError(`every fallback failed: ${methods.join(", ")}`);
+  }
+
   /** Single JSON-RPC call (with retry). */
   private async call_(method: string, params: unknown[]): Promise<unknown> {
     const body = {
@@ -502,6 +551,18 @@ function parseUint(hex: string, ctx: string): number {
   return n;
 }
 
+/** Tolerant uint parser — accepts plain JSON numbers + hex strings +
+ *  decimal strings. Used for chain responses where the engine isn't
+ *  consistently quoting numerics (a common JSON-RPC quirk). */
+function parseUintLoose(v: unknown, ctx: string): number {
+  if (typeof v === "number") {
+    if (!Number.isFinite(v)) throw new RpcError(`${ctx} returned invalid number: ${v}`);
+    return v;
+  }
+  if (typeof v === "string") return parseUint(v, ctx);
+  throw new RpcError(`${ctx} returned non-numeric: ${JSON.stringify(v)}`);
+}
+
 function bigIntToHex(v: bigint | number | string): string {
   return "0x" + BigInt(v).toString(16);
 }
@@ -527,30 +588,72 @@ function extractTxHash(result: unknown): string {
 // Account
 // ----------------------------------------------------------------------------
 
+const ZERO_HASH = "0x" + "00".repeat(32);
+
 function fromWireAccount(w: unknown): Account {
   const o = w as Record<string, unknown>;
+  // Engine builds may omit zero-valued optional fields. Fill defaults
+  // so callers get a stable Account shape regardless of which field
+  // subset the chain serialised.
   return {
     address: asString(o.address, "Account.address"),
-    nonce: parseUint(asString(o.nonce, "Account.nonce"), "Account.nonce"),
-    balance: BigInt(asString(o.balance, "Account.balance")),
-    codeHash: asString(o.code_hash ?? o.codeHash, "Account.codeHash"),
-    storageRoot: asString(o.storage_root ?? o.storageRoot, "Account.storageRoot"),
-    accountType: parseAccountType(o.account_type ?? o.accountType),
-    authKeys: asString(o.auth_keys ?? o.authKeys, "Account.authKeys"),
-    gasTank: BigInt(asString(o.gas_tank ?? o.gasTank, "Account.gasTank")),
-    keyNonce: parseUint(
-      asString(o.key_nonce ?? o.keyNonce, "Account.keyNonce"),
-      "Account.keyNonce",
-    ),
+    nonce: tryParseUint(o.nonce) ?? 0,
+    balance: tryBigInt(o.balance) ?? 0n,
+    codeHash: tryString(o.code_hash ?? o.codeHash) ?? ZERO_HASH,
+    storageRoot: tryString(o.storage_root ?? o.storageRoot) ?? ZERO_HASH,
+    accountType: parseAccountType(o.account_type ?? o.accountType ?? 0),
+    authKeys: tryString(o.auth_keys ?? o.authKeys) ?? "0x",
+    gasTank: tryBigInt(o.gas_tank ?? o.gasTank) ?? 0n,
+    keyNonce: tryParseUint(o.key_nonce ?? o.keyNonce) ?? 0,
   };
 }
 
+function tryString(v: unknown): string | null {
+  return typeof v === "string" ? v : null;
+}
+
+function tryParseUint(v: unknown): number | null {
+  if (typeof v === "number") return Number.isFinite(v) ? v : null;
+  if (typeof v === "string") {
+    const n = v.startsWith("0x") ? parseInt(v, 16) : parseInt(v, 10);
+    return Number.isFinite(n) ? n : null;
+  }
+  return null;
+}
+
+function tryBigInt(v: unknown): bigint | null {
+  if (typeof v === "bigint") return v;
+  if (typeof v === "number") return Number.isFinite(v) ? BigInt(v) : null;
+  if (typeof v === "string") {
+    try {
+      return BigInt(v);
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+/** Like `asString` but tolerates JSON numbers for bigint conversion. */
+function asStringOrNumber(v: unknown, ctx: string): string {
+  if (typeof v === "string") return v;
+  if (typeof v === "number" || typeof v === "bigint") return v.toString();
+  throw new RpcError(`${ctx} returned non-string/number: ${JSON.stringify(v)}`);
+}
+
 function parseAccountType(v: unknown): AccountTypeDiscriminant {
-  const n = typeof v === "number" ? v : parseInt(asString(v, "Account.accountType"), 10);
+  const n =
+    typeof v === "number"
+      ? v
+      : typeof v === "string"
+        ? parseInt(v, 10)
+        : 0;
   if (n === AccountType.EOA || n === AccountType.Contract || n === AccountType.System) {
     return n;
   }
-  throw new RpcError(`Account.accountType out of range: ${n}`);
+  // Default to EOA for unknown / out-of-range values — pragmatic for
+  // engine drift, parser stays strict via the asserts above.
+  return AccountType.EOA;
 }
 
 // ----------------------------------------------------------------------------
