@@ -30,6 +30,8 @@ export type { Keypair, KeypairHandle, EncryptedTxParams } from "./crypto";
 export type {
   Wave,
   Hash,
+  Account,
+  AccountTypeDiscriminant,
   WaveHeader,
   HardFinalityCert,
   SnapshotManifest,
@@ -47,4 +49,4 @@ export type {
   FeeData,
   CallOverrides,
 } from "./types";
-export { ReceiptUtils, TxType } from "./types";
+export { ReceiptUtils, TxType, AccountType } from "./types";

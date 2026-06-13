@@ -234,7 +234,7 @@ export class Wallet extends AbstractSigner {
     // Auto-fetch access list for parallel scheduling
     let accessList: import("./types").AccessEntry[] | undefined;
     try {
-      accessList = await p.createAccessList({
+      accessList = await p.estimateAccess({
         to, data, from: this.address,
         value: BigInt(val) > 0n ? "0x" + BigInt(val).toString(16) : undefined,
       });

@@ -291,14 +291,14 @@ export class Contract {
     // Phase 8 will resolve omitted bounds via Provider.getWave() ("latest");
     // for now the caller passes explicit bounds per HOST_FN_ABI §15.4
     // (5,000-wave cap per request).
-    const logs = await this.provider.getLogs({
+    const response = await this.provider.getLogs({
       contract: this.address,
       fromWave: fromWave ?? 0,
       toWave: toWave ?? 0,
       topics: [[topic0]],
     });
 
-    return logs.map((log) => this.decodeEventLog(ev, log));
+    return response.events.map((log) => this.decodeEventLog(ev, log));
   }
 
   /**

@@ -30,6 +30,46 @@ export type Hash = string;
 export type Address = string;
 
 // ============================================================================
+// Account record (returned by getAccount)
+// ============================================================================
+
+/** Account-type discriminant. Spec: Chapter 11 §11.1. */
+export const AccountType = {
+  EOA: 0,
+  Contract: 1,
+  System: 2,
+} as const;
+
+export type AccountTypeDiscriminant = (typeof AccountType)[keyof typeof AccountType];
+
+/**
+ * Full account record returned by `pyde_getAccount`.
+ * Spec: Chapter 11 §11.1 (141 bytes fixed-portion + variable `authKeys`).
+ *
+ * Numeric fields are hex-encoded on the wire and exposed as bigint for
+ * u128 values (balance / gasTank) and number for u64 / u32 (nonce /
+ * keyNonce). 32-byte hashes are 0x-prefixed hex strings.
+ */
+export interface Account {
+  address: string;
+  /** Low end of the 16-slot nonce window. */
+  nonce: number;
+  /** Spendable balance in quanta (u128). */
+  balance: bigint;
+  /** WASM code hash (Poseidon2). Zero hash for EOAs. */
+  codeHash: Hash;
+  /** State subtree root for this contract. Zero for empty contracts. */
+  storageRoot: Hash;
+  accountType: AccountTypeDiscriminant;
+  /** Opaque authorization-keys blob (variable layout per Chapter 11 §11.5). */
+  authKeys: string;
+  /** Sponsored-tx balance pool (u128). */
+  gasTank: bigint;
+  /** Key-rotation counter. */
+  keyNonce: number;
+}
+
+// ============================================================================
 // Wave + chain primitives
 // ============================================================================
 

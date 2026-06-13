@@ -1,6 +1,6 @@
 import WebSocket from "ws";
 import { Provider } from "./provider";
-import { Log, LogFilter, WaveHeader } from "./types";
+import { Log, LogFilter, GetLogsResponse, WaveHeader } from "./types";
 import { ConnectionError, RpcError } from "./errors";
 
 type Listener = (...args: any[]) => void;
@@ -130,10 +130,9 @@ export class WebSocketProvider {
   async getBalance(address: string): Promise<bigint> { return this.httpProvider.getBalance(address); }
   async getNonce(address: string): Promise<number> { return this.httpProvider.getNonce(address); }
   async getChainId(): Promise<number> { return this.httpProvider.getChainId(); }
-  async getBlockNumber(): Promise<number> { return this.httpProvider.getBlockNumber(); }
-  async getGasPrice(): Promise<bigint> { return this.httpProvider.getGasPrice(); }
+  async getBaseFee(): Promise<bigint> { return this.httpProvider.getBaseFee(); }
   async call(to: string, data: string): Promise<string> { return this.httpProvider.call(to, data); }
-  async getLogs(filter: LogFilter): Promise<Log[]> { return this.httpProvider.getLogs(filter); }
+  async getLogs(filter: LogFilter): Promise<GetLogsResponse> { return this.httpProvider.getLogs(filter); }
 
   // ========================================================================
   // Cleanup
