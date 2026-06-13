@@ -341,12 +341,12 @@ export class Wallet extends AbstractSigner {
    *
    * Spec: Chapter 8.5 + Chapter 9.
    *
-   * ⚠️ Hex-SK only. Pyde-crypto-wasm's `buildRawEncryptedTx` consumes
-   * a hex secret key; there is no handle-based variant in the WASM
-   * surface yet. Handle-backed wallets (Wallet.generate()) throw
-   * here — use Wallet.generateUnsafe() or Wallet.fromEncrypted() for
-   * encrypted-tx flows until pyde-crypto-wasm adds
-   * `buildRawEncryptedTxWithHandle`.
+   * Handle-backed (Wallet.generate()) and hex-SK (Wallet.generateUnsafe(),
+   * Wallet.fromEncrypted()) wallets both work — the implementation
+   * dispatches on the internal key material and uses either
+   * `buildRawEncryptedTxWithHandle` (handle) or `buildRawEncryptedTx`
+   * (hex). Either way, the SK that signs the EncryptedTx::hash is the
+   * same FALCON-512 key bound to `this.address`.
    *
    * Privacy note: `opts.estimateAccess` defaults to **false**.
    * `estimateAccess` calls the RPC with the plaintext (to, data,
@@ -368,13 +368,6 @@ export class Wallet extends AbstractSigner {
       provider?: Provider;
     },
   ): Promise<Receipt> {
-    if (!("hex" in this.key)) {
-      throw new SigningError(
-        "sendEncrypted requires a hex secret key; this Wallet is handle-backed. " +
-          "Use Wallet.generateUnsafe() or Wallet.fromEncrypted() for encrypted-tx flows " +
-          "until pyde-crypto-wasm exposes a handle variant of buildRawEncryptedTx.",
-      );
-    }
     const p = this.resolveProvider(opts?.provider);
     const [thresholdPk, [nonce, chainId]] = await Promise.all([
       p.getThresholdPublicKey(),
@@ -408,7 +401,10 @@ export class Wallet extends AbstractSigner {
       ...(opts?.deadline !== undefined ? { deadline: opts.deadline } : {}),
     };
 
-    const wire = crypto.buildRawEncryptedTx(params, this.key.hex);
+    const wire =
+      "handle" in this.key
+        ? crypto.buildRawEncryptedTxWithHandle(params, this.key.handle)
+        : crypto.buildRawEncryptedTx(params, this.key.hex);
     const tx = await p.sendRawEncryptedTransaction(wire);
     return tx.wait();
   }
