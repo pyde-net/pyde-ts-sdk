@@ -329,6 +329,106 @@ export class Wallet extends AbstractSigner {
   }
 
   // ==========================================================================
+  // MEV-protected (encrypted) submission — Chapter 8.5 + Chapter 9
+  // ==========================================================================
+
+  /**
+   * Build, encrypt, sign, and submit a transaction through the
+   * MEV-protected encrypted mempool. The recipient + value + calldata
+   * are threshold-encrypted with the committee pubkey so no validator
+   * or RPC operator can read them before the order is locked at wave
+   * commit time.
+   *
+   * Spec: Chapter 8.5 + Chapter 9.
+   *
+   * ⚠️ Hex-SK only. Pyde-crypto-wasm's `buildRawEncryptedTx` consumes
+   * a hex secret key; there is no handle-based variant in the WASM
+   * surface yet. Handle-backed wallets (Wallet.generate()) throw
+   * here — use Wallet.generateUnsafe() or Wallet.fromEncrypted() for
+   * encrypted-tx flows until pyde-crypto-wasm adds
+   * `buildRawEncryptedTxWithHandle`.
+   *
+   * Privacy note: `opts.estimateAccess` defaults to **false**.
+   * `estimateAccess` calls the RPC with the plaintext (to, data,
+   * value) — a curious node could see the call before it ever gets
+   * encrypted. Set to true only against a trusted RPC, or pass a
+   * pre-computed `opts.accessList` from a local simulator (Phase 14).
+   * The chain still parallelises without an access list; the cost is
+   * conservative serialisation, not correctness.
+   */
+  async sendEncrypted(
+    to: string,
+    data: string,
+    opts?: {
+      gasLimit?: number;
+      value?: bigint | number | string;
+      deadline?: number;
+      accessList?: AccessEntry[];
+      estimateAccess?: boolean;
+      provider?: Provider;
+    },
+  ): Promise<Receipt> {
+    if (!("hex" in this.key)) {
+      throw new SigningError(
+        "sendEncrypted requires a hex secret key; this Wallet is handle-backed. " +
+          "Use Wallet.generateUnsafe() or Wallet.fromEncrypted() for encrypted-tx flows " +
+          "until pyde-crypto-wasm exposes a handle variant of buildRawEncryptedTx.",
+      );
+    }
+    const p = this.resolveProvider(opts?.provider);
+    const [thresholdPk, [nonce, chainId]] = await Promise.all([
+      p.getThresholdPublicKey(),
+      p.getNonceAndChainId(this.address),
+    ]);
+
+    let accessList = opts?.accessList;
+    if (!accessList && opts?.estimateAccess) {
+      try {
+        accessList = await p.estimateAccess({
+          to,
+          data,
+          from: this.address,
+          ...(opts.value !== undefined ? { value: opts.value } : {}),
+        });
+      } catch {
+        // Hint only — chain works without.
+      }
+    }
+
+    const params: import("./crypto").EncryptedTxParams = {
+      thresholdPk,
+      sender: this.address,
+      nonce,
+      gasLimit: opts?.gasLimit ?? 100_000_000,
+      chainId,
+      to,
+      value: (opts?.value ?? 0).toString(),
+      calldata: data,
+      ...(accessList ? { accessList } : {}),
+      ...(opts?.deadline !== undefined ? { deadline: opts.deadline } : {}),
+    };
+
+    const wire = crypto.buildRawEncryptedTx(params, this.key.hex);
+    const tx = await p.sendRawEncryptedTransaction(wire);
+    return tx.wait();
+  }
+
+  /** Encrypted variant of `transfer` — value-only send through the
+   *  MEV-protected mempool. Same hex-SK constraint as `sendEncrypted`. */
+  async transferEncrypted(
+    to: string,
+    amount: bigint | number,
+    opts?: { deadline?: number; provider?: Provider },
+  ): Promise<Receipt> {
+    return this.sendEncrypted(to, "0x", {
+      value: amount,
+      gasLimit: 21_000,
+      ...(opts?.deadline !== undefined ? { deadline: opts.deadline } : {}),
+      ...(opts?.provider ? { provider: opts.provider } : {}),
+    });
+  }
+
+  // ==========================================================================
   // Validator / staking operations (Chapter 11 §11.8 + Chapter 14 §14.5)
   // ==========================================================================
 
