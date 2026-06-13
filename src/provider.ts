@@ -1,63 +1,116 @@
-import { Receipt, Log, LogFilter, BlockHeader, TransactionInfo, TransactionResponse, FeeData, CallOverrides } from "./types";
-import { CallExceptionError, ConnectionError, TimeoutError, RpcError } from "./errors";
+/**
+ * HTTP JSON-RPC client. Read-only RPC surface for the Pyde chain.
+ *
+ * Spec sources:
+ *   - Chapter 17.4    — JSON-RPC method catalog
+ *   - HOST_FN_ABI §15 — events + cursor pagination shape (getLogs)
+ *   - Chapter 6       — wave / HardFinalityCert
+ *   - Chapter 10      — fee model (no tips in v1)
+ *   - Chapter 11      — account model
+ *   - STATE_SYNC.md   — snapshot manifest
+ *
+ * Wire conventions:
+ *   - Requests + responses use snake_case on the wire; this SDK exposes
+ *     camelCase to TS callers. Per-method translation happens in the
+ *     small `toWire*` / `fromWire*` helpers at the bottom of the file
+ *     so the public surface is idiomatic TS.
+ *   - Numbers: u64 + u32 ride the wire as hex strings (`0x` prefix) for
+ *     safety; the SDK parses back to `number` (≤ 2^53) or `bigint`
+ *     (u128 / u256) at the boundary.
+ *
+ * Transaction submission, encrypted-tx, and WebSocket subscriptions
+ * live in their respective phases — this module is the read-only +
+ * tx-submission HTTP surface.
+ */
 
-/** Provider options for configuring HTTP behavior. */
+import type {
+  Receipt,
+  Log,
+  LogFilter,
+  GetLogsResponse,
+  EventCursor,
+  WaveHeader,
+  HardFinalityCert,
+  SnapshotManifest,
+  Account,
+  AccountTypeDiscriminant,
+  TransactionInfo,
+  TransactionResponse,
+  FeeData,
+  CallOverrides,
+  AccessEntry,
+} from "./types";
+import { AccountType } from "./types";
+import {
+  CallExceptionError,
+  ConnectionError,
+  RpcError,
+  TimeoutError,
+} from "./errors";
+
+/** Options for the Provider's HTTP transport. */
 export interface ProviderOptions {
-  /** Request timeout in milliseconds (default: 30000). */
+  /** Request timeout in milliseconds (default 30,000). */
   timeout?: number;
-  /** Number of retry attempts on failure (default: 0). */
+  /** Retry attempts on transport failures (default 0). */
   retries?: number;
-  /** Custom HTTP headers. */
+  /** Custom HTTP headers (e.g. auth keys, x-trace-id). */
   headers?: Record<string, string>;
 }
 
-/** JSON-RPC client for interacting with a Pyde node. */
+/**
+ * HTTP JSON-RPC client for a Pyde node.
+ *
+ * ```ts
+ * const provider = new Provider("https://rpc.pyde.network");
+ * const balance = await provider.getBalance("0x...");
+ * ```
+ */
 export class Provider {
-  private rpcUrl: string;
+  readonly rpcUrl: string;
   private rpcId = 0;
   private cachedChainId: number | null = null;
-  private options: Required<Omit<ProviderOptions, "headers">> & { headers: Record<string, string> };
+  private options: Required<Omit<ProviderOptions, "headers">> & {
+    headers: Record<string, string>;
+  };
 
   constructor(rpcUrl: string, options?: ProviderOptions) {
     this.rpcUrl = rpcUrl;
     this.options = {
-      timeout: options?.timeout ?? 30000,
+      timeout: options?.timeout ?? 30_000,
       retries: options?.retries ?? 0,
       headers: options?.headers ?? {},
     };
   }
 
   // ========================================================================
-  // Queries
+  // Account queries
   // ========================================================================
 
+  /** Return the spendable balance (quanta, u128). Spec: chapter 17.4. */
   async getBalance(address: string): Promise<bigint> {
-    const result = await this.rpc("pyde_getBalance", [address]);
-    return BigInt(result as string);
+    const result = await this.call_("pyde_getBalance", [address]);
+    return BigInt(asString(result, "pyde_getBalance"));
   }
 
+  /** Return the account's low-end nonce (next available slot in the
+   *  16-slot sliding window per Chapter 11). Spec: chapter 17.4. */
   async getNonce(address: string): Promise<number> {
-    const result = await this.rpc("pyde_getTransactionCount", [address]);
-    const s = result as string;
-    const n = s.startsWith("0x") ? parseInt(s, 16) : parseInt(s, 10);
-    if (Number.isNaN(n)) throw new Error(`Invalid nonce response: ${s}`);
-    return n;
+    const result = await this.call_("pyde_getNonce", [address]);
+    return parseUint(asString(result, "pyde_getNonce"), "pyde_getNonce");
   }
 
-  async getCode(address: string): Promise<string> {
-    return (await this.rpc("pyde_getCode", [address])) as string;
-  }
-
+  /** Return the chain ID (used for replay protection in signed txs).
+   *  Result is cached per Provider instance (chain ID is genesis-immutable). */
   async getChainId(): Promise<number> {
     if (this.cachedChainId !== null) return this.cachedChainId;
-    const result = await this.rpc("pyde_chainId", []);
-    const n = parseInt(result as string, 16);
-    if (Number.isNaN(n)) throw new Error(`Invalid chainId response: ${result}`);
+    const result = await this.call_("pyde_chainId", []);
+    const n = parseUint(asString(result, "pyde_chainId"), "pyde_chainId");
     this.cachedChainId = n;
     return n;
   }
 
-  /** Fetch nonce and chainId in parallel (saves one round trip). */
+  /** Fetch nonce + chainId in one round-trip (used when building a tx). */
   async getNonceAndChainId(address: string): Promise<[number, number]> {
     const [nonce, chainId] = await Promise.all([
       this.getNonce(address),
@@ -66,219 +119,241 @@ export class Provider {
     return [nonce, chainId];
   }
 
-  async getBlockNumber(): Promise<number> {
-    const result = await this.rpc("pyde_blockNumber", []);
-    const n = parseInt(result as string, 16);
-    if (Number.isNaN(n)) throw new Error(`Invalid blockNumber response: ${result}`);
-    return n;
+  /** Return the full account record. Spec: Chapter 11 §11.1 + chapter 17.4. */
+  async getAccount(address: string): Promise<Account | null> {
+    const result = await this.call_("pyde_getAccount", [address]);
+    return result ? fromWireAccount(result) : null;
   }
 
-  async getGasPrice(): Promise<bigint> {
-    const result = await this.rpc("pyde_gasPrice", []);
-    return BigInt(result as string);
+  // ========================================================================
+  // Contract queries
+  // ========================================================================
+
+  /** Return the contract's WASM bytecode as hex. Empty string for EOAs.
+   *  Spec: chapter 17.4 `pyde_getContractCode`. */
+  async getContractCode(address: string): Promise<string> {
+    return asString(
+      await this.call_("pyde_getContractCode", [address]),
+      "pyde_getContractCode",
+    );
   }
 
-  async getStorageAt(address: string, slot: number): Promise<string> {
-    return (await this.rpc("pyde_getStorageAt", [address, slot])) as string;
+  /** Return the value of a single contract state slot.
+   *  Spec: chapter 17.4 `pyde_getContractState`. */
+  async getContractState(address: string, slotHash: string): Promise<string> {
+    return asString(
+      await this.call_("pyde_getContractState", [address, slotHash]),
+      "pyde_getContractState",
+    );
   }
 
-  async getBlockByNumber(slot: number): Promise<BlockHeader | null> {
-    const result = await this.rpc("pyde_getBlockByNumber", [slot]);
-    return result ? (result as BlockHeader) : null;
+  // ========================================================================
+  // PNS name resolution
+  // ========================================================================
+
+  /** Resolve a Pyde Name Service `.pyde` name to its 32-byte address.
+   *  Returns null if the name is unregistered. Spec: chapter 17.4. */
+  async resolveName(name: string): Promise<string | null> {
+    const result = await this.call_("pyde_resolveName", [name]);
+    return result == null ? null : asString(result, "pyde_resolveName");
   }
 
-  /** Look up a transaction by its hash. Returns null if not found. */
-  async getTransaction(txHash: string): Promise<TransactionInfo | null> {
-    const result = await this.rpc("pyde_getTransactionByHash", [txHash]);
-    return result ? (result as TransactionInfo) : null;
+  // ========================================================================
+  // Wave + finality
+  // ========================================================================
+
+  /** Return the header for a wave (omit `waveId` for the latest committed
+   *  wave). Spec: chapter 17.4 `pyde_getWave`. */
+  async getWave(waveId?: number): Promise<WaveHeader | null> {
+    const params = waveId === undefined ? [] : [waveId];
+    const result = await this.call_("pyde_getWave", params);
+    return result ? fromWireWaveHeader(result) : null;
   }
 
-  /** Get current fee data (base fee, gas price). */
+  /** Return the threshold-signed hard finality certificate for a wave.
+   *  Spec: Chapter 6 + chapter 17.4 `pyde_getHardFinalityCert`. */
+  async getHardFinalityCert(waveId: number): Promise<HardFinalityCert | null> {
+    const result = await this.call_("pyde_getHardFinalityCert", [waveId]);
+    return result ? fromWireHardFinalityCert(result) : null;
+  }
+
+  // ========================================================================
+  // State sync
+  // ========================================================================
+
+  /** Return the snapshot manifest for a wave (light-client state sync).
+   *  Spec: STATE_SYNC.md + chapter 17.4 `pyde_getSnapshotManifest`. */
+  async getSnapshotManifest(waveId: number): Promise<SnapshotManifest | null> {
+    const result = await this.call_("pyde_getSnapshotManifest", [waveId]);
+    return result ? fromWireSnapshotManifest(result) : null;
+  }
+
+  // ========================================================================
+  // Fee data
+  // ========================================================================
+
+  /** Return the current base fee (gas-price = base in v1; no priority tip).
+   *  Spec: Chapter 10 + chapter 17.4 `pyde_getBaseFee`. */
+  async getBaseFee(): Promise<bigint> {
+    const result = await this.call_("pyde_getBaseFee", []);
+    return BigInt(asString(result, "pyde_getBaseFee"));
+  }
+
+  /** Convenience wrapper that surfaces the same value under two names
+   *  (gasPrice + baseFee). Pyde has no priority tips in v1, so they are
+   *  always equal. Spec: Chapter 10. */
   async getFeeData(): Promise<FeeData> {
-    const gasPrice = await this.getGasPrice();
-    // Base fee is the current gas price in Pyde's EIP-1559 model (no tips)
-    return { gasPrice, baseFee: gasPrice };
+    const base = await this.getBaseFee();
+    return { gasPrice: base, baseFee: base };
   }
 
   // ========================================================================
-  // Static calls & gas estimation
+  // View calls + gas / access estimation
   // ========================================================================
 
+  /** Off-chain view-function call. Free; no tx, no consensus. Spec:
+   *  chapter 17.4 — bounded by per-call instruction cap on the node. */
   async call(to: string, data: string, overrides?: CallOverrides): Promise<string> {
-    const params: Record<string, any> = {
-      from: overrides?.from ?? "0x" + "00".repeat(32),
-      to,
-      data,
-    };
-    if (overrides?.value !== undefined) params.value = "0x" + BigInt(overrides.value).toString(16);
-    if (overrides?.gasLimit !== undefined) params.gas = "0x" + overrides.gasLimit.toString(16);
-    return (await this.rpc("pyde_call", [params])) as string;
+    const params = this.buildCallParams(to, data, overrides);
+    return asString(await this.call_("pyde_call", [params]), "pyde_call");
   }
 
-  async estimateGas(to: string, data: string, overrides?: CallOverrides): Promise<number> {
-    const params: Record<string, any> = {
-      from: overrides?.from ?? "0x" + "00".repeat(32),
-      to,
-      data,
-    };
-    if (overrides?.value !== undefined) params.value = "0x" + BigInt(overrides.value).toString(16);
-    if (overrides?.gasLimit !== undefined) params.gas = "0x" + overrides.gasLimit.toString(16);
-    const result = await this.rpc("pyde_estimateGas", [params]);
-    const n = parseInt(result as string, 16);
-    if (Number.isNaN(n)) throw new Error(`Invalid estimateGas response: ${result}`);
-    return n;
+  /** Estimate gas for a call. Spec: chapter 17.4 `pyde_estimateGas`. */
+  async estimateGas(
+    to: string,
+    data: string,
+    overrides?: CallOverrides,
+  ): Promise<number> {
+    const params = this.buildCallParams(to, data, overrides);
+    const result = await this.call_("pyde_estimateGas", [params]);
+    return parseUint(asString(result, "pyde_estimateGas"), "pyde_estimateGas");
   }
 
-  /** Simulate a call and return the access list (storage keys touched).
-   * Used internally by wallet.sendCall() to enable parallel scheduling. */
-  async createAccessList(params: {
+  /**
+   * Simulate the call and return the access list (slots the call would
+   * read / write). Used by wallets to attach an access list to the
+   * outgoing tx so the chain's parallel scheduler can place it without
+   * blocking. Spec: chapter 17.4 `pyde_estimateAccess`.
+   */
+  async estimateAccess(params: {
     to: string;
     data: string;
     from?: string;
-    value?: string;
-    gas?: string;
-  }): Promise<import("./types").AccessEntry[]> {
-    const result = await this.rpc("pyde_createAccessList", [params]) as any;
-    if (!result?.accessList) return [];
-    return (result.accessList as any[]).map((e: any) => ({
-      address: e.address ?? "",
-      reads: e.reads ?? [],
-      writes: e.writes ?? [],
-    }));
+    value?: bigint | number | string;
+    gasLimit?: number;
+  }): Promise<AccessEntry[]> {
+    const wire: Record<string, unknown> = {
+      from: params.from ?? ZERO_ADDR,
+      to: params.to,
+      data: params.data,
+    };
+    if (params.value !== undefined) wire.value = bigIntToHex(params.value);
+    if (params.gasLimit !== undefined) wire.gas = "0x" + params.gasLimit.toString(16);
+    const result = await this.call_("pyde_estimateAccess", [wire]);
+    return parseAccessList(result);
   }
 
   // ========================================================================
   // Transaction submission
   // ========================================================================
 
-  /** Send a raw signed transaction. Returns tx hash hex. */
-  /** Send a raw signed transaction. Returns a TransactionResponse with hash and wait(). */
+  /** Submit a signed transaction (wire-hex from `signTransaction`).
+   *  Spec: chapter 17.4 `pyde_sendRawTransaction`. */
   async sendRawTransaction(signedTxHex: string): Promise<TransactionResponse> {
-    const result = await this.rpc("pyde_sendRawTransaction", [signedTxHex]);
-    const s = result as string;
-    let hash: string;
-    try {
-      const inner = JSON.parse(s);
-      hash = inner.txHash || s;
-    } catch {
-      hash = s;
-    }
-    const provider = this;
-    return {
-      hash,
-      async wait(timeoutMs = 10000): Promise<Receipt> {
-        return provider.waitForReceipt(hash, timeoutMs);
-      },
-    };
+    const result = await this.call_("pyde_sendRawTransaction", [signedTxHex]);
+    return this.buildTxResponse(extractTxHash(result));
   }
 
-  // ========================================================================
-  // MEV-protected (encrypted) transaction submission
-  // ========================================================================
-
   /**
-   * Fetch the committee's threshold public key (hex-encoded wire
-   * bytes). Cache this per session — the key only rotates when the
-   * committee does, and rotation preserves the public key (only
-   * the shares rotate).
-   *
-   * Intended pairing with `sendRawEncryptedTransaction` below: the
-   * client uses this pubkey to threshold-encrypt `(to, value,
-   * calldata)` locally, FALCON-signs `EncryptedTx.hash()`, and
-   * submits the serialized frame. Plaintext never leaves the
-   * client — a curious RPC operator cannot front-run.
-   *
-   * Full client-side construction requires `threshold_encrypt` +
-   * `EncryptedTx` helpers which are not yet in the shipped WASM
-   * bundle (TODO: extend `pyde-crypto-wasm` + rebuild
-   * `wasm/pyde_crypto_wasm*`). For now this method exposes the
-   * RPC so downstream tooling that builds frames out-of-band
-   * (Rust SDK, CLI) can submit through the TS SDK too.
+   * Fetch the committee's threshold public key (wire bytes hex). Cache
+   * per session — the key only rotates with the committee, and rotation
+   * preserves the pubkey (only shares rotate). Required input to
+   * `buildRawEncryptedTx`. Spec: Chapter 8.5 + chapter 17.4.
    */
   async getThresholdPublicKey(): Promise<string> {
-    const result = await this.rpc("pyde_getThresholdPublicKey", []);
-    if (typeof result !== "string") {
-      throw new Error(
-        `pyde_getThresholdPublicKey returned non-string: ${JSON.stringify(result)}`
-      );
-    }
-    return result;
+    return asString(
+      await this.call_("pyde_getThresholdPublicKey", []),
+      "pyde_getThresholdPublicKey",
+    );
   }
 
   /**
-   * Submit a client-built, client-signed `EncryptedTx` (hex-encoded
-   * wire bytes). This is the canonical MEV-protected submission path
-   * — the node never sees plaintext and the signature binds to a
-   * ciphertext the client produced (unlike the legacy server-side
-   * `pyde_sendEncryptedTransaction` path).
-   *
-   * The `encTxHex` arg must be the output of
-   * `EncryptedTx::to_bytes` hex-encoded with a `0x` prefix. Today
-   * that's produced by the Rust SDK's
-   * `build_raw_encrypted_tx`. A WASM-bundle upgrade will make it
-   * available to pure-TS callers too.
-   *
-   * Returns a `TransactionResponse` whose `.hash` is the encrypted
-   * tx hash; use `.wait()` to poll for the decrypted receipt.
+   * Submit a client-built, client-signed `EncryptedTx` (wire-hex from
+   * `buildRawEncryptedTx`). Plaintext never leaves the client; the
+   * signature binds to a ciphertext the client produced. Canonical
+   * MEV-protected submission path. Spec: Chapter 8.5 + Chapter 9 +
+   * chapter 17.4 `pyde_sendRawEncryptedTransaction`.
    */
   async sendRawEncryptedTransaction(
-    encTxHex: string
+    encTxHex: string,
   ): Promise<TransactionResponse> {
-    const result = await this.rpc("pyde_sendRawEncryptedTransaction", [
-      encTxHex,
-    ]);
-    const hash = result as string;
-    const provider = this;
-    return {
-      hash,
-      async wait(timeoutMs = 10000): Promise<Receipt> {
-        return provider.waitForReceipt(hash, timeoutMs);
-      },
-    };
+    const result = await this.call_("pyde_sendRawEncryptedTransaction", [encTxHex]);
+    return this.buildTxResponse(asString(result, "pyde_sendRawEncryptedTransaction"));
   }
 
   // ========================================================================
-  // Receipts
+  // Transaction lookup + receipts
   // ========================================================================
 
-  async getReceipt(txHash: string): Promise<Receipt | null> {
+  /** Look up a committed transaction by hash. Returns null if absent.
+   *  Spec: chapter 17.4 `pyde_getTransactionByHash`. */
+  async getTransaction(txHash: string): Promise<TransactionInfo | null> {
+    const result = await this.call_("pyde_getTransactionByHash", [txHash]);
+    return result ? fromWireTransactionInfo(result) : null;
+  }
+
+  /** Fetch a receipt. Returns null if the tx hasn't committed yet (and
+   *  the node knows that's the reason it has no receipt). Spec: chapter 17.4. */
+  async getTransactionReceipt(txHash: string): Promise<Receipt | null> {
     try {
-      const result = await this.rpc("pyde_getTransactionReceipt", [txHash]);
-      return result ? (result as Receipt) : null;
-    } catch (e: any) {
-      // "receipt not found" is expected during polling — treat as null
-      if (e?.rpcError?.message?.includes("receipt not found")) return null;
+      const result = await this.call_("pyde_getTransactionReceipt", [txHash]);
+      return result ? fromWireReceipt(result) : null;
+    } catch (e) {
+      if (isReceiptNotFound(e)) return null;
       throw e;
     }
   }
 
-  /** Poll for receipt until available or timeout. */
-  async waitForReceipt(txHash: string, timeoutMs = 10000): Promise<Receipt> {
+  /** Poll until the receipt is available or `timeoutMs` elapses. */
+  async waitForReceipt(txHash: string, timeoutMs = 10_000): Promise<Receipt> {
     const start = Date.now();
     while (Date.now() - start < timeoutMs) {
-      const receipt = await this.getReceipt(txHash);
-      if (receipt) return receipt;
+      const r = await this.getTransactionReceipt(txHash);
+      if (r) return r;
       await sleep(100);
     }
-    throw new TimeoutError(`Receipt not available after ${timeoutMs}ms for tx ${txHash}`);
+    throw new TimeoutError(
+      `Receipt not available after ${timeoutMs}ms for tx ${txHash}`,
+    );
   }
 
-  /** Send raw tx and wait for receipt. Throws on revert. */
-  async sendAndWait(signedTxHex: string, timeoutMs = 10000): Promise<Receipt> {
+  /** Send + wait + throw on revert. Convenience for one-shot calls. */
+  async sendAndWait(signedTxHex: string, timeoutMs = 10_000): Promise<Receipt> {
     const tx = await this.sendRawTransaction(signedTxHex);
-    const receipt = await this.waitForReceipt(tx.hash, timeoutMs);
-    if (!receipt.success) {
-      throw new CallExceptionError(receipt.gasUsed, receipt.returnData || "0x");
+    const r = await this.waitForReceipt(tx.hash, timeoutMs);
+    if (!r.success) {
+      throw new CallExceptionError(r.gasUsed, r.returnData ?? "0x");
     }
-    return receipt;
+    return r;
   }
 
   // ========================================================================
-  // Events
+  // Historical event queries (cursor pagination)
   // ========================================================================
 
-  async getLogs(filter: LogFilter): Promise<Log[]> {
-    return (await this.rpc("pyde_getLogs", [filter])) as Log[];
+  /**
+   * Fetch a single page of events matching `filter`. Spec: HOST_FN_ABI
+   * §15.4 — `to_wave - from_wave ≤ 5,000`, per-position topic list ≤ 8,
+   * default limit 100, max 1,000.
+   *
+   * Returns the page + an optional `nextCursor` for the next page; pass
+   * that cursor on the next call to continue. `nextCursor === undefined`
+   * means the query is exhausted.
+   */
+  async getLogs(filter: LogFilter): Promise<GetLogsResponse> {
+    const wire = toWireLogFilter(filter);
+    const result = await this.call_("pyde_getLogs", [wire]);
+    return fromWireGetLogsResponse(result);
   }
 
   // ========================================================================
@@ -286,104 +361,394 @@ export class Provider {
   // ========================================================================
 
   /**
-   * Send multiple RPC calls in a single HTTP request.
+   * Send multiple RPC calls in a single HTTP round-trip.
    *
    * ```ts
    * const [balance, nonce, chainId] = await provider.batch([
-   * { method: "pyde_getBalance", params: [addr] },
-   * { method: "pyde_getTransactionCount", params: [addr] },
-   * { method: "pyde_chainId", params: [] },
+   *   { method: "pyde_getBalance", params: [addr] },
+   *   { method: "pyde_getNonce",   params: [addr] },
+   *   { method: "pyde_chainId",    params: [] },
    * ]);
    * ```
+   *
+   * Returns raw RPC results in order. Caller does any post-parsing.
    */
   async batch(calls: { method: string; params: unknown[] }[]): Promise<unknown[]> {
-    const bodies = calls.map((c, i) => ({
-      jsonrpc: "2.0",
+    const bodies = calls.map((c) => ({
+      jsonrpc: "2.0" as const,
       id: ++this.rpcId,
       method: c.method,
       params: c.params,
     }));
-
-    let resp: Response;
-    try {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), this.options.timeout);
-      resp = await fetch(this.rpcUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...this.options.headers },
-        body: JSON.stringify(bodies),
-        signal: controller.signal,
-      });
-      clearTimeout(timer);
-    } catch (e: unknown) {
-      throw new ConnectionError(e instanceof Error ? e.message : String(e));
+    const results = await this.fetchJson(bodies);
+    if (!Array.isArray(results)) {
+      throw new RpcError("batch response was not an array");
     }
-
-    if (!resp.ok) throw new RpcError(`HTTP ${resp.status}: ${resp.statusText}`);
-    const results = await resp.json() as any[];
-    return results.map(r => {
-      if (r.error) throw new RpcError(JSON.stringify(r.error), r.error);
-      return r.result;
+    return results.map((r) => {
+      if (r && typeof r === "object" && "error" in r && r.error) {
+        throw new RpcError(JSON.stringify(r.error), r.error);
+      }
+      return r?.result;
     });
   }
 
   // ========================================================================
-  // Internal
+  // Internals
   // ========================================================================
 
-  private async rpc(method: string, params: unknown[]): Promise<unknown> {
+  private buildCallParams(
+    to: string,
+    data: string,
+    overrides?: CallOverrides,
+  ): Record<string, unknown> {
+    const params: Record<string, unknown> = {
+      from: overrides?.from ?? ZERO_ADDR,
+      to,
+      data,
+    };
+    if (overrides?.value !== undefined) params.value = bigIntToHex(overrides.value);
+    if (overrides?.gasLimit !== undefined) {
+      params.gas = "0x" + overrides.gasLimit.toString(16);
+    }
+    return params;
+  }
+
+  private buildTxResponse(hash: string): TransactionResponse {
+    const provider = this;
+    return {
+      hash,
+      wait(timeoutMs = 10_000): Promise<Receipt> {
+        return provider.waitForReceipt(hash, timeoutMs);
+      },
+    };
+  }
+
+  /** Single JSON-RPC call (with retry). */
+  private async call_(method: string, params: unknown[]): Promise<unknown> {
     const body = {
-      jsonrpc: "2.0",
+      jsonrpc: "2.0" as const,
       id: ++this.rpcId,
       method,
       params,
     };
-
     let lastError: Error | null = null;
     for (let attempt = 0; attempt <= this.options.retries; attempt++) {
       try {
-        return await this.doRpc(body);
+        const json = await this.fetchJson(body);
+        if (json && typeof json === "object" && "error" in json && json.error) {
+          throw new RpcError(JSON.stringify(json.error), json.error);
+        }
+        return (json as { result?: unknown }).result;
       } catch (e) {
         lastError = e as Error;
-        if (attempt < this.options.retries) await sleep(100 * (attempt + 1));
+        if (attempt < this.options.retries) {
+          await sleep(100 * (attempt + 1));
+        }
       }
     }
     throw lastError;
   }
 
-  private async doRpc(body: Record<string, unknown>): Promise<unknown> {
+  private async fetchJson(body: unknown): Promise<unknown> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.options.timeout);
     let resp: Response;
     try {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), this.options.timeout);
       resp = await fetch(this.rpcUrl, {
         method: "POST",
-        headers: { "Content-Type": "application/json", ...this.options.headers },
+        headers: {
+          "Content-Type": "application/json",
+          ...this.options.headers,
+        },
         body: JSON.stringify(body),
         signal: controller.signal,
       });
-      clearTimeout(timer);
-    } catch (e: unknown) {
+    } catch (e) {
       throw new ConnectionError(e instanceof Error ? e.message : String(e));
+    } finally {
+      clearTimeout(timer);
     }
-
     if (!resp.ok) {
       throw new RpcError(`HTTP ${resp.status}: ${resp.statusText}`);
     }
-
-    let json: { result?: unknown; error?: unknown } = {};
     try {
-      json = await resp.json() as { result?: unknown; error?: unknown };
+      return await resp.json();
     } catch {
-      throw new RpcError(`invalid JSON response`);
+      throw new RpcError("invalid JSON response");
     }
-    if (json.error) {
-      throw new RpcError(JSON.stringify(json.error), json.error);
-    }
-    return json.result;
   }
 }
 
+// ============================================================================
+// Wire <-> TS conversion helpers
+// ============================================================================
+
+const ZERO_ADDR = "0x" + "00".repeat(32);
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function asString(value: unknown, ctx: string): string {
+  if (typeof value !== "string") {
+    throw new RpcError(`${ctx} returned non-string: ${JSON.stringify(value)}`);
+  }
+  return value;
+}
+
+function parseUint(hex: string, ctx: string): number {
+  const n = hex.startsWith("0x") ? parseInt(hex, 16) : parseInt(hex, 10);
+  if (!Number.isFinite(n)) throw new RpcError(`${ctx} returned invalid number: ${hex}`);
+  return n;
+}
+
+function bigIntToHex(v: bigint | number | string): string {
+  return "0x" + BigInt(v).toString(16);
+}
+
+function isReceiptNotFound(e: unknown): boolean {
+  return (
+    e instanceof RpcError &&
+    typeof e.message === "string" &&
+    /receipt not found/i.test(e.message)
+  );
+}
+
+function extractTxHash(result: unknown): string {
+  // Some nodes wrap the hash in a `{txHash: "0x..."}` envelope; tolerate both.
+  if (typeof result === "string") return result;
+  if (result && typeof result === "object" && "txHash" in result) {
+    return asString((result as { txHash: unknown }).txHash, "sendRawTransaction");
+  }
+  throw new RpcError(`sendRawTransaction returned unexpected shape: ${JSON.stringify(result)}`);
+}
+
+// ----------------------------------------------------------------------------
+// Account
+// ----------------------------------------------------------------------------
+
+function fromWireAccount(w: unknown): Account {
+  const o = w as Record<string, unknown>;
+  return {
+    address: asString(o.address, "Account.address"),
+    nonce: parseUint(asString(o.nonce, "Account.nonce"), "Account.nonce"),
+    balance: BigInt(asString(o.balance, "Account.balance")),
+    codeHash: asString(o.code_hash ?? o.codeHash, "Account.codeHash"),
+    storageRoot: asString(o.storage_root ?? o.storageRoot, "Account.storageRoot"),
+    accountType: parseAccountType(o.account_type ?? o.accountType),
+    authKeys: asString(o.auth_keys ?? o.authKeys, "Account.authKeys"),
+    gasTank: BigInt(asString(o.gas_tank ?? o.gasTank, "Account.gasTank")),
+    keyNonce: parseUint(
+      asString(o.key_nonce ?? o.keyNonce, "Account.keyNonce"),
+      "Account.keyNonce",
+    ),
+  };
+}
+
+function parseAccountType(v: unknown): AccountTypeDiscriminant {
+  const n = typeof v === "number" ? v : parseInt(asString(v, "Account.accountType"), 10);
+  if (n === AccountType.EOA || n === AccountType.Contract || n === AccountType.System) {
+    return n;
+  }
+  throw new RpcError(`Account.accountType out of range: ${n}`);
+}
+
+// ----------------------------------------------------------------------------
+// WaveHeader
+// ----------------------------------------------------------------------------
+
+function fromWireWaveHeader(w: unknown): WaveHeader {
+  const o = w as Record<string, unknown>;
+  const out: WaveHeader = {
+    waveId: parseUint(asString(o.wave_id ?? o.waveId, "WaveHeader.waveId"), "WaveHeader.waveId"),
+    timestamp: asString(o.timestamp, "WaveHeader.timestamp"),
+    anchor: asString(o.anchor, "WaveHeader.anchor"),
+  };
+  if (o.state_root ?? o.stateRoot) out.stateRoot = asString(o.state_root ?? o.stateRoot, "stateRoot");
+  if (o.events_root ?? o.eventsRoot) out.eventsRoot = asString(o.events_root ?? o.eventsRoot, "eventsRoot");
+  if (o.tx_count !== undefined || o.txCount !== undefined) {
+    out.txCount = parseUint(asString(o.tx_count ?? o.txCount, "txCount"), "txCount");
+  }
+  return out;
+}
+
+// ----------------------------------------------------------------------------
+// HardFinalityCert
+// ----------------------------------------------------------------------------
+
+function fromWireHardFinalityCert(w: unknown): HardFinalityCert {
+  const o = w as Record<string, unknown>;
+  return {
+    waveId: parseUint(asString(o.wave_id ?? o.waveId, "HFC.waveId"), "HFC.waveId"),
+    stateRoot: asString(o.state_root ?? o.stateRoot, "HFC.stateRoot"),
+    eventsRoot: asString(o.events_root ?? o.eventsRoot, "HFC.eventsRoot"),
+    eventsBloom: asString(o.events_bloom ?? o.eventsBloom, "HFC.eventsBloom"),
+    signature: asString(o.signature, "HFC.signature"),
+  };
+}
+
+// ----------------------------------------------------------------------------
+// SnapshotManifest
+// ----------------------------------------------------------------------------
+
+function fromWireSnapshotManifest(w: unknown): SnapshotManifest {
+  const o = w as Record<string, unknown>;
+  const chunks = (o.chunks ?? o.chunk_manifest ?? []) as unknown[];
+  return {
+    epoch: parseUint(asString(o.epoch, "Snapshot.epoch"), "Snapshot.epoch"),
+    stateRootBlake3: asString(
+      o.state_root_blake3 ?? o.snapshot_state_root_blake3 ?? o.stateRootBlake3,
+      "Snapshot.stateRootBlake3",
+    ),
+    stateRootPoseidon2: asString(
+      o.state_root_poseidon2 ?? o.snapshot_state_root_poseidon2 ?? o.stateRootPoseidon2,
+      "Snapshot.stateRootPoseidon2",
+    ),
+    chunks: chunks.map((c) => {
+      const cc = c as Record<string, unknown>;
+      return {
+        chunkIndex: parseUint(
+          asString(cc.chunk_index ?? cc.chunkIndex, "ChunkRef.chunkIndex"),
+          "ChunkRef.chunkIndex",
+        ),
+        chunkSize: parseUint(
+          asString(cc.chunk_size ?? cc.chunkSize, "ChunkRef.chunkSize"),
+          "ChunkRef.chunkSize",
+        ),
+        chunkHash: asString(cc.chunk_hash ?? cc.chunkHash, "ChunkRef.chunkHash"),
+        chunkPath: asString(cc.chunk_path ?? cc.chunkPath, "ChunkRef.chunkPath"),
+      };
+    }),
+    committeePubkeys: ((o.committee_pubkeys ??
+      o.current_committee_pubkeys ??
+      o.committeePubkeys ??
+      []) as unknown[]).map((s) => asString(s, "committeePubkey")),
+    signatures: ((o.signatures ?? []) as unknown[]).map((s) => asString(s, "signature")),
+  };
+}
+
+// ----------------------------------------------------------------------------
+// Receipt + Log
+// ----------------------------------------------------------------------------
+
+function fromWireReceipt(w: unknown): Receipt {
+  const o = w as Record<string, unknown>;
+  return {
+    txHash: asString(o.tx_hash ?? o.txHash, "Receipt.txHash"),
+    success: Boolean(o.success),
+    gasUsed: asString(o.gas_used ?? o.gasUsed, "Receipt.gasUsed"),
+    effectiveGas: asString(o.effective_gas ?? o.effectiveGas, "Receipt.effectiveGas"),
+    feePaid: asString(o.fee_paid ?? o.feePaid, "Receipt.feePaid"),
+    feeBurned: asString(o.fee_burned ?? o.feeBurned, "Receipt.feeBurned"),
+    feeValidator: asString(o.fee_validator ?? o.feeValidator, "Receipt.feeValidator"),
+    returnData:
+      o.return_data || o.returnData
+        ? asString(o.return_data ?? o.returnData, "Receipt.returnData")
+        : undefined,
+    logs: ((o.logs ?? []) as unknown[]).map(fromWireLog),
+  };
+}
+
+function fromWireLog(w: unknown): Log {
+  const o = w as Record<string, unknown>;
+  return {
+    waveId: parseUint(asString(o.wave_id ?? o.waveId, "Log.waveId"), "Log.waveId"),
+    txIndex: parseUint(asString(o.tx_index ?? o.txIndex, "Log.txIndex"), "Log.txIndex"),
+    eventIndex: parseUint(
+      asString(o.event_index ?? o.eventIndex, "Log.eventIndex"),
+      "Log.eventIndex",
+    ),
+    contract: asString(o.contract_addr ?? o.contract ?? o.address, "Log.contract"),
+    topics: ((o.topics ?? []) as unknown[]).map((t) => asString(t, "Log.topic")),
+    data: asString(o.data, "Log.data"),
+  };
+}
+
+// ----------------------------------------------------------------------------
+// TransactionInfo
+// ----------------------------------------------------------------------------
+
+function fromWireTransactionInfo(w: unknown): TransactionInfo {
+  const o = w as Record<string, unknown>;
+  const out: TransactionInfo = {
+    hash: asString(o.hash ?? o.tx_hash, "Tx.hash"),
+    from: asString(o.from, "Tx.from"),
+    to: asString(o.to, "Tx.to"),
+    value: asString(o.value, "Tx.value"),
+    data: asString(o.data, "Tx.data"),
+    gasLimit: asString(o.gas_limit ?? o.gasLimit, "Tx.gasLimit"),
+    nonce: parseUint(asString(o.nonce, "Tx.nonce"), "Tx.nonce"),
+    chainId: parseUint(asString(o.chain_id ?? o.chainId, "Tx.chainId"), "Tx.chainId"),
+    txType: parseUint(asString(o.tx_type ?? o.txType, "Tx.txType"), "Tx.txType"),
+  };
+  if (o.wave_id !== undefined || o.waveId !== undefined) {
+    out.waveId = parseUint(asString(o.wave_id ?? o.waveId, "Tx.waveId"), "Tx.waveId");
+  }
+  return out;
+}
+
+// ----------------------------------------------------------------------------
+// AccessList
+// ----------------------------------------------------------------------------
+
+function parseAccessList(result: unknown): AccessEntry[] {
+  const arr = (result as { accessList?: unknown[]; access_list?: unknown[] })
+    ?.accessList ?? (result as { access_list?: unknown[] })?.access_list ?? [];
+  return (arr as unknown[]).map((e) => {
+    const o = e as Record<string, unknown>;
+    return {
+      address: asString(o.address, "AccessEntry.address"),
+      reads: ((o.reads ?? []) as unknown[]).map((s) => asString(s, "AccessEntry.read")),
+      writes: ((o.writes ?? []) as unknown[]).map((s) => asString(s, "AccessEntry.write")),
+    };
+  });
+}
+
+// ----------------------------------------------------------------------------
+// LogFilter + GetLogsResponse
+// ----------------------------------------------------------------------------
+
+function toWireLogFilter(f: LogFilter): Record<string, unknown> {
+  // Pad topics to 4 positional slots per HOST_FN_ABI §15.4 (positions
+  // 0-3 — index i constrains event.topics[i]; null = any).
+  const topics: (string[] | null)[] = [null, null, null, null];
+  if (f.topics) {
+    for (let i = 0; i < Math.min(4, f.topics.length); i++) {
+      topics[i] = f.topics[i] ?? null;
+    }
+  }
+  const wire: Record<string, unknown> = {
+    from_wave: f.fromWave,
+    to_wave: f.toWave,
+    topics,
+    contract: f.contract ?? null,
+    limit: f.limit ?? 100,
+  };
+  if (f.cursor) wire.cursor = toWireCursor(f.cursor);
+  return wire;
+}
+
+function toWireCursor(c: EventCursor): Record<string, unknown> {
+  return { wave_id: c.waveId, tx_index: c.txIndex, event_index: c.eventIndex };
+}
+
+function fromWireCursor(w: unknown): EventCursor {
+  const o = w as Record<string, unknown>;
+  return {
+    waveId: parseUint(asString(o.wave_id ?? o.waveId, "EventCursor.waveId"), "EventCursor.waveId"),
+    txIndex: parseUint(asString(o.tx_index ?? o.txIndex, "EventCursor.txIndex"), "EventCursor.txIndex"),
+    eventIndex: parseUint(
+      asString(o.event_index ?? o.eventIndex, "EventCursor.eventIndex"),
+      "EventCursor.eventIndex",
+    ),
+  };
+}
+
+function fromWireGetLogsResponse(w: unknown): GetLogsResponse {
+  const o = w as Record<string, unknown>;
+  const events = ((o.events ?? []) as unknown[]).map(fromWireLog);
+  const out: GetLogsResponse = { events };
+  const next = o.next_cursor ?? o.nextCursor;
+  if (next != null) out.nextCursor = fromWireCursor(next);
+  return out;
 }

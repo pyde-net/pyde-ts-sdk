@@ -1,177 +1,522 @@
-import WebSocket from "ws";
-import { Provider } from "./provider";
-import { Log, LogFilter, BlockHeader } from "./types";
-import { ConnectionError, RpcError } from "./errors";
-
-type Listener = (...args: any[]) => void;
-
 /**
- * WebSocket provider with subscription support.
+ * WebSocket Provider — live subscriptions over JSON-RPC.
  *
- * Uses dedicated WS server (port 8546) for subscriptions and HTTP (port 8545) for queries.
+ * Spec sources:
+ *   - Chapter 17.4    — `pyde_subscribe`: newHeads / accountChanges / logs
+ *   - HOST_FN_ABI §15.5 — subscription mechanics + at-least-once delivery
+ *                         + cursor-based resume via `from: EventCursor`
  *
- * ```ts
- * const ws = new WebSocketProvider("ws://127.0.0.1:8546");
- * await ws.ready;
- * ws.on("block", (h) => console.log(h.slot));
- * ws.on("logs", {}, (log) => console.log(log));
- * ws.destroy();
- * ```
+ * What this module provides:
+ *   - Isomorphic transport: uses `globalThis.WebSocket` (browser native,
+ *     Node 22+ native). Inject `options.webSocketConstructor` for Node 20
+ *     or any environment without a global.
+ *   - Three subscription kinds with per-subscription unsubscribe handles.
+ *   - Automatic reconnect with exponential backoff. On reconnect, all
+ *     active subscriptions are re-issued — `logs` resumes from the last
+ *     delivered cursor (HOST_FN_ABI §15.5: at-least-once with subscriber
+ *     reconciliation via cursor).
+ *   - Falls back to an HTTP `Provider` for non-subscription queries so a
+ *     single `WebSocketProvider` instance covers the full read surface.
+ *
+ * Delivery guarantees (from §15.5):
+ *   - Post-commit only — no pending notifications.
+ *   - Canonical order — events arrive in `(wave_id, tx_index, event_index)`.
+ *   - At-least-once — listeners may see duplicates around a reconnect.
+ *     Each `Log` carries its cursor coordinates; callers that need
+ *     exactly-once semantics should dedupe by `(waveId, txIndex, eventIndex)`.
  */
+
+import { Provider } from "./provider";
+import type {
+  Log,
+  WaveHeader,
+  Account,
+  EventCursor,
+  Hash,
+} from "./types";
+import { ConnectionError, RpcError, TimeoutError } from "./errors";
+
+// ============================================================================
+// Public types
+// ============================================================================
+
+/** Constructor type compatible with browser + Node WebSocket. */
+export type WebSocketCtor = new (url: string, protocols?: string | string[]) => WebSocketLike;
+
+/** Minimal WebSocket surface this module uses. */
+export interface WebSocketLike {
+  readonly readyState: number;
+  send(data: string): void;
+  close(code?: number, reason?: string): void;
+  onopen: ((event: unknown) => void) | null;
+  onmessage: ((event: { data: unknown }) => void) | null;
+  onerror: ((event: unknown) => void) | null;
+  onclose: ((event: unknown) => void) | null;
+}
+
+export interface WebSocketProviderOptions {
+  /** Custom WebSocket constructor (for environments lacking `globalThis.WebSocket`,
+   *  e.g. Node < 22 without `--experimental-websocket` or the `ws` package). */
+  webSocketConstructor?: WebSocketCtor;
+  /** HTTP RPC URL used for non-subscription queries (getBalance / etc).
+   *  If absent, derived from the WS URL by swapping `ws[s]://` → `http[s]://`
+   *  on the same host + port. */
+  httpRpcUrl?: string;
+  /** Initial reconnect delay in ms. Default 1,000. */
+  reconnectInitialDelayMs?: number;
+  /** Max delay between reconnect attempts in ms. Default 30,000. */
+  reconnectMaxDelayMs?: number;
+  /** Max reconnect attempts. 0 = infinite. Default 0. */
+  reconnectMaxAttempts?: number;
+  /** RPC call timeout in ms. Default 30,000. */
+  rpcTimeoutMs?: number;
+}
+
+/** Filter for `subscribeLogs` — same positional topics + contract shape as
+ *  `LogFilter` minus wave bounds (live subscription) plus optional
+ *  resume-from cursor. Spec: HOST_FN_ABI §15.5 LogSubscription. */
+export interface LogSubscriptionFilter {
+  /** Positional topic filter (0-3). null at position i = any. */
+  topics?: (Hash[] | null)[];
+  /** Optional contract address restriction. */
+  contract?: string;
+  /** Resume from this cursor (for at-least-once after a disconnect).
+   *  Omit to receive only events committed AFTER subscription time. */
+  from?: EventCursor;
+}
+
+/** Handle to an active subscription. Call to unsubscribe + remove listener. */
+export type Unsubscribe = () => Promise<void>;
+
+// ============================================================================
+// Internal state
+// ============================================================================
+
+type Resolver<T> = { resolve: (v: T) => void; reject: (e: Error) => void };
+
+interface NewHeadsSub {
+  kind: "newHeads";
+  serverSubId: string | null;
+  listener: (h: WaveHeader) => void;
+}
+
+interface AccountChangesSub {
+  kind: "accountChanges";
+  serverSubId: string | null;
+  address: string;
+  listener: (a: Account) => void;
+}
+
+interface LogsSub {
+  kind: "logs";
+  serverSubId: string | null;
+  filter: LogSubscriptionFilter;
+  /** Last delivered cursor; used to resume on reconnect (§15.5 at-least-once). */
+  lastCursor: EventCursor | null;
+  listener: (log: Log) => void;
+}
+
+type LocalSub = NewHeadsSub | AccountChangesSub | LogsSub;
+
+const WS_OPEN = 1;
+
+// ============================================================================
+// WebSocketProvider
+// ============================================================================
+
 export class WebSocketProvider {
-  /** The underlying WebSocket (exposed for advanced use). */
-  readonly ws: WebSocket;
-  readonly httpProvider: Provider;
+  /** HTTP Provider for non-subscription queries (getBalance, getWave, etc). */
+  readonly http: Provider;
+  /** Resolves once the initial connection is established. */
   readonly ready: Promise<void>;
 
-  private _rpcId = 0;
-  private _pending = new Map<number, { resolve: (v: any) => void; reject: (e: Error) => void }>();
-  private _listeners = new Map<string, Set<Listener>>();
-  private _subscriptions = new Map<string, string>();
-  private _destroyed = false;
+  private url: string;
+  private opts: Required<Omit<WebSocketProviderOptions, "webSocketConstructor" | "httpRpcUrl">> & {
+    webSocketConstructor: WebSocketCtor;
+  };
+  private ws: WebSocketLike | null = null;
+  private rpcId = 0;
+  private pending = new Map<number, Resolver<unknown>>();
+  /** Local subscription id → state. Local IDs are stable across reconnects. */
+  private subs = new Map<number, LocalSub>();
+  private localSubId = 0;
+  private destroyed = false;
+  private reconnectAttempt = 0;
+  private resolveReady!: () => void;
+  private rejectReady!: (e: Error) => void;
 
-  constructor(url: string) {
-    // HTTP provider for standard queries (WS server handles subscriptions only)
-    const httpUrl = url.replace("ws://", "http://").replace("wss://", "https://")
-      .replace(/:(\d+)$/, (_, port) => `:${parseInt(port) - 1}`);
-    this.httpProvider = new Provider(httpUrl);
-
-    // Create WebSocket and wire up ALL handlers inline
-    const ws = new WebSocket(url);
-    this.ws = ws;
-
-    // Shared state references (avoid `this` in callbacks for reliability)
-    const pending = this._pending;
-    const subscriptions = this._subscriptions;
-    const listeners = this._listeners;
-
-    let resolveReady: () => void;
-    let rejectReady: (e: Error) => void;
-    this.ready = new Promise<void>((res, rej) => { resolveReady = res; rejectReady = rej; });
-
-    ws.on("open", () => resolveReady!());
-    ws.on("error", () => rejectReady!(new ConnectionError("WebSocket connection failed")));
-    ws.on("close", () => {
-      for (const [, p] of pending) p.reject(new ConnectionError("WebSocket closed"));
-      pending.clear();
+  constructor(url: string, options?: WebSocketProviderOptions) {
+    this.url = url;
+    const ctor = options?.webSocketConstructor ?? globalThisWebSocket();
+    if (!ctor) {
+      throw new Error(
+        "No WebSocket constructor available. Pass options.webSocketConstructor (e.g. require('ws')) on Node < 22.",
+      );
+    }
+    this.opts = {
+      webSocketConstructor: ctor,
+      reconnectInitialDelayMs: options?.reconnectInitialDelayMs ?? 1_000,
+      reconnectMaxDelayMs: options?.reconnectMaxDelayMs ?? 30_000,
+      reconnectMaxAttempts: options?.reconnectMaxAttempts ?? 0,
+      rpcTimeoutMs: options?.rpcTimeoutMs ?? 30_000,
+    };
+    this.http = new Provider(options?.httpRpcUrl ?? wsToHttp(url));
+    this.ready = new Promise<void>((resolve, reject) => {
+      this.resolveReady = resolve;
+      this.rejectReady = reject;
     });
+    this.connect();
+  }
 
-    // Handler for RPC responses (resolve/reject pending promises)
-    ws.on("message", (raw: WebSocket.RawData) => {
-      try {
-        const data = JSON.parse(raw.toString());
-        if (data.id !== undefined) {
-          const p = pending.get(data.id);
-          if (p) {
-            pending.delete(data.id);
-            if (data.error) p.reject(new RpcError(JSON.stringify(data.error), data.error));
-            else p.resolve(data.result);
-          }
-        }
-      } catch { /* ignore */ }
+  // ==========================================================================
+  // Subscriptions (per chapter 17.4 + HOST_FN_ABI §15.5)
+  // ==========================================================================
+
+  /** Subscribe to wave commits (`pyde_subscribe({method: "newHeads"})`). */
+  async subscribeNewHeads(listener: (header: WaveHeader) => void): Promise<Unsubscribe> {
+    await this.ready;
+    const local = this.registerLocal({ kind: "newHeads", serverSubId: null, listener });
+    await this.serverSubscribe(local);
+    return () => this.unsubscribe(local);
+  }
+
+  /** Subscribe to state changes for a specific account
+   *  (`pyde_subscribe({method: "accountChanges", address})`). */
+  async subscribeAccountChanges(
+    address: string,
+    listener: (account: Account) => void,
+  ): Promise<Unsubscribe> {
+    await this.ready;
+    const local = this.registerLocal({
+      kind: "accountChanges",
+      serverSubId: null,
+      address,
+      listener,
     });
+    await this.serverSubscribe(local);
+    return () => this.unsubscribe(local);
+  }
 
-    // Separate handler for subscription notifications (added via ws.on — both fire)
-    ws.on("message", (raw: WebSocket.RawData) => {
-      try {
-        const data = JSON.parse(raw.toString());
-        if (data.method && data.params) {
-          const subId = String(data.params.subscription);
-          const result = data.params.result;
-          const eventType = subscriptions.get(subId);
-          if (eventType && result) {
-            const fns = listeners.get(eventType);
-            if (fns) for (const fn of fns) fn(result);
-          }
-        }
-      } catch { /* ignore */ }
+  /** Subscribe to live events matching `filter`. Pass `filter.from` to
+   *  resume from a prior cursor (HOST_FN_ABI §15.5 at-least-once). */
+  async subscribeLogs(
+    filter: LogSubscriptionFilter,
+    listener: (log: Log) => void,
+  ): Promise<Unsubscribe> {
+    await this.ready;
+    const local = this.registerLocal({
+      kind: "logs",
+      serverSubId: null,
+      filter,
+      lastCursor: filter.from ?? null,
+      listener,
     });
+    await this.serverSubscribe(local);
+    return () => this.unsubscribe(local);
   }
 
-  // ========================================================================
-  // Subscriptions (via WS)
-  // ========================================================================
+  // ==========================================================================
+  // Lifecycle
+  // ==========================================================================
 
-  async onBlock(listener: (header: BlockHeader) => void): Promise<void> {
-    await this.ready;
-    const subId = await this._rpc("pyde_subscribe", ["newHeads"]);
-    this._subscriptions.set(String(subId), "block");
-    this._addListener("block", listener);
-  }
-
-  async onPendingTransaction(listener: (txHash: string) => void): Promise<void> {
-    await this.ready;
-    const subId = await this._rpc("pyde_subscribePending", []);
-    this._subscriptions.set(String(subId), "pending");
-    this._addListener("pending", listener);
-  }
-
-  async onLogs(filter: LogFilter, listener: (log: Log) => void): Promise<void> {
-    await this.ready;
-    const subId = await this._rpc("pyde_subscribeLogs", [filter]);
-    this._subscriptions.set(String(subId), "logs");
-    this._addListener("logs", listener);
-  }
-
-  on(event: string, listener: Listener): void { this._addListener(event, listener); }
-  once(event: string, listener: Listener): void {
-    const w = (...args: any[]) => { this._removeListener(event, w); listener(...args); };
-    this._addListener(event, w);
-  }
-  off(event: string, listener: Listener): void { this._removeListener(event, listener); }
-  removeAllListeners(event?: string): void {
-    if (event) this._listeners.delete(event); else this._listeners.clear();
-  }
-
-  // ========================================================================
-  // Queries (via HTTP)
-  // ========================================================================
-
-  async getBalance(address: string): Promise<bigint> { return this.httpProvider.getBalance(address); }
-  async getNonce(address: string): Promise<number> { return this.httpProvider.getNonce(address); }
-  async getChainId(): Promise<number> { return this.httpProvider.getChainId(); }
-  async getBlockNumber(): Promise<number> { return this.httpProvider.getBlockNumber(); }
-  async getGasPrice(): Promise<bigint> { return this.httpProvider.getGasPrice(); }
-  async call(to: string, data: string): Promise<string> { return this.httpProvider.call(to, data); }
-  async getLogs(filter: LogFilter): Promise<Log[]> { return this.httpProvider.getLogs(filter); }
-
-  // ========================================================================
-  // Cleanup
-  // ========================================================================
-
+  /** Close the connection + tear down all subscriptions. The instance is
+   *  unusable after destroy. */
   destroy(): void {
-    this._destroyed = true;
-    this._listeners.clear();
-    this.ws.close();
+    this.destroyed = true;
+    this.subs.clear();
+    this.pending.forEach((p) => p.reject(new ConnectionError("WebSocketProvider destroyed")));
+    this.pending.clear();
+    this.ws?.close();
+    this.ws = null;
   }
 
-  // ========================================================================
-  // Internal
-  // ========================================================================
+  // ==========================================================================
+  // Internals — connection + reconnect
+  // ==========================================================================
 
-  private _addListener(event: string, listener: Listener): void {
-    if (!this._listeners.has(event)) this._listeners.set(event, new Set());
-    this._listeners.get(event)!.add(listener);
-  }
-  private _removeListener(event: string, listener: Listener): void {
-    this._listeners.get(event)?.delete(listener);
+  private connect(): void {
+    if (this.destroyed) return;
+    const ws = new this.opts.webSocketConstructor(this.url);
+    this.ws = ws;
+    ws.onopen = () => this.onOpen();
+    ws.onmessage = (ev) => this.onMessage(ev.data);
+    ws.onerror = () => this.onError();
+    ws.onclose = () => this.onClose();
   }
 
-  private _rpc(method: string, params: unknown[], timeoutMs = 30000): Promise<unknown> {
-    return new Promise((resolve, reject) => {
-      if (this.ws.readyState !== WebSocket.OPEN) {
-        return reject(new ConnectionError("WebSocket not connected"));
+  private onOpen(): void {
+    this.reconnectAttempt = 0;
+    if (this.subs.size === 0) {
+      // First connect: signal ready.
+      this.resolveReady();
+      return;
+    }
+    // Reconnect: re-issue every active subscription with the right
+    // `from` cursor for logs (§15.5 at-least-once resume).
+    for (const sub of this.subs.values()) {
+      this.serverSubscribe(sub).catch(() => {
+        // Suppress here — the next reconnect will retry. Failures get
+        // surfaced when the caller next uses an SDK method.
+      });
+    }
+    this.resolveReady();
+  }
+
+  private onMessage(raw: unknown): void {
+    let msg: Record<string, unknown>;
+    try {
+      msg = typeof raw === "string" ? JSON.parse(raw) : JSON.parse(String(raw));
+    } catch {
+      return;
+    }
+
+    // RPC response (has `id`).
+    if (msg.id !== undefined) {
+      const id = Number(msg.id);
+      const pending = this.pending.get(id);
+      if (!pending) return;
+      this.pending.delete(id);
+      if (msg.error) {
+        pending.reject(new RpcError(JSON.stringify(msg.error), msg.error));
+      } else {
+        pending.resolve(msg.result);
       }
-      const id = ++this._rpcId;
+      return;
+    }
+
+    // Subscription notification (no `id`; has `method: "pyde_subscription"`).
+    if (msg.method === "pyde_subscription" && msg.params && typeof msg.params === "object") {
+      const params = msg.params as { subscription?: unknown; result?: unknown };
+      const serverSubId = typeof params.subscription === "string" ? params.subscription : null;
+      if (!serverSubId) return;
+      this.dispatch(serverSubId, params.result);
+    }
+  }
+
+  private onError(): void {
+    if (this.subs.size === 0 && this.reconnectAttempt === 0) {
+      // Initial connect failed; surface to ready() caller.
+      this.rejectReady(new ConnectionError("WebSocket connection failed"));
+    }
+  }
+
+  private onClose(): void {
+    if (this.destroyed) return;
+    this.failPending(new ConnectionError("WebSocket closed"));
+    // Schedule a reconnect with exponential backoff.
+    if (this.opts.reconnectMaxAttempts > 0 && this.reconnectAttempt >= this.opts.reconnectMaxAttempts) {
+      this.destroyed = true;
+      return;
+    }
+    this.reconnectAttempt += 1;
+    const delay = Math.min(
+      this.opts.reconnectInitialDelayMs * 2 ** (this.reconnectAttempt - 1),
+      this.opts.reconnectMaxDelayMs,
+    );
+    setTimeout(() => this.connect(), delay);
+  }
+
+  private failPending(e: Error): void {
+    this.pending.forEach((p) => p.reject(e));
+    this.pending.clear();
+  }
+
+  // ==========================================================================
+  // Internals — dispatch
+  // ==========================================================================
+
+  private dispatch(serverSubId: string, result: unknown): void {
+    for (const sub of this.subs.values()) {
+      if (sub.serverSubId !== serverSubId) continue;
+      switch (sub.kind) {
+        case "newHeads":
+          sub.listener(this.toWaveHeader(result));
+          return;
+        case "accountChanges":
+          sub.listener(this.toAccount(result));
+          return;
+        case "logs": {
+          const log = this.toLog(result);
+          sub.lastCursor = { waveId: log.waveId, txIndex: log.txIndex, eventIndex: log.eventIndex };
+          sub.listener(log);
+          return;
+        }
+      }
+    }
+  }
+
+  // ==========================================================================
+  // Internals — server subscribe / unsubscribe
+  // ==========================================================================
+
+  private registerLocal<S extends LocalSub>(sub: S): S {
+    const id = ++this.localSubId;
+    this.subs.set(id, sub);
+    return sub;
+  }
+
+  private async serverSubscribe(sub: LocalSub): Promise<void> {
+    const params = this.subscribeParams(sub);
+    const result = await this.rpc("pyde_subscribe", [params]);
+    if (typeof result !== "string") {
+      throw new RpcError(`pyde_subscribe returned non-string subscription id: ${JSON.stringify(result)}`);
+    }
+    sub.serverSubId = result;
+  }
+
+  private subscribeParams(sub: LocalSub): Record<string, unknown> {
+    switch (sub.kind) {
+      case "newHeads":
+        return { method: "newHeads" };
+      case "accountChanges":
+        return { method: "accountChanges", address: sub.address };
+      case "logs": {
+        const topics: (string[] | null)[] = [null, null, null, null];
+        if (sub.filter.topics) {
+          for (let i = 0; i < Math.min(4, sub.filter.topics.length); i++) {
+            topics[i] = sub.filter.topics[i] ?? null;
+          }
+        }
+        const out: Record<string, unknown> = {
+          method: "logs",
+          filter: {
+            topics,
+            contract: sub.filter.contract ?? null,
+          },
+        };
+        // Resume from the last delivered cursor on reconnect; otherwise the
+        // initial caller-supplied `from`, if any. Spec: §15.5.
+        const from = sub.lastCursor;
+        if (from) {
+          (out.filter as Record<string, unknown>).from = {
+            wave_id: from.waveId,
+            tx_index: from.txIndex,
+            event_index: from.eventIndex,
+          };
+        }
+        return out;
+      }
+    }
+  }
+
+  private async unsubscribe(sub: LocalSub): Promise<void> {
+    const subId = sub.serverSubId;
+    // Remove from local registry regardless of server-side result.
+    const entry = [...this.subs.entries()].find(([_, s]) => s === sub);
+    if (entry) this.subs.delete(entry[0]);
+    if (subId && this.ws?.readyState === WS_OPEN) {
+      try {
+        await this.rpc("pyde_unsubscribe", [subId]);
+      } catch {
+        // Server may not support pyde_unsubscribe explicitly; subscription
+        // dies with the connection regardless.
+      }
+    }
+  }
+
+  // ==========================================================================
+  // Internals — RPC over WS
+  // ==========================================================================
+
+  private rpc(method: string, params: unknown[]): Promise<unknown> {
+    return new Promise<unknown>((resolve, reject) => {
+      if (!this.ws || this.ws.readyState !== WS_OPEN) {
+        reject(new ConnectionError("WebSocket not connected"));
+        return;
+      }
+      const id = ++this.rpcId;
       const timer = setTimeout(() => {
-        this._pending.delete(id);
-        reject(new ConnectionError(`WS RPC timeout for ${method}`));
-      }, timeoutMs);
-      this._pending.set(id, {
-        resolve: (v: any) => { clearTimeout(timer); resolve(v); },
-        reject: (e: Error) => { clearTimeout(timer); reject(e); },
+        this.pending.delete(id);
+        reject(new TimeoutError(`WS RPC timeout for ${method}`));
+      }, this.opts.rpcTimeoutMs);
+      this.pending.set(id, {
+        resolve: (v: unknown) => {
+          clearTimeout(timer);
+          resolve(v);
+        },
+        reject: (e: Error) => {
+          clearTimeout(timer);
+          reject(e);
+        },
       });
       this.ws.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }));
     });
   }
+
+  // ==========================================================================
+  // Internals — wire ⇄ TS converters (tolerant of both snake_case + camelCase)
+  // ==========================================================================
+
+  private toWaveHeader(w: unknown): WaveHeader {
+    const o = w as Record<string, unknown>;
+    const out: WaveHeader = {
+      waveId: numHex(o.wave_id ?? o.waveId, "waveId"),
+      timestamp: asString(o.timestamp, "timestamp"),
+      anchor: asString(o.anchor, "anchor"),
+    };
+    if (o.state_root ?? o.stateRoot) out.stateRoot = asString(o.state_root ?? o.stateRoot, "stateRoot");
+    if (o.events_root ?? o.eventsRoot) out.eventsRoot = asString(o.events_root ?? o.eventsRoot, "eventsRoot");
+    if (o.tx_count !== undefined || o.txCount !== undefined) {
+      out.txCount = numHex(o.tx_count ?? o.txCount, "txCount");
+    }
+    return out;
+  }
+
+  private toLog(w: unknown): Log {
+    const o = w as Record<string, unknown>;
+    return {
+      waveId: numHex(o.wave_id ?? o.waveId, "waveId"),
+      txIndex: numHex(o.tx_index ?? o.txIndex, "txIndex"),
+      eventIndex: numHex(o.event_index ?? o.eventIndex, "eventIndex"),
+      contract: asString(o.contract_addr ?? o.contract ?? o.address, "contract"),
+      topics: ((o.topics ?? []) as unknown[]).map((t) => asString(t, "topic")),
+      data: asString(o.data, "data"),
+    };
+  }
+
+  private toAccount(w: unknown): Account {
+    // accountChanges pushes the same shape as `pyde_getAccount`.
+    const o = w as Record<string, unknown>;
+    return {
+      address: asString(o.address, "address"),
+      nonce: numHex(o.nonce, "nonce"),
+      balance: BigInt(asString(o.balance, "balance")),
+      codeHash: asString(o.code_hash ?? o.codeHash, "codeHash"),
+      storageRoot: asString(o.storage_root ?? o.storageRoot, "storageRoot"),
+      accountType: numHex(o.account_type ?? o.accountType, "accountType") as Account["accountType"],
+      authKeys: asString(o.auth_keys ?? o.authKeys, "authKeys"),
+      gasTank: BigInt(asString(o.gas_tank ?? o.gasTank, "gasTank")),
+      keyNonce: numHex(o.key_nonce ?? o.keyNonce, "keyNonce"),
+    };
+  }
+}
+
+// ============================================================================
+// Helpers
+// ============================================================================
+
+function globalThisWebSocket(): WebSocketCtor | undefined {
+  const g = globalThis as { WebSocket?: WebSocketCtor };
+  return g.WebSocket;
+}
+
+function wsToHttp(wsUrl: string): string {
+  if (wsUrl.startsWith("wss://")) return "https://" + wsUrl.slice(6);
+  if (wsUrl.startsWith("ws://")) return "http://" + wsUrl.slice(5);
+  return wsUrl;
+}
+
+function asString(v: unknown, ctx: string): string {
+  if (typeof v !== "string") {
+    throw new RpcError(`${ctx} not a string: ${JSON.stringify(v)}`);
+  }
+  return v;
+}
+
+function numHex(v: unknown, ctx: string): number {
+  if (typeof v === "number") return v;
+  const s = asString(v, ctx);
+  const n = s.startsWith("0x") ? parseInt(s, 16) : parseInt(s, 10);
+  if (!Number.isFinite(n)) throw new RpcError(`${ctx} not a number: ${s}`);
+  return n;
 }
