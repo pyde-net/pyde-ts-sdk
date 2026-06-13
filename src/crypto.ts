@@ -25,7 +25,7 @@
  *   - Chapter 8.4:  Poseidon2 + Blake3 (hashing)
  *   - Chapter 8.5:  Threshold Encryption (MEV protection)
  *   - Chapter 9:    MEV Protection (user-facing flow)
- *   - Chapter 11 §11.1: EOA address = Poseidon2(falcon_public_key_bytes)
+ *   - Chapter 11 §11.2: EOA address = Poseidon2(falcon_public_key_bytes)
  *   - Chapter 11:   RegisterPubkey tx type (address-derivation proof)
  */
 
@@ -125,7 +125,7 @@ export function dropKeypair(handle: number): boolean {
 // ============================================================================
 
 /** Derive a 32-byte address from a FALCON-512 public key.
- *  Spec: Chapter 11 §11.1 — `address = Poseidon2(falcon_public_key_bytes)`. */
+ *  Spec: Chapter 11 §11.2 — `address = Poseidon2(falcon_public_key_bytes)`. */
 export function deriveAddress(publicKeyHex: string): string {
   return wasm.deriveAddress(publicKeyHex);
 }
