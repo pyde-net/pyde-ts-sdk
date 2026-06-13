@@ -259,13 +259,15 @@ export class Wallet extends AbstractSigner {
       gasLimit: 21_000,
       nonce,
       chainId,
-      txType: TxType.Transfer,
+      // Standard (id 0) covers both transfers and contract calls per
+      // Chapter 11 §11.8 — the chain dispatches on `to` + `data` shape.
+      txType: TxType.Standard,
     };
     return p.sendAndWait(this.signTransaction(tx));
   }
 
   /** Build, sign, send a contract call. Auto-fetches an access list via
-   *  `Provider.estimateAccess()`. */
+   *  `Provider.estimateAccess()`. Spec: Chapter 11 §11.8 (Standard). */
   async sendCall(
     to: string,
     data: string,
@@ -285,9 +287,9 @@ export class Wallet extends AbstractSigner {
         value: BigInt(value) > 0n ? value : undefined,
       });
     } catch {
-      // estimateAccess is a hint; tx still executes without it (chain
-      // serializes against access-list-violating txs, costing throughput
-      // but not correctness). Fail open.
+      // estimateAccess is a hint; tx still executes without it (the
+      // chain serializes against access-list-violating txs, costing
+      // throughput but not correctness). Fail open.
     }
 
     const tx: TxFields = {
@@ -298,13 +300,13 @@ export class Wallet extends AbstractSigner {
       gasLimit,
       nonce,
       chainId,
-      txType: TxType.ContractCall,
+      txType: TxType.Standard,
       ...(accessList ? { accessList } : {}),
     };
     return p.sendAndWait(this.signTransaction(tx));
   }
 
-  /** Build, sign, send a contract deploy. */
+  /** Build, sign, send a contract deploy. Spec: Chapter 11 §11.8 (Deploy). */
   async deploy(
     deployData: string,
     opts?: { gasLimit?: number; value?: bigint | number | string; provider?: Provider },
@@ -321,9 +323,99 @@ export class Wallet extends AbstractSigner {
       gasLimit,
       nonce,
       chainId,
-      txType: TxType.ContractDeploy,
+      txType: TxType.Deploy,
     };
     return p.sendAndWait(this.signTransaction(tx));
+  }
+
+  // ==========================================================================
+  // Validator / staking operations (Chapter 11 §11.8 + Chapter 14 §14.5)
+  // ==========================================================================
+
+  /** Register as a validator (`StakeDeposit`, id 3). Spec: Chapter 11
+   *  §11.8 + Chapter 14 §14.5.
+   *
+   *  - `amount` ≥ 10,000 PYDE (MIN_VALIDATOR_STAKE) — values below are
+   *    rejected at chain validation.
+   *  - `falconPubkey` (897-byte hex) is the FALCON pubkey the chain
+   *    will use to verify this validator's vertex signatures. Often
+   *    identical to the wallet's signing key but may differ if the
+   *    operator keeps separate hot/cold keys.
+   *  - Single-tier registration — any validator meeting the floor is
+   *    eligible for uniform-random committee selection. */
+  async stakeDeposit(
+    falconPubkey: string,
+    amount: bigint | number,
+    opts?: { gasLimit?: number; provider?: Provider },
+  ): Promise<Receipt> {
+    const p = this.resolveProvider(opts?.provider);
+    const [nonce, chainId] = await p.getNonceAndChainId(this.address);
+    const tx: TxFields = {
+      from: this.address,
+      to: ZERO_ADDR,
+      value: amount.toString(),
+      data: falconPubkey,
+      gasLimit: opts?.gasLimit ?? 100_000,
+      nonce,
+      chainId,
+      txType: TxType.StakeDeposit,
+    };
+    return p.sendAndWait(this.signTransaction(tx));
+  }
+
+  /** Begin 30-day unbonding (`StakeWithdraw`, id 4). Spec: Chapter 11 §11.8. */
+  async stakeWithdraw(opts?: { provider?: Provider }): Promise<Receipt> {
+    const p = this.resolveProvider(opts?.provider);
+    const [nonce, chainId] = await p.getNonceAndChainId(this.address);
+    const tx: TxFields = {
+      from: this.address,
+      to: ZERO_ADDR,
+      value: "0",
+      data: "0x",
+      gasLimit: 100_000,
+      nonce,
+      chainId,
+      txType: TxType.StakeWithdraw,
+    };
+    return p.sendAndWait(this.signTransaction(tx));
+  }
+
+  /** Claim accrued staking yield (`ClaimReward`, id 6). Spec: Chapter 11 §11.8. */
+  async claimReward(opts?: { provider?: Provider }): Promise<Receipt> {
+    const p = this.resolveProvider(opts?.provider);
+    const [nonce, chainId] = await p.getNonceAndChainId(this.address);
+    const tx: TxFields = {
+      from: this.address,
+      to: ZERO_ADDR,
+      value: "0",
+      data: "0x",
+      gasLimit: 100_000,
+      nonce,
+      chainId,
+      txType: TxType.ClaimReward,
+    };
+    return p.sendAndWait(this.signTransaction(tx));
+  }
+
+  // ==========================================================================
+  // Low-level builders (for tx types not surfaced above)
+  // ==========================================================================
+
+  /**
+   * Build a `TxFields` with the wallet's `from` / `nonce` / `chainId`
+   * auto-populated. Caller fills `to`, `value`, `data`, `gasLimit`,
+   * `txType`, optional `accessList`, optional `deadline`. Useful for
+   * the lower-frequency tx types not surfaced as direct methods
+   * (Slash, ClaimAirdrop, MultisigTx, RotateMultisig, EmergencyPause,
+   * EmergencyResume).
+   */
+  async buildTx(
+    partial: Omit<TxFields, "from" | "nonce" | "chainId">,
+    provider?: Provider,
+  ): Promise<TxFields> {
+    const p = this.resolveProvider(provider);
+    const [nonce, chainId] = await p.getNonceAndChainId(this.address);
+    return { from: this.address, nonce, chainId, ...partial };
   }
 
   /** Get balance via the bound provider. */

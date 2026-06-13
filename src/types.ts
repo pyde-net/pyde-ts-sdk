@@ -276,16 +276,51 @@ export interface TxFields {
 }
 
 /**
- * Transaction-type discriminants. Const-object pattern (not a TS `enum`)
- * so values land as literal types with autocomplete and zero runtime
- * overhead. Spec: Chapter 11 §11.8 — the chain's `TransactionType` enum
- * currently has 13 variants; Phase 6 wires the full catalog. Values
- * below are pinned now to avoid drift across modules during the build.
+ * Transaction-type discriminants. Const-object (not a TS `enum`) so
+ * values land as literal types with autocomplete and zero runtime cost.
+ *
+ * Spec: Chapter 11 §11.8 — the chain's `TransactionType` enum (in
+ * `crates/tx/src/types.rs`) has the 13 variants below. Tag `2` is
+ * intentionally vacant — `Batch` was prototyped pre-mainnet and removed
+ * before launch; keeping the gap means a forged `tx_type = 2` fails
+ * decode rather than silently aliasing to another type.
+ *
+ * Note: `Standard` (id 0) covers BOTH value transfers and contract
+ * calls. The chain dispatches on the recipient + data shape, not on a
+ * separate tx-type. See `Wallet.transfer()` vs `Wallet.sendCall()` —
+ * both submit with `txType: Standard`.
  */
 export const TxType = {
-  Transfer: 0,
-  ContractDeploy: 1,
-  ContractCall: 2,
+  /** Value transfer or contract call. */
+  Standard: 0,
+  /** Contract deployment (`to == 0x00..00`, data = initcode). */
+  Deploy: 1,
+  /** Register as a validator. Data = FALCON pubkey (897 B); value ≥ 10,000 PYDE. */
+  StakeDeposit: 3,
+  /** Begin 30-day unbonding from the staking pool. */
+  StakeWithdraw: 4,
+  /** Submit double-sign evidence (data = serialized evidence). */
+  Slash: 5,
+  /** Claim accrued staking yield. */
+  ClaimReward: 6,
+  /** Claim genesis airdrop with Merkle proof. */
+  ClaimAirdrop: 7,
+  /** Sweep unclaimed airdrop to treasury (post-deadline). */
+  SweepAirdrop: 8,
+  /** Treasury spend with multisig signatures. */
+  MultisigTx: 9,
+  /** Rotate the multisig signer set + threshold. */
+  RotateMultisig: 10,
+  /** Halt block production (multisig-signed). */
+  EmergencyPause: 11,
+  /** Resume normal processing (multisig-signed, clears pause). */
+  EmergencyResume: 12,
+  /**
+   * First-time pubkey registration for a funded-but-unregistered
+   * account. No signature, no gas, no value — pubkey ownership is
+   * proven by the chain's `from == Poseidon2(data)` check. Allowed
+   * only when `balance > 0` and `auth_keys == AuthKeys::None`.
+   */
   RegisterPubkey: 13,
 } as const;
 
