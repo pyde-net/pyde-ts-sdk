@@ -4,13 +4,50 @@ ABI → TypeScript type generator. Reads an `otigen build` artifact, emits a `.d
 
 [← TOC](./README.md)
 
+---
+
+## Table of contents
+
+- [Why it exists](#why-it-exists)
+- [CLI](#cli)
+- [Programmatic API](#programmatic-api)
+- [Generated output — anatomy](#generated-output--anatomy)
+- [Using the emitted ABI shape](#using-the-emitted-abi-shape)
+- [Type mapping reference](#type-mapping-reference)
+- [Wiring it into your build](#wiring-it-into-your-build)
+- [Limitations](#limitations)
+- [Regenerating the bundled fixtures](#regenerating-the-bundled-fixtures)
+
+---
+
+## Why it exists
+
+`Contract<TAbi>` narrows method names, arg shapes, return types, and event arg types — but you need to give it a concrete `TAbi`. Writing that by hand is tedious for any real contract.
+
+`pyde-tsgen` reads the `*.abi.json` your contract's build produces and emits the matching `TAbi` declaration. Run it once per contract build; the output is a single `.d.ts` you import into your dapp / indexer / script.
+
+---
+
 ## CLI
 
 ```bash
 npx pyde-tsgen <input.abi.json> <output.d.ts> [--name <ContractName>]
 ```
 
-Example:
+**Args:**
+
+| Positional | Required | Description |
+|---|---|---|
+| `<input.abi.json>` | yes | Path to the ABI JSON. Either the bundle's standalone `abi.json` or the full artifact. |
+| `<output.d.ts>` | yes | Output declaration file. Parent dirs are created as needed. |
+
+**Options:**
+
+| Flag | Default | Description |
+|---|---|---|
+| `--name <ContractName>` | `artifact.name`, falling back to `"Contract"` | Prefix for emitted interface names (`<Name>Abi`, `<Name>Contract`, `<Name>TransferEvent`, ...). |
+
+**Example:**
 
 ```bash
 npx pyde-tsgen \
@@ -19,23 +56,47 @@ npx pyde-tsgen \
   --name Counter
 ```
 
-`--name` defaults to `artifact.name` from the bundle, falling back to `"Contract"`.
+**Output:**
+
+```
+counter.d.ts written (3.2 kB)
+```
+
+---
 
 ## Programmatic API
 
 ```ts
 import { generateTypes } from "pyde-ts-sdk/codegen";
+import { readFileSync, writeFileSync } from "node:fs";
 
-const ts = generateTypes(readFileSync("./out/Foo.abi.json", "utf-8"), "Foo");
+const abi = readFileSync("./out/Foo.abi.json", "utf-8");
+const ts = generateTypes(abi, "Foo");
 writeFileSync("./types/foo.d.ts", ts);
 ```
 
-## Generated output
+**Signature:**
 
-Given:
+```ts
+function generateTypes(abiJson: string, contractName?: string): string
+```
+
+**Args:**
+
+| Name | Type | Description |
+|---|---|---|
+| `abiJson` | `string` | Raw JSON content. |
+| `contractName` | `string` | Optional name prefix. Falls back to `artifact.name` or `"Contract"`. |
+
+**Returns:** `string` — full TypeScript declaration file content.
+
+---
+
+## Generated output — anatomy
+
+Given the source `otigen.toml`:
 
 ```toml
-# otigen.toml
 [contract]
 name = "counter"
 
@@ -55,7 +116,7 @@ fields = [
 ]
 ```
 
-`pyde-tsgen --name Counter` emits:
+The emitted `.d.ts`:
 
 ```ts
 /* eslint-disable */
@@ -90,43 +151,44 @@ export interface CounterIncrementEvent {
 /* prettier-ignore-end */
 ```
 
-The two interfaces are intentional:
+**Two intentional interfaces:**
 
-- **`<Name>Abi`** — pass to `Contract.fromArtifact<Name>Abi>(...)`. The SDK uses it to narrow `read` / `write` / `queryFilter` / `parseLog` to the exact method + event surface. This is the recommended path.
-- **`<Name>Contract`** — legacy cast-style binding. Kept for callers who'd rather cast (`contract as unknown as CounterContract`) than use the generic.
+| Interface | Use |
+|---|---|
+| **`<Name>Abi`** | Pass to `Contract.fromArtifact<NameAbi>(...)`. The SDK uses it to narrow `read` / `write` / `queryFilter` / `parseLog` to the exact method + event surface. **Recommended.** |
+| **`<Name>Contract`** | Legacy cast-style binding. Kept for callers who prefer `contract as unknown as CounterContract`. |
 
-## Wiring it up
+---
 
-Add to your build pipeline:
-
-```json
-// package.json
-{
-  "scripts": {
-    "abi:gen": "pyde-tsgen ./artifacts/counter.bundle/abi.json ./src/types/counter.d.ts --name Counter"
-  }
-}
-```
-
-Or run on every build via a postbuild hook:
-
-```bash
-otigen build && npx pyde-tsgen ./artifacts/counter.bundle/abi.json ./types/counter.d.ts --name Counter
-```
-
-Then consume:
+## Using the emitted ABI shape
 
 ```ts
 import { Contract } from "pyde-ts-sdk";
 import type { CounterAbi } from "./types/counter";
 
-const counter = await Contract.fromArtifact<CounterAbi>(abiPath, contractAddr, provider);
+const counter = await Contract.fromArtifact<CounterAbi>(
+  "./artifacts/counter.bundle/abi.json",
+  "0xcontract...",
+  provider,
+);
 
-await counter.read("get_count");           // → Promise<bigint>
-await counter.write("deposit", { arg0: 5n }); // typed args
+// ✅ method narrowed
+const count = await counter.read("get_count");
+console.log(count); // → 0n
+
+// ❌ TS2345 — not on CounterAbi
+await counter.read("getCount");
+
+// ✅ args typed
+await counter.write("deposit", { arg0: 5n });
+
+// ❌ type error — arg0 must be bigint
+await counter.write("deposit", { arg0: "5" });
 ```
 
-## Type mapping
+---
+
+## Type mapping reference
 
 | ABI scalar | TS type |
 |---|---|
@@ -134,24 +196,63 @@ await counter.write("deposit", { arg0: 5n }); // typed args
 | `u64` `i64` `u128` `i128` `u256` `i256` | `bigint` |
 | `bool` | `boolean` |
 | `string` | `string` |
-| `address` `hash` `hash32` | `string` (hex) |
+| `address`, `hash`, `hash32` | `string` (hex) |
 | `bytes` | `Uint8Array` |
-| `()` / `unit` / `void` | `void` |
+| `()`, `unit`, `void` | `void` |
 | `Vec<T>` | `T[]` |
 | `Custom: "Name"` (struct / enum) | `unknown` (fallback) |
-| anything else | `unknown` |
+| anything unrecognised | `unknown` |
 
-For nested custom types in args, the emitter falls back to `unknown` and the caller can intersect with their own struct type — or use the runtime `Contract` which resolves struct types against the ABI's `types[]` registry.
+For nested custom types in args, the emitter falls back to `unknown`. The caller can intersect with their own type or use the runtime `Contract` (which resolves struct types against the ABI's `types[]` registry).
+
+---
+
+## Wiring it into your build
+
+### Per-build script
+
+```json
+// package.json
+{
+  "scripts": {
+    "abi:gen": "pyde-tsgen ./artifacts/counter.bundle/abi.json ./src/types/counter.d.ts --name Counter",
+    "build": "otigen build && npm run abi:gen && tsc"
+  }
+}
+```
+
+### Postbuild hook
+
+```bash
+otigen build
+npx pyde-tsgen ./artifacts/counter.bundle/abi.json ./types/counter.d.ts --name Counter
+```
+
+### Multiple contracts
+
+```bash
+for bundle in ./artifacts/*.bundle; do
+  name=$(basename "$bundle" .bundle)
+  npx pyde-tsgen "$bundle/abi.json" "./types/${name}.d.ts" --name "${name^}"
+done
+```
+
+---
 
 ## Limitations
 
-- Custom struct returns currently emit `unknown` in the generated `<Name>Contract` interface (the runtime decoder resolves them correctly; the type emitter just doesn't yet generate intersected struct types).
-- Tuples emit `unknown` (no nested type extraction yet).
-- Data-carrying enum variants are not yet supported (only unit variants).
+| Limitation | Notes |
+|---|---|
+| Custom struct returns emit `unknown` in `<Name>Contract`. | The **runtime** `Contract.read("returns_custom_struct")` decodes correctly today; only the TypeScript type at the call site is loose. |
+| Tuples emit `unknown`. | No nested type extraction yet. |
+| Data-carrying enum variants not supported. | Only unit variants today. |
+| No source maps. | The generated `.d.ts` doesn't reference the source ABI. Re-run codegen on contract upgrade. |
 
-These are codegen-side gaps, **not runtime gaps** — `Contract.read("returns_custom_struct")` decodes correctly today; only the TypeScript type at the call site is loose.
+These are **codegen-side gaps, not runtime gaps**.
 
-## Regenerating bundled fixtures
+---
+
+## Regenerating the bundled fixtures
 
 The SDK repo bundles a sample `storage-stress.gen.d.ts` for visual inspection:
 
@@ -163,4 +264,4 @@ node dist/cli-tsgen.js \
   --name StorageStress
 ```
 
-`src/codegen.smoke.test.ts` runs the generator against the live bundle on every test invocation, so the fixture and the test stay in sync — you only regenerate manually for diffs.
+`src/codegen.smoke.test.ts` runs the generator against the live bundle on every test invocation, so the fixture and the test stay in sync — you only regenerate manually for visual diffs.

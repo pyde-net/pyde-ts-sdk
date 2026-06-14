@@ -1,146 +1,673 @@
 # 03 — Wallet
 
-FALCON-512 signing, keystore I/O, transfer / sendCall / deploy / encrypted-send.
+FALCON-512 signing + keystore I/O + high-level transfer / sendCall / deploy / encrypted-send.
 
 [← TOC](./README.md)
 
-## Two key shapes
+---
+
+## Table of contents
+
+- [Two key shapes — handle vs hex](#two-key-shapes--handle-vs-hex)
+- Constructors
+  - [`Wallet.generate()`](#walletgenerate)
+  - [`Wallet.generateUnsafe()`](#walletgenerateunsafe)
+  - [`Wallet.fromKeys(publicKey, secretKey)`](#walletfromkeyspublickey-secretkey)
+  - [`Wallet.fromEncrypted(keystore, password)`](#walletfromencryptedkeystore-password)
+  - [`Wallet.fromKeystoreFile(path, password)`](#walletfromkeystorefilepath-password)
+- Provider binding
+  - [`wallet.connect(provider)`](#walletconnectprovider)
+  - [`wallet.provider`](#walletprovider)
+- Identity
+  - [`wallet.address`](#walletaddress)
+  - [`wallet.publicKey`](#walletpublickey)
+- Signing primitives
+  - [`wallet.signTransaction(tx)`](#walletsigntransactiontx)
+  - [`wallet.sign(messageHex)`](#walletsignmessagehex)
+  - [`wallet.hashTransaction(tx)`](#wallethashtransactiontx)
+- Lifecycle
+  - [`wallet.destroy()`](#walletdestroy)
+- Keystore export
+  - [`wallet.toKeystore(password, params?)`](#wallettokeystorepassword-params)
+  - [`wallet.saveKeystoreFile(path, password, params?)`](#walletsavekeystorefilepath-password-params)
+- One-time on-chain registration
+  - [`wallet.registerPubkey(provider?)`](#walletregisterpubkeyprovider)
+- High-level write paths
+  - [`wallet.transfer(to, amount, optsOrProvider?)`](#wallettransferto-amount-optsorprovider)
+  - [`wallet.sendCall(to, data, opts?)`](#walletsendcallto-data-opts)
+  - [`wallet.deploy(...)`](#walletdeploy)
+  - [`wallet.sendEncrypted(to, calldata, opts?)`](#walletsendencryptedto-calldata-opts)
+  - [`wallet.transferEncrypted(to, amount, opts?)`](#wallettransferencryptedto-amount-opts)
+- Staking helpers
+  - [`wallet.stakeDeposit(amount, opts?)`](#walletstakedepositamount-opts)
+  - [`wallet.stakeWithdraw(opts?)`](#walletstakewithdrawopts)
+  - [`wallet.claimReward(opts?)`](#walletclaimrewardopts)
+- Read-side conveniences
+  - [`wallet.getBalance(provider?)`](#walletgetbalanceprovider)
+  - [`wallet.getNonce(provider?)`](#walletgetnonceprovider)
+- [Gas auto-estimate](#gas-auto-estimate)
+- [Errors](#errors)
+- [Gotchas](#gotchas)
+
+---
+
+## Two key shapes — handle vs hex
 
 The same `Wallet` class wraps two different secret-key holdings:
 
 | | Handle-backed (default) | Hex-backed |
 |---|---|---|
-| Constructor | `Wallet.generate()` | `Wallet.generateUnsafe()`, `Wallet.fromKeys`, `Wallet.fromEncrypted` |
+| Constructor | `Wallet.generate()` | `Wallet.generateUnsafe()`, `Wallet.fromKeys`, `Wallet.fromEncrypted`, `Wallet.fromKeystoreFile` |
 | Where the SK lives | WASM linear memory | JS heap (as a hex string) |
-| Survives a JS heap dump? | ✅ Yes | ❌ No — visible as a string |
-| Can `toKeystore` export? | ❌ No (no hex to encrypt) | ✅ Yes |
-| Encrypted `sendEncrypted`? | ❌ Not yet (needs `buildRawEncryptedTxWithHandle`) | ✅ Yes |
+| Survives a JS heap dump? | ✅ yes | ❌ no — visible as a string |
+| Can `toKeystore` export? | ❌ no (no hex to encrypt) | ✅ yes |
+| Encrypted `sendEncrypted`? | ❌ not yet (needs `buildRawEncryptedTxWithHandle`) | ✅ yes |
 
 **Recommendation:** use `generate()` and `fromEncrypted()` for everything except keystore export. When you need to export, use `generateUnsafe()`, immediately `toKeystore` + write, and `destroy()` the wallet.
 
-## Constructors
+---
+
+## `Wallet.generate()`
+
+Generate a fresh handle-backed keypair. SK stays in the WASM heap.
+
+**Signature:**
 
 ```ts
 Wallet.generate(): Wallet
 ```
-Fresh handle-backed keypair. SK in WASM heap.
+
+**Returns:** `Wallet` — a fresh keypair. Address is `Poseidon2(falcon_public_key)`.
+
+**Example:**
+
+```ts
+import { Wallet } from "pyde-ts-sdk";
+
+const wallet = Wallet.generate();
+console.log("address:", wallet.address);
+console.log("publicKey (897 bytes):", wallet.publicKey.length, "hex chars");
+```
+
+**Expected output:**
+
+```
+address: 0x0cf4448bb99519a4aa04c7a5ee740483434f1b4bd234dc50e5032af30815e250
+publicKey (897 bytes): 1796 hex chars
+```
+
+**Notes:**
+- Uses OS entropy via `crypto.getRandomValues`.
+- SK lives in `pyde-crypto-wasm` linear memory. Even a JS heap dump can't recover it.
+- Use `destroy()` to wipe the SK when done.
+
+---
+
+## `Wallet.generateUnsafe()`
+
+Generate a fresh hex-backed keypair. ⚠ SK enters the JS heap as a hex string.
+
+**Signature:**
 
 ```ts
 Wallet.generateUnsafe(): Wallet
 ```
-Fresh hex-backed keypair. SK in JS heap. ⚠ Encrypt + discard ASAP.
+
+**Returns:** `Wallet` — hex SK held in JS.
+
+**Example:**
+
+```ts
+const wallet = Wallet.generateUnsafe();
+// Immediately encrypt + discard:
+await wallet.saveKeystoreFile("/keys/alice.json", "strong-passphrase");
+wallet.destroy();
+```
+
+**When to use:**
+- You need `toKeystore` / `saveKeystoreFile` to persist the wallet.
+- You're integrating with code that requires the hex SK.
+- You're using `sendEncrypted` (handle-backed not yet supported).
+
+**Otherwise:** prefer `Wallet.generate()`.
+
+---
+
+## `Wallet.fromKeys(publicKey, secretKey)`
+
+Restore a hex-backed wallet from raw hex pub + sec.
+
+**Signature:**
 
 ```ts
 Wallet.fromKeys(publicKey: string, secretKey: string): Wallet
 ```
-Restore from raw hex pub + sec. Hex-backed.
+
+**Args:**
+
+| Name | Type | Description |
+|---|---|---|
+| `publicKey` | `string` | `0x`-prefixed 897-byte FALCON-512 pubkey hex (1794 hex chars after `0x`). |
+| `secretKey` | `string` | `0x`-prefixed 1281-byte FALCON-512 secret hex. |
+
+**Returns:** `Wallet` — hex-backed, address derived from `publicKey`.
+
+**Example:**
+
+```ts
+const wallet = Wallet.fromKeys(savedPk, savedSk);
+console.log("address:", wallet.address);
+```
+
+**Throws:** `SigningError` on malformed inputs (`Address` derivation fails or hex lengths mismatch).
+
+---
+
+## `Wallet.fromEncrypted(keystore, password)`
+
+Decrypt a `Keystore` object into a hex-backed wallet.
+
+**Signature:**
 
 ```ts
 Wallet.fromEncrypted(keystore: Keystore, password: string): Promise<Wallet>
 ```
-Decrypt a keystore object. The decrypted SK lives in JS heap until `destroy()`.
+
+**Args:**
+
+| Name | Type | Description |
+|---|---|---|
+| `keystore` | `Keystore` | Argon2id + ChaCha20-Poly1305 envelope. |
+| `password` | `string` | Decryption passphrase. |
+
+**Returns:** `Promise<Wallet>` — hex-backed wallet with SK in JS heap.
+
+**`Keystore` shape:**
+
+```ts
+interface Keystore {
+  version: number;          // 1
+  address: string;
+  publicKey: string;
+  ciphertext: string;       // 0x-prefixed hex (encrypted SK)
+  kdf: {
+    name: "argon2id";
+    memory: number;         // KiB
+    iterations: number;
+    parallelism: number;
+    salt: string;           // 0x + 32 hex
+  };
+  cipher: {
+    name: "chacha20-poly1305";
+    nonce: string;          // 0x + 24 hex
+  };
+}
+```
+
+**Example:**
+
+```ts
+import { readFileSync } from "node:fs";
+
+const json = readFileSync("/keys/alice.json", "utf-8");
+const keystore = JSON.parse(json);
+const wallet = await Wallet.fromEncrypted(keystore, "strong-passphrase");
+console.log("loaded:", wallet.address);
+```
+
+**Throws:** `SigningError` on wrong password or tampered ciphertext.
+
+---
+
+## `Wallet.fromKeystoreFile(path, password)`
+
+Node-only convenience: read a keystore JSON file + decrypt.
+
+**Signature:**
 
 ```ts
 Wallet.fromKeystoreFile(path: string, password: string): Promise<Wallet>
 ```
-Node-only file reader + decrypt.
 
-## Provider binding
+**Returns:** `Promise<Wallet>`.
+
+**Example:**
+
+```ts
+const wallet = await Wallet.fromKeystoreFile(
+  "/keys/alice.json",
+  process.env.WALLET_PASSPHRASE!,
+);
+```
+
+**Throws:**
+- `Error` — file doesn't exist or can't be read.
+- `SigningError` — decryption failed.
+
+---
+
+## `wallet.connect(provider)`
+
+Bind a provider so subsequent methods can pull nonce / chain-id without a positional argument.
+
+**Signature:**
 
 ```ts
 wallet.connect(provider: Provider): void
 ```
-Bind a provider so `transfer` / `sendCall` / `getBalance` etc. can pull nonce + chain-id without a positional argument. Methods accept an optional `provider` override.
+
+**Example:**
 
 ```ts
-wallet.provider: Provider // throws if not connected
+const wallet = Wallet.generate();
+wallet.connect(provider);
+
+// Now `provider` is implicit:
+await wallet.transfer(to, 1n);
+
+// Or pass `opts.provider` to override:
+await wallet.transfer(to, 1n, { provider: otherProvider });
 ```
 
-## Address + public key
+---
+
+## `wallet.provider`
+
+The bound provider. Throws if not yet connected.
+
+**Type:** `Provider` (getter).
+
+**Throws:** `Error("No provider bound — call wallet.connect(provider)")`.
+
+---
+
+## `wallet.address`
+
+The wallet's 32-byte address (hex).
+
+**Type:** `string` — `0x` + 64 hex chars.
+
+**Example:**
 
 ```ts
-wallet.address: string  // 0x-prefixed 64 hex (32 bytes, full Poseidon2)
-wallet.publicKey: string // 897-byte FALCON-512 public key, hex
+const wallet = Wallet.generate();
+console.log(wallet.address);
 ```
 
-## Signing
+**Expected output:**
+
+```
+0x0cf4448bb99519a4aa04c7a5ee740483434f1b4bd234dc50e5032af30815e250
+```
+
+---
+
+## `wallet.publicKey`
+
+The FALCON-512 public key.
+
+**Type:** `string` — `0x` + 1794 hex chars (897 bytes).
+
+**Example:**
+
+```ts
+console.log(wallet.publicKey.slice(0, 22) + "...");
+```
+
+**Expected output:**
+
+```
+0x0943494b728c5e8492...
+```
+
+---
+
+## `wallet.signTransaction(tx)`
+
+Sign a transaction. Returns wire-encoded signed tx hex ready for `provider.sendRawTransaction`.
+
+**Signature:**
 
 ```ts
 wallet.signTransaction(tx: TxFields): string
 ```
-Returns wire-encoded signed tx hex. Pass it to `provider.sendRawTransaction` (or use the higher-level `transfer` / `sendCall` instead).
+
+**Args:**
+
+| Name | Type | Description |
+|---|---|---|
+| `tx` | `TxFields` | Unsigned tx envelope. |
+
+**`TxFields` shape:**
+
+```ts
+interface TxFields {
+  from: string;
+  to: string;
+  value: bigint | number | string;
+  data: string;            // hex
+  gasLimit: number;
+  nonce: bigint;
+  chainId: number;
+  txType: TxType;
+  accessList?: AccessEntry[];
+  feePayer?: FeePayer;
+  deadline?: bigint;
+}
+```
+
+**Returns:** `string` — `0x`-prefixed hex of the borsh-encoded `pyde_engine_types::Tx`.
+
+**Example:**
+
+```ts
+const tx = {
+  from: wallet.address,
+  to: "0xrecipient...",
+  value: 1_000_000_000n,
+  data: "0x",
+  gasLimit: 100_000,
+  nonce: 0n,
+  chainId: 31337,
+  txType: TxType.Standard,
+};
+const wire = wallet.signTransaction(tx);
+const submitted = await provider.sendRawTransaction(wire);
+console.log("submitted:", submitted.hash);
+```
+
+**Throws:**
+- `WalletDestroyedError` — `destroy()` was called.
+- `SigningError` — malformed `tx` or WASM signer error.
+
+---
+
+## `wallet.sign(messageHex)`
+
+Sign an arbitrary message. For off-chain auth challenges / EIP-191-style signatures.
+
+**Signature:**
 
 ```ts
 wallet.sign(messageHex: string): string
 ```
-Sign arbitrary message hex. Useful for off-chain auth challenges / EIP-191-style signatures.
+
+**Args:**
+
+| Name | Type | Description |
+|---|---|---|
+| `messageHex` | `string` | `0x`-prefixed hex of the message bytes. |
+
+**Returns:** `string` — `0x`-prefixed hex of the FALCON-512 signature (~666 bytes typical).
+
+**Example:**
+
+```ts
+const sig = wallet.sign("0xdeadbeef");
+console.log("sig length:", (sig.length - 2) / 2, "bytes");
+```
+
+**Expected output:**
+
+```
+sig length: 666 bytes
+```
+
+---
+
+## `wallet.hashTransaction(tx)`
+
+Compute the canonical Poseidon2 tx hash. **Doesn't sign.** Useful for offline checking.
+
+**Signature:**
 
 ```ts
 wallet.hashTransaction(tx: TxFields): string
 ```
-Canonical Poseidon2 tx hash (Chapter 11) — the same value the chain re-derives at verification time. Useful for offline checking before submission.
 
-All signing methods throw `WalletDestroyedError` once `destroy()` has been called.
+**Returns:** `string` — `0x` + 64 hex chars.
 
-## Lifecycle
+**Example:**
+
+```ts
+const hash = wallet.hashTransaction(tx);
+console.log("expected tx hash:", hash);
+
+// After submission, verify the chain-side hash matches:
+const submitted = await provider.sendRawTransaction(wallet.signTransaction(tx));
+console.log("chain reported:", submitted.hash);
+console.log("match:", submitted.hash === hash);
+```
+
+**Expected output:**
+
+```
+expected tx hash: 0x3d352d22070ca9d42e6167c8f65a70923e0d105fa3e89b02b72f56f0db55fecb
+chain reported:   0x3d352d22070ca9d42e6167c8f65a70923e0d105fa3e89b02b72f56f0db55fecb
+match: true
+```
+
+---
+
+## `wallet.destroy()`
+
+Wipe the SK material. Idempotent.
+
+**Signature:**
 
 ```ts
 wallet.destroy(): void
 ```
-Idempotent.
+
+**What it does:**
 - Handle-backed: calls `crypto.dropKeypair(handle)` to wipe the WASM-side bytes.
-- Hex-backed: drops the SK reference. V8 strings are immutable; the bytes themselves are not actively zeroized. Consider running sensitive code in a worker/iframe if JS-heap isolation matters.
+- Hex-backed: drops the SK reference. V8 strings are immutable; the bytes themselves are not actively zeroized in the JS heap. Use a worker / iframe if JS-heap isolation matters.
 
-Every subsequent signing method throws `WalletDestroyedError` with a clear message.
+After `destroy()`, **every** signing method throws `WalletDestroyedError`.
 
-## Keystore export
+**Example:**
 
 ```ts
-wallet.toKeystore(password: string, params?: Partial<KdfParams>): Promise<Keystore>
+const wallet = Wallet.generate();
+await wallet.transfer(to, 1n);
+
+wallet.destroy();
+
+await wallet.transfer(to, 1n);
+// throws WalletDestroyedError
 ```
 
-| KDF param | Default | Notes |
+---
+
+## `wallet.toKeystore(password, params?)`
+
+Encrypt the wallet's SK with `password` and return the keystore object. **Hex-backed wallets only.**
+
+**Signature:**
+
+```ts
+wallet.toKeystore(
+  password: string,
+  params?: Partial<KdfParams>,
+): Promise<Keystore>
+```
+
+**`KdfParams` (defaults):**
+
+| Param | Default | Notes |
 |---|---|---|
-| Argon2id `memory` | 64 MiB | Tunable down to ~16 MiB for low-end devices |
-| Argon2id `iterations` | 3 | |
-| Argon2id `parallelism` | 4 | |
-| AEAD | ChaCha20-Poly1305 | |
+| `memory` | `64 * 1024` (64 MiB) | Argon2id memory cost. Tunable down to ~16 MiB for low-end devices. |
+| `iterations` | `3` | Argon2id iterations. |
+| `parallelism` | `4` | Argon2id parallelism. |
 
-The defaults take ~250 ms on a 2024 laptop and match `pyde keys generate` (Chapter 17).
+**AEAD:** ChaCha20-Poly1305 (24-byte nonce).
+
+**Defaults take ~250 ms on a 2024 laptop** — matches `pyde keys generate` (Chapter 17).
+
+**Returns:** `Promise<Keystore>`.
+
+**Throws:**
+- `WalletDestroyedError` — `destroy()` called.
+- `SigningError` — handle-backed wallet (no hex to export).
+
+**Example:**
 
 ```ts
-wallet.saveKeystoreFile(path: string, password: string, params?): Promise<void>
+const wallet = Wallet.generateUnsafe();
+const keystore = await wallet.toKeystore("strong-passphrase");
+console.log("ciphertext size:", (keystore.ciphertext.length - 2) / 2, "bytes");
 ```
-Node-only: `mkdir -p`, write JSON, `chmod 0600`. Throws on handle-backed wallets.
 
-## One-time on-chain registration
+**Expected output:**
+
+```
+ciphertext size: 1281 bytes
+```
+
+---
+
+## `wallet.saveKeystoreFile(path, password, params?)`
+
+Node-only: encrypt + write to disk with mode `0600`.
+
+**Signature:**
+
+```ts
+wallet.saveKeystoreFile(
+  path: string,
+  password: string,
+  params?: Partial<KdfParams>,
+): Promise<void>
+```
+
+**Example:**
+
+```ts
+const wallet = Wallet.generateUnsafe();
+await wallet.saveKeystoreFile("/keys/alice.json", "strong-passphrase");
+wallet.destroy();
+```
+
+**On POSIX:** the file is `chmod 0600` after write.
+**On Windows / network FS:** `chmod` fails silently — file mode unchanged.
+
+---
+
+## `wallet.registerPubkey(provider?)`
+
+Register the FALCON pubkey on chain. **Required once per address** before any signed Standard tx is accepted.
+
+**Spec:** Chapter 11 §11.8 `RegisterPubkey`.
+
+**Signature:**
 
 ```ts
 wallet.registerPubkey(provider?: Provider): Promise<Receipt>
 ```
-First-time setup. Submits a `RegisterPubkey` tx so future signed txs from this address can be verified against the on-chain pubkey. **Required once** before any other write. Sender's address must already hold balance (no chicken-and-egg fix in v1).
 
-## High-level write paths
+**What it sends:**
+- `txType: RegisterPubkey`
+- `to: ZERO_ADDRESS`
+- `data: this.publicKey` (897 bytes)
+- `value: 0`
+- `gasLimit: 200_000`
+- **No signature** — RegisterPubkey txs are unsigned; the chain checks `from == Poseidon2(data)`.
 
-All return `Receipt`. All accept either a bound provider or an explicit `opts.provider` override.
+**Sender must already hold balance** (no chicken-and-egg fix in v1).
 
-### `transfer(to, amount, optsOrProvider?)`
+**Example:**
+
+```ts
+const wallet = Wallet.generate();
+wallet.connect(provider);
+
+const receipt = await wallet.registerPubkey();
+console.log("registered:", receipt.success);
+```
+
+**Expected output:**
+
+```
+registered: true
+```
+
+**Notes:**
+- Subsequent calls revert (`AuthKeys::Single(...)` already set).
+- **Engine-side gap:** the `otigen devnet` orchestrator's wave-application dispatcher doesn't include `RegisterPubkey` — see [README → Status](./README.md#status).
+
+---
+
+## `wallet.transfer(to, amount, optsOrProvider?)`
+
+Build, sign, send a native PYDE transfer.
+
+**Signature:**
 
 ```ts
 wallet.transfer(
   to: string,
   amount: bigint | number,
-  optsOrProvider?: Provider | { provider?, gasLimit?, gasMultiplier? },
+  optsOrProvider?: Provider | {
+    provider?: Provider;
+    gasLimit?: number;
+    gasMultiplier?: number;
+  },
 ): Promise<Receipt>
 ```
-Native PYDE transfer. Backward-compat: callers may pass a `Provider` positionally as the third arg.
 
-### `sendCall(to, data, opts?)`
+**Args:**
+
+| Name | Type | Description |
+|---|---|---|
+| `to` | `string` | Recipient address. |
+| `amount` | `bigint \| number` | Quanta (use `parseQuanta("1.5")` to convert from PYDE). |
+| `optsOrProvider` | see signature | Backward-compat: pass `Provider` positionally **or** an options object. |
+
+**Returns:** `Promise<Receipt>` — receipt after inclusion.
+
+**Example — bound provider, auto-estimate gas:**
+
+```ts
+wallet.connect(provider);
+const receipt = await wallet.transfer(
+  "0xrecipient...",
+  parseQuanta("1.5"),
+);
+console.log("tx:", receipt.txHash, "ok:", receipt.success);
+```
+
+**Expected output:**
+
+```
+tx: 0x3d352d22... ok: true
+```
+
+**Example — pin gas limit:**
+
+```ts
+await wallet.transfer(to, parseQuanta("1"), { gasLimit: 50_000 });
+```
+
+**Example — tune the auto-estimate safety multiplier:**
+
+```ts
+await wallet.transfer(to, parseQuanta("1"), { gasMultiplier: 1.5 });
+```
+
+See [Gas auto-estimate](#gas-auto-estimate) for details.
+
+---
+
+## `wallet.sendCall(to, data, opts?)`
+
+Send a calldata-bearing tx (state-changing contract call). Most callers use `Contract.write` instead.
+
+**Signature:**
 
 ```ts
 wallet.sendCall(
   to: string,
-  data: string, // borsh-encoded CallPayload — usually built via Contract.encodeCall
+  data: string,
   opts?: {
     gasLimit?: number;
     gasMultiplier?: number;
@@ -149,40 +676,159 @@ wallet.sendCall(
   },
 ): Promise<Receipt>
 ```
-Send a calldata-bearing tx. Most callers go through `Contract.write` instead — see [Chapter 04](./04-contract.md).
 
-### `deploy(bundle, opts?)`
+**Args:**
+
+| Name | Type | Description |
+|---|---|---|
+| `to` | `string` | Contract address. |
+| `data` | `string` | Borsh-encoded `CallPayload`, usually built via `Contract.encodeCall`. |
+| `opts.gasLimit` | `number` | Pin gas (skip auto-estimate). |
+| `opts.gasMultiplier` | `number` | Multiplier applied to `estimateGas` result. Default `1.2`. |
+| `opts.value` | bigint / number / string | PYDE quanta attached to the call. |
+| `opts.provider` | `Provider` | Override the bound provider. |
+
+**Returns:** `Promise<Receipt>`.
+
+**Example:**
 
 ```ts
-wallet.deploy(...): Promise<Receipt>
+const counter = await Contract.fromArtifact(abi, addr, provider);
+const data = counter.encodeCall("increment");
+const receipt = await wallet.sendCall(addr, data);
 ```
-Submits a `Deploy` tx with a borsh-encoded `DeployData` (see `DeployData.fromArtifact`). Most authors use the `otigen deploy` CLI — see [Quickstart §3](./01-quickstart.md#3-deploy--call-a-contract).
 
-### `sendEncrypted(...)` — MEV-protected
+---
+
+## `wallet.deploy(...)`
+
+Submits a `Deploy` tx carrying a borsh-encoded `DeployData`.
+
+**Signature:**
+
+```ts
+wallet.deploy(
+  bundle: DeployData,
+  opts?: { gasLimit?: number; value?: bigint | number | string; provider?: Provider },
+): Promise<Receipt>
+```
+
+Most authors use the `otigen deploy` CLI; this is the in-process equivalent. See [Chapter 04 — Contract → `DeployData`](./04-contract.md#deploydata--deploy-tx-payload) for the bundle.
+
+---
+
+## `wallet.sendEncrypted(to, calldata, opts?)`
+
+Threshold-encrypts `(to, value, calldata)` against the committee pubkey before submission. **MEV-protected.**
+
+**Signature:**
 
 ```ts
 wallet.sendEncrypted(
   to: string,
   calldata: string,
-  opts?: { provider?, gasLimit?, value?, deadline?, estimateAccess? },
+  opts?: {
+    gasLimit?: number;
+    value?: bigint | number | string;
+    deadline?: bigint;
+    accessList?: AccessEntry[];
+    estimateAccess?: boolean;
+    provider?: Provider;
+  },
 ): Promise<Receipt>
 ```
-Threshold-encrypts `(to, value, calldata)` against the committee public key. The mempool sees ciphertext only; decryption happens at the wave-commit boundary. See [Chapter 09](./09-encrypted-mempool.md).
 
-Hex-backed wallets only (until `pyde-crypto-wasm` ships `buildRawEncryptedTxWithHandle`).
+**Hex-backed wallets only** (until `pyde-crypto-wasm` ships `buildRawEncryptedTxWithHandle`).
 
-### `transferEncrypted(to, amount, opts?)`
+See [Chapter 09 — encrypted mempool](./09-encrypted-mempool.md) for the full flow, when to use it, and `estimateAccess` privacy considerations.
 
-Same shape as `transfer`, but encrypted. Hides the recipient + amount until commit.
+---
 
-### Staking helpers
+## `wallet.transferEncrypted(to, amount, opts?)`
+
+Encrypted variant of `transfer`. Value-only send through the MEV-protected mempool. Same hex-SK constraint.
+
+**Signature:**
 
 ```ts
-wallet.stakeDeposit(amount, opts?): Promise<Receipt>
-wallet.stakeWithdraw(opts?): Promise<Receipt>
-wallet.claimReward(opts?): Promise<Receipt>
+wallet.transferEncrypted(
+  to: string,
+  amount: bigint | number,
+  opts?: { deadline?: bigint; provider?: Provider },
+): Promise<Receipt>
 ```
-Validator-side flows; most app developers don't need them.
+
+---
+
+## `wallet.stakeDeposit(amount, opts?)`
+
+Validator-side flow. Lock ≥ `MIN_VALIDATOR_STAKE` (10,000 PYDE) and register as a validator.
+
+**Signature:**
+
+```ts
+wallet.stakeDeposit(
+  amount: bigint,
+  opts?: { provider?: Provider },
+): Promise<Receipt>
+```
+
+---
+
+## `wallet.stakeWithdraw(opts?)`
+
+Begin the 30-day unbonding period.
+
+**Signature:**
+
+```ts
+wallet.stakeWithdraw(opts?: { provider?: Provider }): Promise<Receipt>
+```
+
+---
+
+## `wallet.claimReward(opts?)`
+
+Claim accrued staking yield from the pool.
+
+**Signature:**
+
+```ts
+wallet.claimReward(opts?: { provider?: Provider }): Promise<Receipt>
+```
+
+---
+
+## `wallet.getBalance(provider?)`
+
+Convenience wrapper around `provider.getBalance(wallet.address)`.
+
+**Signature:**
+
+```ts
+wallet.getBalance(provider?: Provider): Promise<bigint>
+```
+
+**Example:**
+
+```ts
+const balance = await wallet.getBalance();
+console.log(formatQuanta(balance), "PYDE");
+```
+
+---
+
+## `wallet.getNonce(provider?)`
+
+Convenience wrapper around `provider.getNonce(wallet.address)`.
+
+**Signature:**
+
+```ts
+wallet.getNonce(provider?: Provider): Promise<bigint>
+```
+
+---
 
 ## Gas auto-estimate
 
@@ -192,21 +838,22 @@ Validator-side flows; most app developers don't need them.
 gasLimit = ceil(provider.estimateGas(...) * gasMultiplier);
 ```
 
-`gasMultiplier` defaults to `1.2` — a 20 % safety margin to absorb chain-state drift between the estimate and the commit. Override on the call:
+`gasMultiplier` defaults to `1.2` — a 20 % safety margin to absorb chain-state drift between the estimate and the commit.
+
+**Override on the call:**
 
 ```ts
-await wallet.transfer(to, amount, { gasMultiplier: 1.5 });
-await wallet.sendCall(to, data, { gasLimit: 5_000_000 }); // pin explicitly
+await wallet.transfer(to, amount, { gasMultiplier: 1.5 });        // tune
+await wallet.sendCall(to, data, { gasLimit: 5_000_000 });          // pin
 ```
 
-**Fallback when the engine has no `pyde_estimateGas`:** 100k for value-only txs, 5M for calldata-bearing txs. Pinning `gasLimit` skips both the RPC call and the fallback.
+**Fallback when the engine has no `pyde_estimateGas`:**
+- 100k for plain transfers (`data === "0x"`).
+- 5M for calldata-bearing txs (`data !== "0x"`).
 
-## Read-side conveniences
+Pinning `gasLimit` skips both the RPC call and the fallback.
 
-```ts
-wallet.getBalance(provider?: Provider): Promise<bigint>
-wallet.getNonce(provider?: Provider): Promise<bigint>
-```
+---
 
 ## Errors
 
@@ -219,10 +866,15 @@ wallet.getNonce(provider?: Provider): Promise<bigint>
 
 See [Chapter 10 — Errors](./10-errors.md).
 
+---
+
 ## Gotchas
 
 - **`registerPubkey` once, ever.** Subsequent calls revert.
-- **Generate a fresh wallet per session.** FALCON-512 isn't deterministic-from-seed in v1 (`pyde-crypto-wasm` doesn't expose `keypairFromSeed` yet).
+- **Generate a fresh wallet per session.** Until `pyde-crypto-wasm.keypairFromSeed` covers all generation paths, `Wallet.generate()` uses fresh OS entropy each time.
 - **Hex-backed wallets in long-lived processes are a footgun.** The SK string lives in V8 heap until GC. Use handle-backed wallets where possible; if you must use hex, scope the wallet tightly and `destroy()` early.
-- **Nonces are bigint.** `Wallet.getNonce` returns `bigint` — don't `Number()` it.
-- **`Provider` argument is optional after `connect()`.** Bind once, use everywhere.
+- **Nonces are bigint.** `wallet.getNonce()` returns `bigint` — don't `Number()` it.
+- **`provider` argument is optional after `connect()`.** Bind once, use everywhere.
+- **`saveKeystoreFile` is Node-only.** Browsers can use `toKeystore` + `localStorage` / `IndexedDB`.
+- **`transferEncrypted` / `sendEncrypted` require a hex-backed wallet.** Plain `Wallet.generate()` won't work for encrypted send today.
+- **Gas auto-estimate falls back to a default** when the engine doesn't expose `pyde_estimateGas`. Devnet is one such case. Pin `gasLimit` for predictable behavior.

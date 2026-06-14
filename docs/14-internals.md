@@ -4,55 +4,95 @@ Wire format reference, design tradeoffs, "why does it do that". For SDK contribu
 
 [← TOC](./README.md)
 
+---
+
+## Table of contents
+
+- [Borsh — the wire format](#borsh--the-wire-format)
+  - [Scalars (with exact wire bytes)](#scalars-with-exact-wire-bytes)
+  - [Strings, Bytes, Vec](#strings-bytes-vec)
+  - [Option, Tuple, Array](#option-tuple-array)
+  - [Struct + Enum](#struct--enum)
+  - [Fixed-byte arrays](#fixed-byte-arrays)
+- [`CallPayload` wrapping](#callpayload-wrapping)
+- [Multi-arg encoding](#multi-arg-encoding)
+- [Transaction wire format](#transaction-wire-format)
+- [ABI normalisation](#abi-normalisation)
+  - [`attrs.bits` packing](#attrsbits-packing)
+- [Wave header tolerance](#wave-header-tolerance)
+- [Receipt status tolerance](#receipt-status-tolerance)
+- [Account null-vs-zeroed](#account-null-vs-zeroed)
+- [Codec design tradeoffs](#codec-design-tradeoffs)
+- [Files involved](#files-involved)
+- [Spec references](#spec-references)
+
+---
+
 ## Borsh — the wire format
 
-The SDK's contract codec is a 1:1 mirror of the **borsh-rs canonical** spec. The chain's `#[pyde::entry]` macro borsh-decodes calldata into typed args and borsh-encodes returns. The SDK matches exactly so cross-language clients (Rust, Go, Zig, AssemblyScript) all see the same bytes.
+The SDK's contract codec is a **1:1 mirror** of the borsh-rs canonical spec. The chain's `#[pyde::entry]` macro borsh-decodes calldata into typed args and borsh-encodes returns. The SDK matches exactly so cross-language clients (Rust, Go, Zig, AssemblyScript) all see the same bytes.
 
-### Scalars
+### Scalars (with exact wire bytes)
 
-| Type | Bytes | Encoding |
-|---|---|---|
-| `u8`, `i8` | 1 | Direct byte (`i8` is two's complement) |
-| `u16`, `i16` | 2 | Little-endian (`i16` two's complement) |
-| `u32`, `i32` | 4 | Little-endian |
-| `u64`, `i64` | 8 | Little-endian |
-| `u128`, `i128` | 16 | Little-endian |
-| `u256`, `i256` | 32 | Little-endian (Pyde extension; borsh-rs doesn't ship u256 natively) |
-| `bool` | 1 | `0x00` (false) or `0x01` (true) |
+| Type | Bytes | Encoding | Example value | Wire bytes |
+|---|---|---|---|---|
+| `u8`, `i8` | 1 | Direct byte | `u8 = 42` | `2a` |
+| `u16`, `i16` | 2 | Little-endian | `u16 = 0x1234` | `34 12` |
+| `u32`, `i32` | 4 | Little-endian | `u32 = 0xdeadbeef` | `ef be ad de` |
+| `u64`, `i64` | 8 | Little-endian | `u64 = 42` | `2a 00 00 00 00 00 00 00` |
+| `u128`, `i128` | 16 | Little-endian | `u128 = 1 << 100` | (1 at byte 12) |
+| `u256`, `i256` | 32 | Little-endian (Pyde ext.) | `u256 = 1 << 200` | (1 at byte 25) |
+| `bool` | 1 | `0x00` (false) / `0x01` (true) | `true` | `01` |
 
-For signed types, the encoder masks to the type's bit width so two's-complement negatives round-trip correctly.
+For signed types, the encoder masks to the type's bit width so two's-complement negatives round-trip correctly:
+
+```
+i8 = -1   →  0xff
+i8 = -128 →  0x80
+i16 = -1  →  0xff 0xff
+```
 
 ### Strings, Bytes, Vec
 
-| Type | Format |
-|---|---|
-| `String` | 4-byte LE u32 length + UTF-8 bytes. **No padding, no null terminator.** |
-| `Vec<u8>` / `Bytes` | 4-byte LE u32 length + raw bytes. |
-| `Vec<T>` | 4-byte LE u32 count + T-encoded items. |
+| Type | Format | Example | Wire bytes |
+|---|---|---|---|
+| `String` | 4-byte LE u32 length + UTF-8 bytes (no padding, no null terminator) | `"hi"` | `02 00 00 00 68 69` |
+| `Vec<u8>` / `Bytes` | 4-byte LE u32 length + raw bytes | `[0xde, 0xad, 0xbe, 0xef]` | `04 00 00 00 de ad be ef` |
+| `Vec<T>` | 4-byte LE u32 count + T-encoded items | `Vec<u64> = [1, 2, 3]` | `03 00 00 00 01 00 00 00 00 00 00 00 02 00 00 00 00 00 00 00 03 00 00 00 00 00 00 00` |
+
+**Empty Vec is 4 bytes, not 0:** `Vec<u8>::default()` → `00 00 00 00` (length 0).
 
 ### Option, Tuple, Array
 
-| Type | Format |
-|---|---|
-| `Option<T>` | 1-byte tag (`0x00` = None, `0x01` = Some) + T-encoded value if Some. |
-| `(T1, T2, ...)` tuple | Items concatenated. No header, no length, no separator. |
-| `[T; N]` fixed array | N items concatenated. No length prefix. |
+| Type | Format | Example | Wire bytes |
+|---|---|---|---|
+| `Option<T>` | 1-byte tag (`00` = None, `01` = Some) + T-encoded value if Some | `Option<u32> = None` | `00` |
+| `Option<T>` (Some) | `01` + value bytes | `Option<u32> = Some(42)` | `01 2a 00 00 00` |
+| `(T1, T2, ...)` tuple | Items concatenated. No header, no length, no separator. | `(u8, u8) = (1, 2)` | `01 02` |
+| `[T; N]` fixed array | N items concatenated. No length prefix. | `[u8; 4] = [1, 2, 3, 4]` | `01 02 03 04` |
 
 ### Struct + Enum
 
-| Type | Format |
-|---|---|
-| Struct | Fields concatenated in declaration order. No header. |
-| Enum (unit variants only) | 1-byte variant index. v1 supports unit variants only — data-carrying variants are planned for v1.1. |
+| Type | Format | Example | Wire bytes |
+|---|---|---|---|
+| Struct | Fields concatenated in **declaration order**. No header. | `struct Order { id: u64, paid: bool }` with `id=42, paid=true` | `2a 00 00 00 00 00 00 00 01` |
+| Enum (unit variants) | 1-byte variant index | `enum Status { Pending=0, Active=1, Cancelled=2 }`, `Active` | `01` |
+
+**v1 supports unit-variant enums only.** Data-carrying variants are planned for v1.1.
 
 ### Fixed-byte arrays
 
-| Type | Format |
-|---|---|
-| `Address`, `Hash`, `Hash32` | 32 raw bytes |
-| `FixedBytes:N` (where N ≠ 32) | N raw bytes |
+| Type | Format | Notes |
+|---|---|---|
+| `Address`, `Hash`, `Hash32` | 32 raw bytes | Encoder takes a `0x`-prefixed hex string and writes the 32 bytes verbatim. |
+| `FixedBytes:N` (where N ≠ 32) | N raw bytes | Same as `[u8; N]`. |
 
-`Address` is a `[u8; 32]` array; encoder takes a `0x`-prefixed hex string and writes the 32 bytes verbatim.
+```
+Address "0x" + "ab" × 32  →  ab ab ab ab ... ab  (32 bytes)
+FixedBytes:4 "0xdeadbeef" →  de ad be ef
+```
+
+---
 
 ## `CallPayload` wrapping
 
@@ -69,13 +109,31 @@ struct CallPayload {
 `Contract.encodeCall` produces:
 
 ```
-4-byte u32 LE        // function name length
-N bytes              // function name UTF-8
-4-byte u32 LE        // calldata length
-M bytes              // borsh-encoded args (concat — no tuple header)
+┌─────────────────────────────────────────────────────────────────┐
+│  4 bytes — function name length (u32 LE)                        │
+├─────────────────────────────────────────────────────────────────┤
+│  N bytes — function name UTF-8                                  │
+├─────────────────────────────────────────────────────────────────┤
+│  4 bytes — calldata length (u32 LE)                             │
+├─────────────────────────────────────────────────────────────────┤
+│  M bytes — borsh-encoded args (concat — no tuple header)        │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**Concrete example** — `two_args(a: u64, b: String)` called with `a = 7`, `b = "hi"`:
+
+```
+function name length  : 08 00 00 00            (length 8 — "two_args")
+function name         : 74 77 6f 5f 61 72 67 73 ("two_args")
+calldata length       : 0e 00 00 00            (length 14)
+calldata              : 07 00 00 00 00 00 00 00 02 00 00 00 68 69
+                        └────────────────────┘ └────────┘ └──┘
+                          a = 7 (u64 LE)         b len     "hi"
 ```
 
 The chain dispatches by **function name**, not by 4-byte selector hash. ABI artifacts still ship a `selector: [b0, b1, b2, b3]` for forward compatibility — the SDK records it via `selectorBytes` on `AbiFunction` but doesn't use it for routing.
+
+---
 
 ## Multi-arg encoding
 
@@ -86,7 +144,43 @@ let (a, b, c, ...): (T1, T2, T3, ...) =
     <(T1, T2, T3, ...) as BorshDeserialize>::try_from_slice(&calldata)?;
 ```
 
-Borsh's tuple encoding is just "concatenate the field encodings, no header" — so the SDK encodes each arg in declaration order and concatenates. Same wire bytes as encoding a one-arg tuple, or zero-arg empty buffer.
+Borsh's tuple encoding is just **"concatenate the field encodings, no header"** — so the SDK encodes each arg in declaration order and concatenates. Same wire bytes as encoding a one-arg tuple, or zero-arg empty buffer.
+
+---
+
+## Transaction wire format
+
+Field order matches `pyde_engine_types::Tx` declaration order verbatim. Borsh serialises in declaration order; reordering is a wire-breaking change.
+
+```
+┌────────────────────────────────────────────────────────────────┐
+│ Field        | Type              | Wire bytes                  │
+├────────────────────────────────────────────────────────────────┤
+│ from         | Address           | 32 raw bytes                │
+│ to           | Address           | 32 raw bytes                │
+│ value        | u128              | 16 LE bytes                 │
+│ data         | Vec<u8>           | 4-byte u32 LE len + bytes   │
+│ gas_limit    | Gas (u64)         | 8 LE bytes                  │
+│ nonce        | u64               | 8 LE bytes                  │
+│ signature    | FalconSignature   | 4-byte LE len + sig bytes   │
+│ fee_payer    | FeePayer enum     | 1-byte discriminant         │
+│              |                   | (+ Address for Paymaster)   │
+│ access_list  | Vec<AccessEntry>  | 4-byte LE count + entries   │
+│ deadline     | Option<u64>       | 1-byte tag + 8 LE if Some   │
+│ chain_id     | u64               | 8 LE bytes                  │
+│ tx_type      | TxType enum       | 1-byte discriminant         │
+└────────────────────────────────────────────────────────────────┘
+```
+
+**`FalconSignature` is `Vec<u8>`** — borsh encodes as `4-byte LE length + bytes`, not as a fixed-size 666-byte array (signatures are variable-length, ~666 bytes typical, up to 690 max).
+
+**`FeePayer::Sender`** is a single `0x00` byte (variant discriminant, no payload).
+
+**`Option::None`** is a single `0x00` byte.
+
+For an **empty** access list, encode `0x00 0x00 0x00 0x00` (Vec count = 0).
+
+---
 
 ## ABI normalisation
 
@@ -148,6 +242,10 @@ The engine packs function attributes into a 16-bit mask:
 
 The normalizer extracts `view = (bits & 1) !== 0`, `payable = (bits & 2) !== 0`.
 
+**Example:** `attrs.bits = 129 = 0x81 = 0b10000001` → `view: true`, `payable: false`, bit 7 set.
+
+---
+
 ## Wave header tolerance
 
 The engine's wave-header wire shape ships dual-hash state roots + byte-array anchors + no `timestamp`:
@@ -164,21 +262,41 @@ The engine's wave-header wire shape ships dual-hash state roots + byte-array anc
   },
   "events_root": [0, 0, ...],
   "tx_count": 0,
-  "events_count": 0,
-  ...
+  "events_count": 0
 }
 ```
 
 The SDK's `fromWireWaveHeader` tolerates three forms for hash-shaped fields:
+
 - Already-hex `"0xabcd..."` string.
 - Raw 32-byte JSON array `[15, 156, 224, ...]`.
 - Dual-hash struct `{blake3: [...], poseidon2: [...]}`.
 
-The Blake3 leg of `state_root` is the execution-side authority (per the `hash_strategy_and_validation` memo) — that's what the SDK surfaces. Timestamps are synthesised from `anchor_round` when missing.
+The **Blake3 leg** of `state_root` is the execution-side authority (per the `hash_strategy_and_validation` memo) — that's what the SDK surfaces. Timestamps are synthesised from `anchor_round` when missing.
+
+---
+
+## Receipt status tolerance
+
+The chain emits `status` as a string (`"success" | "reverted" | "out_of_gas"`); older specs used a boolean `success`. The SDK accepts both:
+
+```ts
+const status = typeof o.status === "string" ? o.status : null;
+const success =
+  typeof o.success === "boolean"
+    ? o.success
+    : status !== null
+      ? status === "success"
+      : false;
+```
+
+It also falls back to `"0x0"` / `[]` for optional fields (`effective_gas`, `fee_burned`, `fee_validator`, `logs`) when the chain doesn't ship them — devnet receipts are sparse.
+
+---
 
 ## Account null-vs-zeroed
 
-`pyde_getAccount` returns a populated zero-account for unknown addresses on some engine builds (with `account_type: "eoa"`, `balance: 0x0`, etc.) and `null` on others. The SDK's `Provider.getAccount` distinguishes:
+`pyde_getAccount` returns a populated zero-account for unknown addresses on some engine builds (`account_type: "eoa"`, `balance: 0x0`, etc.) and `null` on others. The SDK's `Provider.getAccount` distinguishes:
 
 ```ts
 if (!result || typeof result !== "object") return null;
@@ -188,6 +306,8 @@ return fromWireAccount(result);
 ```
 
 A zero-balance account that's been touched (e.g., a registered EOA before its first deposit) has at least `address` populated and surfaces as a populated `Account`. A truly absent account returns `null`.
+
+---
 
 ## Codec design tradeoffs
 
@@ -206,11 +326,14 @@ Uniform API. `u32` could be a `number`, but mixing `number` and `bigint` at call
 ### Why `Address` as a hex string, not `Uint8Array`?
 
 Three reasons:
+
 1. Most users write address literals as strings; `"0x..."` is the natural form.
 2. JSON-RPC, logs, dapp UIs all use string addresses. `Uint8Array` would require encode-on-output everywhere.
 3. The borsh encoder is just `bytesFromHex(value)` — the conversion is cheap and happens once per arg.
 
 `Bytes` is `Uint8Array` because the natural use case (arbitrary opaque payloads) is closer to byte semantics than to string semantics.
+
+---
 
 ## Files involved
 
@@ -226,6 +349,8 @@ Three reasons:
 | `src/react.ts` | React hooks + `<PydeProvider>` |
 | `src/errors.ts` | Error hierarchy + `isError` |
 | `src/simulate.ts` | Tier 1 RPC-backed simulation; Tier 2 local wasmtime in v1.1 |
+
+---
 
 ## Spec references
 
