@@ -1,0 +1,57 @@
+version: 2
+
+updates:
+  # npm — runtime + dev deps for the SDK itself.
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "08:00"
+      timezone: "UTC"
+    open-pull-requests-limit: 10
+    labels:
+      - "deps"
+      - "dependabot"
+    commit-message:
+      prefix: "chore(deps)"
+      include: "scope"
+    # Group minor + patch into one PR per ecosystem; major bumps get
+    # their own PR each (semver-major can break consumers).
+    groups:
+      npm-minor:
+        update-types:
+          - "minor"
+          - "patch"
+      npm-major:
+        update-types:
+          - "major"
+    ignore:
+      # pyde-crypto-wasm is local-file linked until first published;
+      # Dependabot can't update file: deps anyway.
+      - dependency-name: "pyde-crypto-wasm"
+      # Pin React major manually — peer-dep semantics for downstream
+      # dapps mean any react@>=18 should keep working.
+      - dependency-name: "react"
+        update-types:
+          - "version-update:semver-major"
+      - dependency-name: "@types/react"
+        update-types:
+          - "version-update:semver-major"
+
+  # github-actions — the CI workflow itself.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "08:00"
+      timezone: "UTC"
+    open-pull-requests-limit: 5
+    labels:
+      - "deps"
+      - "ci"
+      - "dependabot"
+    commit-message:
+      prefix: "chore(ci)"
+      include: "scope"

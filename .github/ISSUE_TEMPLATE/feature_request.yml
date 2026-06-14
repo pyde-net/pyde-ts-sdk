@@ -1,0 +1,59 @@
+name: Feature request
+description: Suggest a new feature or API surface
+title: "[feat]: "
+labels: ["enhancement"]
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for proposing something. Please **scope tightly** — one feature per issue.
+
+        For very small additions, a PR is often faster than an issue. For larger features, please get alignment here first.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What can't you do today that you wish you could?
+      placeholder: "I want to subscribe to all wave commits without using the WebSocketProvider, because my dapp runs in a serverless function."
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposed-api
+    attributes:
+      label: Proposed API
+      description: |
+        Sketch the call site. Don't worry about exact signatures — just the shape.
+      render: typescript
+      placeholder: |
+        const provider = new Provider("https://rpc.pyde.network");
+        for await (const wave of provider.streamWaves({ pollIntervalMs: 1000 })) {
+          console.log(wave.waveId);
+        }
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: What workarounds did you try?
+
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope sensitivity
+      description: |
+        Is this a small wrapper around an existing method, or a new wire-format-touching feature? The latter usually waits for engine support.
+
+  - type: checkboxes
+    id: terms
+    attributes:
+      label: Checks
+      options:
+        - label: I searched existing issues + PRs for prior discussion.
+          required: true
+        - label: This is a single, scoped request — not a wishlist.
+          required: true

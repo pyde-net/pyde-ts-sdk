@@ -1,0 +1,116 @@
+name: Bug report
+description: Report a bug in pyde-ts-sdk
+title: "[bug]: "
+labels: ["bug"]
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug. **One bug per issue** keeps things easier to triage.
+
+        Before filing:
+        - Search [existing issues](https://github.com/pyde-net/pyde-ts-sdk/issues?q=is%3Aissue).
+        - If the bug is in a transitive dep (vitest, tsup, etc.), please file there instead.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: Concise summary of the unexpected behavior.
+      placeholder: "Calling `Provider.getBalance(addr)` against devnet returns 0n for a freshly-funded address."
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect to happen?
+      placeholder: "Returns the address's actual balance (10_000_000_000n quanta)."
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: |
+        A self-contained code sample that triggers the bug. Pin the SDK version + node version below.
+      render: typescript
+      placeholder: |
+        import { Provider } from "pyde-ts-sdk";
+
+        const provider = new Provider("http://127.0.0.1:9933", { allowInsecureTransport: true });
+        const balance = await provider.getBalance("0xaddr...");
+        console.log(balance); // expected: 10000000000n, got: 0n
+    validations:
+      required: true
+
+  - type: input
+    id: sdk-version
+    attributes:
+      label: pyde-ts-sdk version
+      placeholder: "0.1.0-beta.1"
+    validations:
+      required: true
+
+  - type: input
+    id: node-version
+    attributes:
+      label: Node version
+      description: Output of `node --version`. (`>=20` is the supported floor.)
+      placeholder: "v22.0.0"
+    validations:
+      required: true
+
+  - type: input
+    id: chain-version
+    attributes:
+      label: Chain / engine version
+      description: Output of `otigen --version` or the testnet endpoint you're hitting.
+      placeholder: "otigen 0.1.0 (devnet)"
+    validations:
+      required: false
+
+  - type: dropdown
+    id: runtime
+    attributes:
+      label: Runtime
+      multiple: true
+      options:
+        - Node
+        - Browser (Vite)
+        - Browser (Webpack)
+        - Browser (esbuild / Rollup)
+        - Other (specify in additional context)
+    validations:
+      required: true
+
+  - type: textarea
+    id: error-output
+    attributes:
+      label: Error output / stack trace
+      description: Paste the full error (`scrubError` automatically redacts SK material). Don't paste secrets even if redacted.
+      render: shell
+      placeholder: |
+        RpcError: RPC error: {"code":-32602,"message":"..."}
+            at Provider.call_ (src/provider.ts:494:17)
+            ...
+
+  - type: textarea
+    id: additional-context
+    attributes:
+      label: Additional context
+      description: Anything else — screenshots, log files, env quirks.
+
+  - type: checkboxes
+    id: terms
+    attributes:
+      label: Checks
+      options:
+        - label: I searched existing issues and didn't find a duplicate.
+          required: true
+        - label: I'm using `pyde-ts-sdk` (not a fork) at the version listed above.
+          required: true
+        - label: My reproduction is the smallest possible — no incidental code.
+          required: true

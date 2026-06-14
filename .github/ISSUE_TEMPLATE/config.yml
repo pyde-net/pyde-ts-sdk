@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security disclosure
+    url: https://github.com/pyde-net/pyde-ts-sdk/security/advisories/new
+    about: Report a vulnerability privately. Do NOT file as a public issue.
+  - name: Pyde Book — spec questions
+    url: https://book.pyde.network
+    about: Questions about chain semantics, RPC shapes, or wire formats live in the spec.
+  - name: Discussions
+    url: https://github.com/pyde-net/pyde-ts-sdk/discussions
+    about: Open-ended questions, ideas, and "how do I…" go here, not in the issue tracker.
