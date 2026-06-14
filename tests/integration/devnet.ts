@@ -43,7 +43,7 @@ export async function spawnDevnet(opts?: {
   // Attach to a pre-existing devnet when PYDE_DEVNET_URL is set.
   const preExisting = process.env.PYDE_DEVNET_URL;
   if (preExisting) {
-    const provider = new Provider(preExisting);
+    const provider = new Provider(preExisting, { allowInsecureTransport: true });
     await waitForReady(provider);
     return {
       rpcUrl: preExisting,
@@ -81,7 +81,7 @@ export async function spawnDevnet(opts?: {
   });
 
   const rpcUrl = `http://127.0.0.1:${port}`;
-  const provider = new Provider(rpcUrl);
+  const provider = new Provider(rpcUrl, { allowInsecureTransport: true });
   try {
     await waitForReady(provider);
   } catch (e) {

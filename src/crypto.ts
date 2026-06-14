@@ -345,5 +345,10 @@ function toWasmJson(v: unknown): string {
  */
 function scrubError(e: unknown): string {
   const raw = e instanceof Error ? e.message : String(e);
-  return raw.replace(/0x[0-9a-fA-F]{64,}/g, "0x[REDACTED]");
+  // First pass: redact long hex runs whether or not they're 0x-prefixed
+  // (catches FALCON SK / pk leaks regardless of formatting).
+  const longHex = raw.replace(/(?:0x)?[0-9a-fA-F]{200,}/g, "[REDACTED]");
+  // Second pass: redact 32-byte+ 0x-prefixed values (addresses, hashes,
+  // sigs — generally safe to expose but defense-in-depth).
+  return longHex.replace(/0x[0-9a-fA-F]{64,}/g, "0x[REDACTED]");
 }

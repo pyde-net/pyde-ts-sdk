@@ -26,7 +26,7 @@
  *     exactly-once semantics should dedupe by `(waveId, txIndex, eventIndex)`.
  */
 
-import { Provider } from "./provider";
+import { Provider, enforceSecureScheme } from "./provider";
 import type {
   Log,
   WaveHeader,
@@ -70,6 +70,8 @@ export interface WebSocketProviderOptions {
   reconnectMaxAttempts?: number;
   /** RPC call timeout in ms. Default 30,000. */
   rpcTimeoutMs?: number;
+  /** Allow non-TLS `ws://` transports. Default false. See ProviderOptions. */
+  allowInsecureTransport?: boolean;
 }
 
 /** Filter for `subscribeLogs` — same positional topics + contract shape as
@@ -131,7 +133,9 @@ export class WebSocketProvider {
   readonly ready: Promise<void>;
 
   private url: string;
-  private opts: Required<Omit<WebSocketProviderOptions, "webSocketConstructor" | "httpRpcUrl">> & {
+  private opts: Required<
+    Omit<WebSocketProviderOptions, "webSocketConstructor" | "httpRpcUrl" | "allowInsecureTransport">
+  > & {
     webSocketConstructor: WebSocketCtor;
   };
   private ws: WebSocketLike | null = null;
@@ -146,6 +150,7 @@ export class WebSocketProvider {
   private rejectReady!: (e: Error) => void;
 
   constructor(url: string, options?: WebSocketProviderOptions) {
+    enforceSecureScheme(url, options?.allowInsecureTransport, "WebSocketProvider");
     this.url = url;
     const ctor = options?.webSocketConstructor ?? globalThisWebSocket();
     if (!ctor) {
@@ -160,7 +165,11 @@ export class WebSocketProvider {
       reconnectMaxAttempts: options?.reconnectMaxAttempts ?? 0,
       rpcTimeoutMs: options?.rpcTimeoutMs ?? 30_000,
     };
-    this.http = new Provider(options?.httpRpcUrl ?? wsToHttp(url));
+    // The HTTP fallback honors the same insecure-transport allowance
+    // the WS endpoint was granted.
+    this.http = new Provider(options?.httpRpcUrl ?? wsToHttp(url), {
+      ...(options?.allowInsecureTransport ? { allowInsecureTransport: true } : {}),
+    });
     this.ready = new Promise<void>((resolve, reject) => {
       this.resolveReady = resolve;
       this.rejectReady = reject;

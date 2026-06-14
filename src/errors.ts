@@ -106,6 +106,15 @@ export class SigningError extends PydeError {
   }
 }
 
+/** Operation attempted on a destroyed wallet. The SK material has been
+ *  dropped; future signing calls cannot succeed. */
+export class WalletDestroyedError extends SigningError {
+  constructor() {
+    super("wallet has been destroyed — generate a new Wallet to sign");
+    this.name = "WalletDestroyedError";
+  }
+}
+
 // ============================================================================
 // Type guards
 // ============================================================================

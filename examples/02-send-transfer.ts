@@ -15,7 +15,7 @@ import { Provider, Wallet, parseQuanta, formatQuanta } from "../src/index";
 
 async function main(): Promise<void> {
   const rpc = process.env.PYDE_RPC_URL ?? "http://127.0.0.1:8545";
-  const provider = new Provider(rpc);
+  const provider = new Provider(rpc, { allowInsecureTransport: rpc.startsWith("http://") });
 
   // Hex-SK so we can persist later. For production, prefer Wallet.generate()
   // (handle-backed) and the keystore-encryption flow.

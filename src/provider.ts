@@ -45,6 +45,7 @@ import { AccountType } from "./types";
 import {
   CallExceptionError,
   ConnectionError,
+  InvalidArgumentError,
   RpcError,
   TimeoutError,
 } from "./errors";
@@ -57,6 +58,11 @@ export interface ProviderOptions {
   retries?: number;
   /** Custom HTTP headers (e.g. auth keys, x-trace-id). */
   headers?: Record<string, string>;
+  /** Allow non-TLS `http://` transports. Defaults to false — the
+   *  constructor throws for plaintext URLs unless this is explicitly
+   *  opted in (devnet, localhost testing, CI). Production deployments
+   *  should never set this. */
+  allowInsecureTransport?: boolean;
 }
 
 /**
@@ -71,11 +77,12 @@ export class Provider {
   readonly rpcUrl: string;
   private rpcId = 0;
   private cachedChainId: number | null = null;
-  private options: Required<Omit<ProviderOptions, "headers">> & {
+  private options: Required<Omit<ProviderOptions, "headers" | "allowInsecureTransport">> & {
     headers: Record<string, string>;
   };
 
   constructor(rpcUrl: string, options?: ProviderOptions) {
+    enforceSecureScheme(rpcUrl, options?.allowInsecureTransport, "Provider");
     this.rpcUrl = rpcUrl;
     this.options = {
       timeout: options?.timeout ?? 30_000,
@@ -533,6 +540,27 @@ export class Provider {
 // ============================================================================
 
 const ZERO_ADDR = "0x" + "00".repeat(32);
+
+/** Reject plaintext transports unless the caller opted in. Throws an
+ *  `InvalidArgumentError` so the failure is visible at constructor
+ *  time rather than at first request (when sensitive data may already
+ *  be in flight). */
+export function enforceSecureScheme(
+  url: string,
+  allowInsecure: boolean | undefined,
+  ctx: string,
+): void {
+  if (allowInsecure) return;
+  const lower = url.toLowerCase();
+  if (lower.startsWith("http://") || lower.startsWith("ws://")) {
+    throw new InvalidArgumentError(
+      `${ctx}: plaintext transport (${lower.startsWith("http") ? "http://" : "ws://"}) rejected. ` +
+        `Pass options.allowInsecureTransport: true for devnet / localhost; production must use https:// / wss://.`,
+      "url",
+      url,
+    );
+  }
+}
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));

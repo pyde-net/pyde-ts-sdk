@@ -23,6 +23,7 @@ beforeAll(async () => {
   ws = new WebSocketProvider(devnet.wsUrl, {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     webSocketConstructor: WebSocket as any,
+    allowInsecureTransport: true,
   });
   await ws.ready;
 }, 60_000);

@@ -31,7 +31,7 @@ import { AbstractSigner } from "./signer";
 import * as crypto from "./crypto";
 import type { AccessEntry, Receipt, TxFields } from "./types";
 import { TxType } from "./types";
-import { SigningError } from "./errors";
+import { SigningError, WalletDestroyedError } from "./errors";
 
 // ============================================================================
 // Keystore format (matches `pyde keys generate`, per Chapter 17)
@@ -78,9 +78,9 @@ const NONCE_LEN = 12;
 // Wallet
 // ============================================================================
 
-/** Internal key-material discriminator — either a WASM-retained handle or
- *  an in-JS hex secret. Never both. */
-type KeyMaterial = { handle: number } | { hex: string };
+/** Internal key-material discriminator — either a WASM-retained handle,
+ *  an in-JS hex secret, or destroyed (post-destroy(); signing throws). */
+type KeyMaterial = { handle: number } | { hex: string } | { destroyed: true };
 
 /**
  * FALCON-512 wallet. Implements `AbstractSigner` so it can be passed
@@ -156,6 +156,7 @@ export class Wallet extends AbstractSigner {
   /** Encrypt the wallet's SK with `password` and return the keystore.
    *  Throws on handle-only wallets (no hex SK to encrypt). */
   async toKeystore(password: string, params?: Partial<typeof KDF_DEFAULTS>): Promise<Keystore> {
+    if ("destroyed" in this.key) throw new WalletDestroyedError();
     if (!("hex" in this.key)) {
       throw new SigningError(
         "Cannot export keystore from a handle-only wallet. Use Wallet.generateUnsafe() if you need a hex SK.",
@@ -187,6 +188,7 @@ export class Wallet extends AbstractSigner {
 
   /** Sign a transaction. Returns wire-encoded signed tx hex. */
   signTransaction(tx: TxFields): string {
+    if ("destroyed" in this.key) throw new WalletDestroyedError();
     return "handle" in this.key
       ? crypto.signTransactionWithHandle(tx, this.key.handle)
       : crypto.signTransaction(tx, this.key.hex);
@@ -194,6 +196,7 @@ export class Wallet extends AbstractSigner {
 
   /** Sign an arbitrary message. Returns signature hex. */
   sign(messageHex: string): string {
+    if ("destroyed" in this.key) throw new WalletDestroyedError();
     return "handle" in this.key
       ? crypto.signMessageWithHandle(this.key.handle, messageHex)
       : crypto.signMessage(this.key.hex, messageHex);
@@ -218,8 +221,9 @@ export class Wallet extends AbstractSigner {
     if ("handle" in this.key) {
       crypto.dropKeypair(this.key.handle);
     }
-    // Replace key with a no-op placeholder so subsequent sign calls fail.
-    this.key = { hex: "" };
+    // Mark destroyed — every signing method below checks this branch
+    // first and throws WalletDestroyedError with a clear message.
+    this.key = { destroyed: true };
   }
 
   // ==========================================================================
@@ -402,6 +406,7 @@ export class Wallet extends AbstractSigner {
       ...(opts?.deadline !== undefined ? { deadline: opts.deadline } : {}),
     };
 
+    if ("destroyed" in this.key) throw new WalletDestroyedError();
     const wire =
       "handle" in this.key
         ? crypto.buildRawEncryptedTxWithHandle(params, this.key.handle)
