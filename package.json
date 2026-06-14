@@ -1,6 +1,6 @@
 {
   "name": "pyde-ts-sdk",
-  "version": "0.0.0",
+  "version": "0.1.0-beta.1",
   "description": "TypeScript SDK for Pyde — the blockchain network. Connects dapps, wallets, indexers, and backend services to a Pyde node. Post-quantum crypto via pyde-crypto-wasm; type-safe ABI; React hooks; wallet adapter pattern.",
   "type": "module",
   "license": "Apache-2.0",
@@ -60,7 +60,9 @@
   },
   "files": [
     "dist",
+    "docs",
     "README.md",
+    "CHANGELOG.md",
     "LICENSE",
     "SECURITY.md"
   ],
@@ -76,7 +78,8 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "audit:prod": "npm audit --omit=dev --audit-level=high",
-    "audit:all": "npm audit --audit-level=high"
+    "audit:all": "npm audit --audit-level=high",
+    "prepublishOnly": "npm run typecheck && npm run lint && npm run test && npm run build && npm run audit:prod"
   },
   "engines": {
     "node": ">=20"
