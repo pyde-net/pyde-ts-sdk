@@ -24,3 +24,8 @@ jobs:
       - run: npm run typecheck
       - run: npm run test
       - run: npm run build
+      # Gate on high+ production vulns. Dev-deps run audit at a looser
+      # bar (warning only) — they don't ship to consumers and the
+      # vitest/vite/esbuild chain churns often.
+      - run: npm audit --omit=dev --audit-level=high
+      - run: npm audit --audit-level=high || echo "::warning::dev-dep audit found high-severity vulns"

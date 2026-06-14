@@ -46,10 +46,7 @@ describe("isError + isCallException", () => {
 describe("CallExceptionError revert decoding", () => {
   it("decodes a length-prefixed UTF-8 revert reason", () => {
     // [len:8 LE = 5][b"hello"]
-    const data =
-      "0x" +
-      "0500000000000000" +
-      Buffer.from("hello", "utf-8").toString("hex");
+    const data = "0x" + "0500000000000000" + Buffer.from("hello", "utf-8").toString("hex");
     const e = new CallExceptionError("0x5208", data);
     expect(e.reason).toBe("hello");
   });

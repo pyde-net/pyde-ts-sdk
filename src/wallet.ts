@@ -251,16 +251,32 @@ export class Wallet extends AbstractSigner {
     return p.sendAndWait(wire);
   }
 
-  /** Build, sign, send a native PYDE transfer. */
-  async transfer(to: string, amount: bigint | number, provider?: Provider): Promise<Receipt> {
-    const p = this.resolveProvider(provider);
+  /** Build, sign, send a native PYDE transfer. Gas limit is estimated
+   *  via `provider.estimateGas` and multiplied by `gasMultiplier`
+   *  (default 1.2) to absorb chain-state drift between the estimate
+   *  and the commit. Callers can override with `opts.gasLimit`. */
+  async transfer(
+    to: string,
+    amount: bigint | number,
+    optsOrProvider?: Provider | { provider?: Provider; gasLimit?: number; gasMultiplier?: number },
+  ): Promise<Receipt> {
+    // Backward-compat: callers may pass `Provider` positionally.
+    const opts =
+      optsOrProvider instanceof Object && "getChainId" in optsOrProvider
+        ? { provider: optsOrProvider as Provider }
+        : ((optsOrProvider as
+            | { provider?: Provider; gasLimit?: number; gasMultiplier?: number }
+            | undefined) ?? {});
+    const p = this.resolveProvider(opts.provider);
     const [nonce, chainId] = await p.getNonceAndChainId(this.address);
+    const gasLimit =
+      opts.gasLimit ?? (await this.estimateGasFor(p, to, "0x", amount, opts.gasMultiplier));
     const tx: TxFields = {
       from: this.address,
       to,
       value: amount.toString(),
       data: "0x",
-      gasLimit: 21_000,
+      gasLimit,
       nonce,
       chainId,
       // Standard (id 0) covers both transfers and contract calls per
@@ -270,16 +286,43 @@ export class Wallet extends AbstractSigner {
     return p.sendAndWait(this.signTransaction(tx));
   }
 
+  private async estimateGasFor(
+    p: Provider,
+    to: string,
+    data: string,
+    value: bigint | number | string,
+    multiplier?: number,
+  ): Promise<number> {
+    try {
+      const est = await p.estimateGas(to, data, {
+        from: this.address,
+        ...(BigInt(value) > 0n ? { value } : {}),
+      });
+      return Math.ceil(est * (multiplier ?? 1.2));
+    } catch {
+      // estimateGas may fail (chain doesn't expose it yet, or call
+      // would revert). Fall back to a conservative default — 100k for
+      // simple transfers, 5M for contract calls with calldata.
+      return data === "0x" ? 100_000 : 5_000_000;
+    }
+  }
+
   /** Build, sign, send a contract call. Auto-fetches an access list via
    *  `Provider.estimateAccess()`. Spec: Chapter 11 §11.8 (Standard). */
   async sendCall(
     to: string,
     data: string,
-    opts?: { gasLimit?: number; value?: bigint | number | string; provider?: Provider },
+    opts?: {
+      gasLimit?: number;
+      gasMultiplier?: number;
+      value?: bigint | number | string;
+      provider?: Provider;
+    },
   ): Promise<Receipt> {
     const p = this.resolveProvider(opts?.provider);
-    const gasLimit = opts?.gasLimit ?? 100_000_000;
     const value = opts?.value ?? 0;
+    const gasLimit =
+      opts?.gasLimit ?? (await this.estimateGasFor(p, to, data, value, opts?.gasMultiplier));
     const [nonce, chainId] = await p.getNonceAndChainId(this.address);
 
     let accessList: AccessEntry[] | undefined;

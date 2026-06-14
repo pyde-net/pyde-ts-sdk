@@ -8,9 +8,30 @@ import * as fc from "fast-check";
 
 import { Address } from "../../src/address";
 
-const hexChar = fc.constantFrom("0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "a", "b", "c", "d", "e", "f");
-const valid32ByteHex = fc.array(hexChar, { minLength: 64, maxLength: 64 }).map((cs) => "0x" + cs.join(""));
-const valid32ByteHexNoPrefix = fc.array(hexChar, { minLength: 64, maxLength: 64 }).map((cs) => cs.join(""));
+const hexChar = fc.constantFrom(
+  "0",
+  "1",
+  "2",
+  "3",
+  "4",
+  "5",
+  "6",
+  "7",
+  "8",
+  "9",
+  "a",
+  "b",
+  "c",
+  "d",
+  "e",
+  "f",
+);
+const valid32ByteHex = fc
+  .array(hexChar, { minLength: 64, maxLength: 64 })
+  .map((cs) => "0x" + cs.join(""));
+const valid32ByteHexNoPrefix = fc
+  .array(hexChar, { minLength: 64, maxLength: 64 })
+  .map((cs) => cs.join(""));
 
 describe("Address — property tests", () => {
   it("isValid accepts any 32-byte hex string (with or without 0x prefix)", () => {

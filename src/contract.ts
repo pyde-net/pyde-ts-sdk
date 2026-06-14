@@ -25,9 +25,7 @@ import { TxType } from "./types";
 import type { Receipt } from "./types";
 
 // ============================================================================
-// Byte helpers — isomorphic Uint8Array + DataView replacements for the
-// Node `Buffer` API surfaces this module used pre-refactor. Internal —
-// not re-exported.
+// Byte helpers — isomorphic Uint8Array + DataView. Internal, not re-exported.
 // ============================================================================
 
 const TEXT_ENC = new TextEncoder();
@@ -140,36 +138,104 @@ interface AbiEventField {
   indexed: boolean;
 }
 
-/** Decoded event log with named args. */
-export interface EventLog {
+/** Decoded event log with named args. The generic parameter is set by
+ *  `pyde-tsgen`-emitted ABI shapes and gives `queryFilter` / `parseLog`
+ *  per-event arg typing; defaults to `Record<string, any>` so untyped
+ *  call-sites keep working. */
+export interface EventLog<TArgs = Record<string, any>> {
   /** Event name (e.g., "Transfer"). */
   name: string;
   /** Decoded event arguments as named fields. */
-  args: Record<string, any>;
+  args: TArgs;
   /** Raw log data. */
   log: import("./types").Log;
 }
+
+// ============================================================================
+// Type-level ABI shape used by Contract<TAbi> for method/event narrowing
+// ============================================================================
+
+/** Per-function spec consumed at the type level. `args` is the
+ *  named-param object (`{ amount: bigint }`); `returns` is the TS type
+ *  the method resolves to. */
+export interface AbiFnSpec {
+  args: Record<string, unknown>;
+  returns: unknown;
+  view: boolean;
+  payable?: boolean;
+}
+
+/** Per-event spec consumed at the type level. */
+export interface AbiEventSpec {
+  args: Record<string, unknown>;
+}
+
+/** ABI shape `Contract<TAbi>` keys on. `pyde-tsgen` emits a concrete
+ *  shape; raw `Contract` instances fall back to {@link DefaultAbi}. */
+export interface AbiShape {
+  functions: Record<string, AbiFnSpec>;
+  events: Record<string, AbiEventSpec>;
+}
+
+/** Default ABI shape — no narrowing. Used when callers don't bind a
+ *  concrete TAbi. The `view` / `payable` fields are `any` so the
+ *  conditional `view extends true` resolves to "either branch", and
+ *  ViewName / WriteName fall back to the full `string` keyspace. */
+export interface DefaultAbi extends AbiShape {
+  functions: Record<string, { args: Record<string, any>; returns: any; view: any; payable?: any }>;
+  events: Record<string, { args: Record<string, any> }>;
+}
+
+type ViewName<A extends AbiShape> = {
+  [K in keyof A["functions"]]: A["functions"][K]["view"] extends true ? K : never;
+}[keyof A["functions"]] &
+  string;
+
+type WriteName<A extends AbiShape> = {
+  [K in keyof A["functions"]]: A["functions"][K]["view"] extends false ? K : never;
+}[keyof A["functions"]] &
+  string;
+
+type FnName<A extends AbiShape> = keyof A["functions"] & string;
+type EventName<A extends AbiShape> = keyof A["events"] & string;
+
+type FnArgs<A extends AbiShape, K extends FnName<A>> = A["functions"][K]["args"];
+type FnReturns<A extends AbiShape, K extends FnName<A>> = A["functions"][K]["returns"];
+type EvtArgs<A extends AbiShape, K extends EventName<A>> = A["events"][K]["args"];
 
 // ============================================================================
 // Range constants (allocated once, not per-call)
 // ============================================================================
 
 const INT_RANGES: Record<string, [bigint, bigint]> = {
-  u8: [0n, 255n], u16: [0n, 65535n], u32: [0n, 4294967295n], u64: [0n, 18446744073709551615n],
-  i8: [-128n, 127n], i16: [-32768n, 32767n], i32: [-2147483648n, 2147483647n], i64: [-9223372036854775808n, 9223372036854775807n],
+  u8: [0n, 255n],
+  u16: [0n, 65535n],
+  u32: [0n, 4294967295n],
+  u64: [0n, 18446744073709551615n],
+  i8: [-128n, 127n],
+  i16: [-32768n, 32767n],
+  i32: [-2147483648n, 2147483647n],
+  i64: [-9223372036854775808n, 9223372036854775807n],
 };
 
 const WIDE_RANGES: Record<string, [bigint, bigint]> = {
-  u128: [0n, (1n << 128n) - 1n], i128: [-(1n << 127n), (1n << 127n) - 1n],
-  u256: [0n, (1n << 256n) - 1n], i256: [-(1n << 255n), (1n << 255n) - 1n],
+  u128: [0n, (1n << 128n) - 1n],
+  i128: [-(1n << 127n), (1n << 127n) - 1n],
+  u256: [0n, (1n << 256n) - 1n],
+  i256: [-(1n << 255n), (1n << 255n) - 1n],
 };
 
 // ============================================================================
 // Contract — ABI-aware interface
 // ============================================================================
 
-/** ABI-aware contract interface with validation and auto-encoding. */
-export class Contract {
+/** ABI-aware contract interface with validation and auto-encoding.
+ *  `TAbi` narrows `read` / `write` / `queryFilter` / `parseLog` / etc.
+ *  to the function and event names declared in the artifact. The
+ *  default `AbiShape` keeps untyped call sites working as before; bind
+ *  a concrete `TAbi` (typically a `pyde-tsgen`-emitted shape) to opt
+ *  into method-name + arg + return narrowing. */
+export class Contract<TAbi extends AbiShape = DefaultAbi> {
   readonly address: string;
   readonly provider: Provider;
   private wallet: Wallet | null = null;
@@ -185,15 +251,23 @@ export class Contract {
   }
 
   /** Load contract from a build artifact JSON file (Node-only). */
-  static async fromArtifact(artifactPath: string, address: string, provider: Provider): Promise<Contract> {
+  static async fromArtifact<T extends AbiShape = DefaultAbi>(
+    artifactPath: string,
+    address: string,
+    provider: Provider,
+  ): Promise<Contract<T>> {
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     const fs = await loadNodeFs("fromArtifact");
     const json = fs.readFileSync(artifactPath, "utf-8");
-    return Contract.fromJson(json, address, provider);
+    return Contract.fromJson<T>(json, address, provider);
   }
 
   /** Load contract from ABI JSON string. */
-  static fromJson(json: string, address: string, provider: Provider): Contract {
+  static fromJson<T extends AbiShape = DefaultAbi>(
+    json: string,
+    address: string,
+    provider: Provider,
+  ): Contract<T> {
     const artifact = JSON.parse(json);
     const contract = new Contract(address, provider);
     const abi = artifact.abi || artifact;
@@ -224,16 +298,22 @@ export class Contract {
       contract.eventsByTopic.set(topic0, ev);
     }
 
-    return contract;
+    return contract as unknown as Contract<T>;
   }
 
   /** Create a minimal contract (no ABI, manual function registration). */
-  static create(address: string, provider: Provider): Contract {
-    return new Contract(address, provider);
+  static create<T extends AbiShape = DefaultAbi>(address: string, provider: Provider): Contract<T> {
+    return new Contract<T>(address, provider);
   }
 
   /** Register a function manually (when no artifact is available). */
-  addFunction(name: string, params: AbiParam[], returns: string, view = false, payable = false): this {
+  addFunction(
+    name: string,
+    params: AbiParam[],
+    returns: string,
+    view = false,
+    payable = false,
+  ): this {
     this.functions.set(name, {
       name,
       selector: "0x" + computeSelector(name).toString(16).padStart(8, "0"),
@@ -247,8 +327,8 @@ export class Contract {
   }
 
   /** Bind a wallet for write operations. Returns a new Contract instance. */
-  connect(wallet: Wallet): Contract {
-    const c = new Contract(this.address, this.provider);
+  connect(wallet: Wallet): Contract<TAbi> {
+    const c = new Contract<TAbi>(this.address, this.provider);
     c.wallet = wallet;
     c.functions = this.functions;
     c.events = this.events;
@@ -263,6 +343,10 @@ export class Contract {
   // ========================================================================
 
   /** Call a view function. Auto-encodes args and decodes return value. */
+  async read<M extends ViewName<TAbi>>(
+    method: M,
+    args?: FnArgs<TAbi, M>,
+  ): Promise<FnReturns<TAbi, M>>;
   async read(method: string, args: Record<string, any> = {}): Promise<any> {
     const fn = this.functions.get(method);
     if (!fn) throw new Error(`Unknown function '${method}'. Load ABI or call addFunction().`);
@@ -274,11 +358,18 @@ export class Contract {
 
   /** Static-call ANY function (view or setter) without sending a tx.
    * Simulates execution and returns the decoded return value. */
+  async simulate<M extends FnName<TAbi>>(
+    method: M,
+    args?: FnArgs<TAbi, M>,
+  ): Promise<FnReturns<TAbi, M>>;
   async simulate(method: string, args: Record<string, any> = {}): Promise<any> {
-    return this.read(method, args);
+    // Cast through the loose default-shape signature — internal call
+    // doesn't carry a static method-name guarantee.
+    return (this as Contract).read(method, args);
   }
 
   /** Estimate gas for a contract call using the ABI. */
+  async estimateGas<M extends FnName<TAbi>>(method: M, args?: FnArgs<TAbi, M>): Promise<number>;
   async estimateGas(method: string, args: Record<string, any> = {}): Promise<number> {
     const calldata = this.encodeCall(method, args);
     return this.provider.estimateGas(this.address, calldata);
@@ -291,6 +382,11 @@ export class Contract {
   /** Send a state-changing transaction. Auto-encodes args, signs, sends, waits.
    * Pass options.value to send native tokens (validates payable from ABI).
    * Returns a ContractReceipt with a decodeReturnData() method. */
+  async write<M extends WriteName<TAbi>>(
+    method: M,
+    args?: FnArgs<TAbi, M>,
+    options?: { gasLimit?: number; value?: bigint | number | string },
+  ): Promise<ContractReceipt>;
   async write(
     method: string,
     args: Record<string, any> = {},
@@ -342,6 +438,11 @@ export class Contract {
    * console.log(tx.to, tx.data, tx.nonce); // review before signing
    * ```
    */
+  async populateTransaction<M extends FnName<TAbi>>(
+    method: M,
+    args?: FnArgs<TAbi, M>,
+    options?: { gasLimit?: number; value?: bigint | number | string },
+  ): Promise<import("./types").TxFields>;
   async populateTransaction(
     method: string,
     args: Record<string, any> = {},
@@ -370,12 +471,17 @@ export class Contract {
    * Query historical event logs, decoded into typed EventLog objects.
    *
    * ```ts
-   * const transfers = await contract.queryFilter("Transfer", 0, 1000);
+   * const transfers = await contract.queryFilter("Transfer", 0n, 1000n);
    * for (const e of transfers) {
    * console.log(e.name, e.args.from, e.args.to, e.args.amount);
    * }
    * ```
    */
+  async queryFilter<E extends EventName<TAbi>>(
+    eventName: E,
+    fromWave?: bigint,
+    toWave?: bigint,
+  ): Promise<EventLog<EvtArgs<TAbi, E>>[]>;
   async queryFilter(eventName: string, fromWave?: bigint, toWave?: bigint): Promise<EventLog[]> {
     const ev = this.events.get(eventName);
     if (!ev) throw new Error(`Unknown event '${eventName}'. Load ABI with events.`);
@@ -511,8 +617,8 @@ export class Contract {
       // Two's complement: mask to 128 bits so negative values encode correctly
       const unsigned = n & ((1n << 128n) - 1n);
       const b = new Uint8Array(16);
-      writeU64LE(b, 0, unsigned & 0xFFFFFFFFFFFFFFFFn);
-      writeU64LE(b, 8, (unsigned >> 64n) & 0xFFFFFFFFFFFFFFFFn);
+      writeU64LE(b, 0, unsigned & 0xffffffffffffffffn);
+      writeU64LE(b, 8, (unsigned >> 64n) & 0xffffffffffffffffn);
       buf.push(...b);
       return;
     }
@@ -528,7 +634,7 @@ export class Contract {
       const unsigned = n & ((1n << 256n) - 1n);
       const b = new Uint8Array(32);
       for (let i = 0; i < 4; i++) {
-        writeU64LE(b, i * 8, (unsigned >> BigInt(i * 64)) & 0xFFFFFFFFFFFFFFFFn);
+        writeU64LE(b, i * 8, (unsigned >> BigInt(i * 64)) & 0xffffffffffffffffn);
       }
       buf.push(...b);
       return;
@@ -552,7 +658,9 @@ export class Contract {
       }
       const hex = value.startsWith("0x") ? value.slice(2) : value;
       if (!/^[0-9a-fA-F]{64}$/.test(hex)) {
-        throw new Error(`${path}: Address must be 64 hex chars (0-9, a-f), got "${hex.length > 20 ? hex.slice(0, 20) + "..." : hex}"`);
+        throw new Error(
+          `${path}: Address must be 64 hex chars (0-9, a-f), got "${hex.length > 20 ? hex.slice(0, 20) + "..." : hex}"`,
+        );
       }
       buf.push(...bytesFromHex(hex));
       return;
@@ -595,7 +703,9 @@ export class Contract {
           throw new Error(`${path}: expected array for tuple ${type}, got ${typeof value}`);
         }
         if (value.length !== types.length) {
-          throw new Error(`${path}: tuple ${type} expects ${types.length} elements, got ${value.length}`);
+          throw new Error(
+            `${path}: tuple ${type} expects ${types.length} elements, got ${value.length}`,
+          );
         }
         for (let i = 0; i < types.length; i++) {
           this.encodeValue(buf, value[i], types[i]!, `${path}.${i}`);
@@ -669,9 +779,11 @@ export class Contract {
       }
       let disc: number;
       if (typeof value === "string") {
-        const variant = enumDef.variants.find(v => v.name === value);
+        const variant = enumDef.variants.find((v) => v.name === value);
         if (!variant) {
-          throw new Error(`${path}: unknown variant '${value}' for enum ${type}. Valid: ${enumDef.variants.map(v => v.name).join(", ")}`);
+          throw new Error(
+            `${path}: unknown variant '${value}' for enum ${type}. Valid: ${enumDef.variants.map((v) => v.name).join(", ")}`,
+          );
         }
         disc = variant.discriminant;
       } else {
@@ -718,34 +830,38 @@ export class Contract {
     return this.decodeValue(data, type, 0).value;
   }
 
-  private decodeValue(data: Uint8Array, type: string, offset: number): { value: any; bytesRead: number } {
+  private decodeValue(
+    data: Uint8Array,
+    type: string,
+    offset: number,
+  ): { value: any; bytesRead: number } {
     if (["u8", "u16", "u32", "u64"].includes(type)) {
       if (data.length < offset + 8) return { value: 0n, bytesRead: 8 };
-      return { value: readU64LE(data,offset), bytesRead: 8 };
+      return { value: readU64LE(data, offset), bytesRead: 8 };
     }
     if (["i8", "i16", "i32", "i64"].includes(type)) {
       if (data.length < offset + 8) return { value: 0n, bytesRead: 8 };
-      return { value: readI64LE(data,offset), bytesRead: 8 };
+      return { value: readI64LE(data, offset), bytesRead: 8 };
     }
     if (type === "u128") {
       if (data.length < offset + 16) return { value: 0n, bytesRead: 16 };
-      const lo = readU64LE(data,offset);
-      const hi = readU64LE(data,offset + 8);
+      const lo = readU64LE(data, offset);
+      const hi = readU64LE(data, offset + 8);
       return { value: lo | (hi << 64n), bytesRead: 16 };
     }
     if (type === "i128") {
       if (data.length < offset + 16) return { value: 0n, bytesRead: 16 };
-      const lo = readU64LE(data,offset);
-      const hi = readU64LE(data,offset + 8);
+      const lo = readU64LE(data, offset);
+      const hi = readU64LE(data, offset + 8);
       let val = lo | (hi << 64n);
-      if (val >= (1n << 127n)) val -= (1n << 128n);
+      if (val >= 1n << 127n) val -= 1n << 128n;
       return { value: val, bytesRead: 16 };
     }
     if (type === "u256") {
       if (data.length < offset + 32) return { value: 0n, bytesRead: 32 };
       let val = 0n;
       for (let i = 0; i < 4; i++) {
-        val |= readU64LE(data,offset + i * 8) << BigInt(i * 64);
+        val |= readU64LE(data, offset + i * 8) << BigInt(i * 64);
       }
       return { value: val, bytesRead: 32 };
     }
@@ -753,14 +869,14 @@ export class Contract {
       if (data.length < offset + 32) return { value: 0n, bytesRead: 32 };
       let val = 0n;
       for (let i = 0; i < 4; i++) {
-        val |= readU64LE(data,offset + i * 8) << BigInt(i * 64);
+        val |= readU64LE(data, offset + i * 8) << BigInt(i * 64);
       }
-      if (val >= (1n << 255n)) val -= (1n << 256n);
+      if (val >= 1n << 255n) val -= 1n << 256n;
       return { value: val, bytesRead: 32 };
     }
     if (type === "bool") {
       if (data.length < offset + 8) return { value: false, bytesRead: 8 };
-      return { value: readU64LE(data,offset) !== 0n, bytesRead: 8 };
+      return { value: readU64LE(data, offset) !== 0n, bytesRead: 8 };
     }
     if (type === "Address") {
       // Full 32-byte address if available; otherwise read what's available
@@ -777,7 +893,7 @@ export class Contract {
     }
     if (type === "String") {
       if (data.length < offset + 8) return { value: "", bytesRead: 8 };
-      const len = Number(readU64LE(data,offset));
+      const len = Number(readU64LE(data, offset));
       if (data.length < offset + 8 + len) return { value: "", bytesRead: 8 };
       const str = bytesToUtf8(data.subarray(offset + 8, offset + 8 + len));
       const aligned = 8 + len + ((8 - (len % 8)) % 8);
@@ -785,7 +901,7 @@ export class Contract {
     }
     if (type === "Bytes" || type === "bytes") {
       if (data.length < offset + 8) return { value: new Uint8Array(0), bytesRead: 8 };
-      const len = Number(readU64LE(data,offset));
+      const len = Number(readU64LE(data, offset));
       if (data.length < offset + 8 + len) return { value: new Uint8Array(0), bytesRead: 8 };
       const bytes = data.subarray(offset + 8, offset + 8 + len);
       const aligned = 8 + len + ((8 - (len % 8)) % 8);
@@ -824,8 +940,8 @@ export class Contract {
     if (type.startsWith("Vec<") && type.endsWith(">")) {
       const elemType = type.slice(4, -1);
       if (data.length < offset + 24) return { value: [], bytesRead: 24 };
-      const byteLen = Number(readU64LE(data,offset));
-      const count = Number(readU64LE(data,offset + 8));
+      const byteLen = Number(readU64LE(data, offset));
+      const count = Number(readU64LE(data, offset + 8));
       let cursor = offset + 24;
       const items: any[] = [];
       for (let i = 0; i < count; i++) {
@@ -840,7 +956,7 @@ export class Contract {
     const structDef = this.structs.get(type);
     if (structDef) {
       if (data.length < offset + 8) return { value: {}, bytesRead: 8 };
-      const byteLen = Number(readU64LE(data,offset));
+      const byteLen = Number(readU64LE(data, offset));
       let cursor = offset + 8;
       const obj: Record<string, any> = {};
       for (const field of structDef.fields) {
@@ -855,8 +971,8 @@ export class Contract {
     const enumDef = this.enums.get(type);
     if (enumDef) {
       if (data.length < offset + 8) return { value: null, bytesRead: 8 };
-      const disc = Number(readU64LE(data,offset));
-      const variant = enumDef.variants.find(v => v.discriminant === disc);
+      const disc = Number(readU64LE(data, offset));
+      const variant = enumDef.variants.find((v) => v.discriminant === disc);
       return { value: variant?.name || disc, bytesRead: 8 };
     }
 
@@ -945,10 +1061,16 @@ export class ContractCall {
     this.selector = computeSelector(method);
   }
 
-  get _args(): Uint8Array { return concatBytes(this._parts); }
-  get args(): Uint8Array { return this._args; }
+  get _args(): Uint8Array {
+    return concatBytes(this._parts);
+  }
+  get args(): Uint8Array {
+    return this._args;
+  }
 
-  private push(buf: Uint8Array): void { this._parts.push(buf); }
+  private push(buf: Uint8Array): void {
+    this._parts.push(buf);
+  }
 
   /** Unsigned 8-bit integer. Range: 0 to 255. Encoded as 8 bytes LE (zero-extended). */
   argU8(val: number): this {
@@ -962,7 +1084,8 @@ export class ContractCall {
   }
   /** Unsigned 32-bit integer. Range: 0 to 4,294,967,295. Encoded as 8 bytes LE. */
   argU32(val: number): this {
-    if (val < 0 || val > 4294967295) throw new RangeError(`argU32: ${val} out of range (0 to 4294967295)`);
+    if (val < 0 || val > 4294967295)
+      throw new RangeError(`argU32: ${val} out of range (0 to 4294967295)`);
     return this.argU64(val);
   }
   /** Unsigned 64-bit integer. Range: 0 to 18,446,744,073,709,551,615. Encoded as 8 bytes LE. */
@@ -979,12 +1102,14 @@ export class ContractCall {
   }
   /** Signed 16-bit integer. Range: -32,768 to 32,767. Sign-extended to 8 bytes LE. */
   argI16(val: number): this {
-    if (val < -32768 || val > 32767) throw new RangeError(`argI16: ${val} out of range (-32768 to 32767)`);
+    if (val < -32768 || val > 32767)
+      throw new RangeError(`argI16: ${val} out of range (-32768 to 32767)`);
     return this.argI64(BigInt(val));
   }
   /** Signed 32-bit integer. Range: -2,147,483,648 to 2,147,483,647. Sign-extended to 8 bytes LE. */
   argI32(val: number): this {
-    if (val < -2147483648 || val > 2147483647) throw new RangeError(`argI32: ${val} out of range (-2147483648 to 2147483647)`);
+    if (val < -2147483648 || val > 2147483647)
+      throw new RangeError(`argI32: ${val} out of range (-2147483648 to 2147483647)`);
     return this.argI64(BigInt(val));
   }
   /** Signed 64-bit integer. Range: -9,223,372,036,854,775,808 to 9,223,372,036,854,775,807. Encoded as 8 bytes LE (two's complement). */
@@ -995,43 +1120,47 @@ export class ContractCall {
     return this;
   }
   /** Boolean. Encoded as u64: true = 1, false = 0. */
-  argBool(val: boolean): this { return this.argU64(val ? 1 : 0); }
+  argBool(val: boolean): this {
+    return this.argU64(val ? 1 : 0);
+  }
   /** Unsigned 128-bit integer. Range: 0 to 2^128 - 1. Encoded as 16 bytes LE. */
   argU128(val: bigint): this {
-    if (val < 0n || val >= (1n << 128n)) throw new RangeError("argU128: value out of range");
+    if (val < 0n || val >= 1n << 128n) throw new RangeError("argU128: value out of range");
     const buf = new Uint8Array(16);
-    writeU64LE(buf, 0, val & 0xFFFFFFFFFFFFFFFFn);
-    writeU64LE(buf, 8, (val >> 64n) & 0xFFFFFFFFFFFFFFFFn);
+    writeU64LE(buf, 0, val & 0xffffffffffffffffn);
+    writeU64LE(buf, 8, (val >> 64n) & 0xffffffffffffffffn);
     this.push(buf);
     return this;
   }
   /** Signed 128-bit integer. Range: -2^127 to 2^127 - 1. Encoded as 16 bytes LE (two's complement). */
   argI128(val: bigint): this {
-    if (val < -(1n << 127n) || val >= (1n << 127n)) throw new RangeError("argI128: value out of range");
+    if (val < -(1n << 127n) || val >= 1n << 127n)
+      throw new RangeError("argI128: value out of range");
     const unsigned = val & ((1n << 128n) - 1n);
     const buf = new Uint8Array(16);
-    writeU64LE(buf, 0, unsigned & 0xFFFFFFFFFFFFFFFFn);
-    writeU64LE(buf, 8, (unsigned >> 64n) & 0xFFFFFFFFFFFFFFFFn);
+    writeU64LE(buf, 0, unsigned & 0xffffffffffffffffn);
+    writeU64LE(buf, 8, (unsigned >> 64n) & 0xffffffffffffffffn);
     this.push(buf);
     return this;
   }
   /** Unsigned 256-bit integer. Range: 0 to 2^256 - 1. Encoded as 32 bytes LE. */
   argU256(val: bigint): this {
-    if (val < 0n || val >= (1n << 256n)) throw new RangeError("argU256: value out of range");
+    if (val < 0n || val >= 1n << 256n) throw new RangeError("argU256: value out of range");
     const buf = new Uint8Array(32);
     for (let i = 0; i < 4; i++) {
-      writeU64LE(buf, i * 8, (val >> BigInt(i * 64)) & 0xFFFFFFFFFFFFFFFFn);
+      writeU64LE(buf, i * 8, (val >> BigInt(i * 64)) & 0xffffffffffffffffn);
     }
     this.push(buf);
     return this;
   }
   /** Signed 256-bit integer. Range: -2^255 to 2^255 - 1. Encoded as 32 bytes LE (two's complement). */
   argI256(val: bigint): this {
-    if (val < -(1n << 255n) || val >= (1n << 255n)) throw new RangeError("argI256: value out of range");
+    if (val < -(1n << 255n) || val >= 1n << 255n)
+      throw new RangeError("argI256: value out of range");
     const unsigned = val & ((1n << 256n) - 1n);
     const buf = new Uint8Array(32);
     for (let i = 0; i < 4; i++) {
-      writeU64LE(buf, i * 8, (unsigned >> BigInt(i * 64)) & 0xFFFFFFFFFFFFFFFFn);
+      writeU64LE(buf, i * 8, (unsigned >> BigInt(i * 64)) & 0xffffffffffffffffn);
     }
     this.push(buf);
     return this;
@@ -1040,7 +1169,9 @@ export class ContractCall {
   argAddress(hex: string): this {
     const clean = hex.startsWith("0x") ? hex.slice(2) : hex;
     if (!/^[0-9a-fA-F]{64}$/.test(clean)) {
-      throw new Error(`argAddress: expected 64 hex chars, got "${clean.length > 20 ? clean.slice(0, 20) + "..." : clean}"`);
+      throw new Error(
+        `argAddress: expected 64 hex chars, got "${clean.length > 20 ? clean.slice(0, 20) + "..." : clean}"`,
+      );
     }
     this.push(bytesFromHex(clean));
     return this;
@@ -1051,7 +1182,9 @@ export class ContractCall {
     const lenBuf = new Uint8Array(8);
     writeU64LE(lenBuf, 0, BigInt(bytes.length));
     const padding = (8 - (bytes.length % 8)) % 8;
-    this.push(lenBuf); this.push(bytes); if (padding > 0) this.push(new Uint8Array(padding));
+    this.push(lenBuf);
+    this.push(bytes);
+    if (padding > 0) this.push(new Uint8Array(padding));
     return this;
   }
   /** Raw bytes appended directly (no length prefix). */
@@ -1073,12 +1206,13 @@ export class ContractCall {
     writeU64LE(header, 16, BigInt(vals.length));
     const elems = new Uint8Array(vals.length * 8);
     for (let i = 0; i < vals.length; i++) writeU64LE(elems, i * 8, BigInt(vals[i]!));
-    this.push(header); this.push(elems);
+    this.push(header);
+    this.push(elems);
     return this;
   }
   /** Vec<bool>: encoded as Vec<u64>. */
   argVecBool(vals: boolean[]): this {
-    return this.argVecU64(vals.map(b => b ? 1 : 0));
+    return this.argVecU64(vals.map((b) => (b ? 1 : 0)));
   }
   /** Vec<Address>: [byte_len:8][count:8][cap:8][addr0:32][addr1:32]... */
   argVecAddress(vals: string[]): this {
@@ -1087,12 +1221,13 @@ export class ContractCall {
     writeU64LE(header, 0, BigInt(dataLen));
     writeU64LE(header, 8, BigInt(vals.length));
     writeU64LE(header, 16, BigInt(vals.length));
-    const elems: Uint8Array[] = vals.map(hex => {
+    const elems: Uint8Array[] = vals.map((hex) => {
       const clean = hex.startsWith("0x") ? hex.slice(2) : hex;
       if (clean.length !== 64) throw new Error(`argVecAddress: expected 64 hex chars per address`);
       return bytesFromHex(clean);
     });
-    this.push(header); for (const e of elems) this.push(e);
+    this.push(header);
+    for (const e of elems) this.push(e);
     return this;
   }
   /**
@@ -1116,7 +1251,8 @@ export class ContractCall {
     writeU64LE(header, 0, BigInt(dataLen));
     writeU64LE(header, 8, BigInt(count));
     writeU64LE(header, 16, BigInt(count));
-    this.push(header); this.push(elements);
+    this.push(header);
+    this.push(elements);
     return this;
   }
 
@@ -1137,7 +1273,8 @@ export class ContractCall {
     const fields = inner._args;
     const lenBuf = new Uint8Array(8);
     writeU64LE(lenBuf, 0, BigInt(fields.length));
-    this.push(lenBuf); this.push(fields);
+    this.push(lenBuf);
+    this.push(fields);
     return this;
   }
   /**
@@ -1176,31 +1313,33 @@ export function decodeI64(hex: string): bigint {
 export function decodeU128(hex: string): bigint {
   const buf = bytesFromHex(hex);
   if (buf.length < 16) return 0n;
-  return readU64LE(buf,0) | (readU64LE(buf,8) << 64n);
+  return readU64LE(buf, 0) | (readU64LE(buf, 8) << 64n);
 }
 export function decodeI128(hex: string): bigint {
   const buf = bytesFromHex(hex);
   if (buf.length < 16) return 0n;
-  let val = readU64LE(buf,0) | (readU64LE(buf,8) << 64n);
-  if (val >= (1n << 127n)) val -= (1n << 128n);
+  let val = readU64LE(buf, 0) | (readU64LE(buf, 8) << 64n);
+  if (val >= 1n << 127n) val -= 1n << 128n;
   return val;
 }
 export function decodeU256(hex: string): bigint {
   const buf = bytesFromHex(hex);
   if (buf.length < 32) return 0n;
   let val = 0n;
-  for (let i = 0; i < 4; i++) val |= readU64LE(buf,i * 8) << BigInt(i * 64);
+  for (let i = 0; i < 4; i++) val |= readU64LE(buf, i * 8) << BigInt(i * 64);
   return val;
 }
 export function decodeI256(hex: string): bigint {
   const buf = bytesFromHex(hex);
   if (buf.length < 32) return 0n;
   let val = 0n;
-  for (let i = 0; i < 4; i++) val |= readU64LE(buf,i * 8) << BigInt(i * 64);
-  if (val >= (1n << 255n)) val -= (1n << 256n);
+  for (let i = 0; i < 4; i++) val |= readU64LE(buf, i * 8) << BigInt(i * 64);
+  if (val >= 1n << 255n) val -= 1n << 256n;
   return val;
 }
-export function decodeBool(hex: string): boolean { return decodeU64(hex) !== 0n; }
+export function decodeBool(hex: string): boolean {
+  return decodeU64(hex) !== 0n;
+}
 export function decodeAddress(hex: string): string {
   const buf = bytesFromHex(hex);
   return buf.length >= 32 ? "0x" + bytesToHex(buf.subarray(0, 32)) : "0x" + "00".repeat(32);
@@ -1209,19 +1348,17 @@ export function decodeString(hex: string): string {
   const buf = bytesFromHex(hex);
   if (buf.length < 8) return "";
   const len = Number(readU64LE(buf, 0));
-  if (buf.length < 8 + len) throw new Error(`decodeString: expected ${len} bytes, buffer has ${buf.length - 8}`);
+  if (buf.length < 8 + len)
+    throw new Error(`decodeString: expected ${len} bytes, buffer has ${buf.length - 8}`);
   return bytesToUtf8(buf.subarray(8, 8 + len));
 }
 export function decodeBytes(hex: string): Uint8Array {
   const buf = bytesFromHex(hex);
   if (buf.length < 8) throw new Error("decodeBytes: buffer too short for length prefix");
   const len = Number(readU64LE(buf, 0));
-  if (buf.length < 8 + len) throw new Error(`decodeBytes: expected ${len} bytes, buffer has ${buf.length - 8}`);
+  if (buf.length < 8 + len)
+    throw new Error(`decodeBytes: expected ${len} bytes, buffer has ${buf.length - 8}`);
   return buf.subarray(8, 8 + len);
-}
-
-function stripHex(s: string): string {
-  return s.startsWith("0x") ? s.slice(2) : s;
 }
 
 /** Parse comma-separated tuple types, handling nested generics. */
@@ -1261,22 +1398,22 @@ function parseArrayType(s: string): [string, number] | null {
 export function decodeVecU64(hex: string): bigint[] {
   const buf = bytesFromHex(hex);
   if (buf.length < 24) return [];
-  const count = Number(readU64LE(buf,8));
+  const count = Number(readU64LE(buf, 8));
   const maxCount = Math.floor((buf.length - 24) / 8);
   const safe = Math.min(count, maxCount);
   const result: bigint[] = [];
-  for (let i = 0; i < safe; i++) result.push(readU64LE(buf,24 + i * 8));
+  for (let i = 0; i < safe; i++) result.push(readU64LE(buf, 24 + i * 8));
   return result;
 }
 
 export function decodeVecBool(hex: string): boolean[] {
-  return decodeVecU64(hex).map(v => v !== 0n);
+  return decodeVecU64(hex).map((v) => v !== 0n);
 }
 
 export function decodeVecAddress(hex: string): string[] {
   const buf = bytesFromHex(hex);
   if (buf.length < 24) return [];
-  const count = Number(readU64LE(buf,8));
+  const count = Number(readU64LE(buf, 8));
   const maxCount = Math.floor((buf.length - 24) / 32);
   const safe = Math.min(count, maxCount);
   const result: string[] = [];
@@ -1317,7 +1454,10 @@ export class DeployData {
 
   /** Load from artifact JSON file (Node-only) with ABI-validated
    *  constructor args. Pass `{}` if the constructor takes no args. */
-  static async fromArtifact(artifactPath: string, args: Record<string, any> = {}): Promise<DeployData> {
+  static async fromArtifact(
+    artifactPath: string,
+    args: Record<string, any> = {},
+  ): Promise<DeployData> {
     const fs = await loadNodeFs("fromArtifact");
     const json = fs.readFileSync(artifactPath, "utf-8");
     return DeployData.fromJson(json, args);
@@ -1355,51 +1495,67 @@ export class DeployData {
   }
 
   // GP integers (8 bytes LE)
-  argU8(val: number): this { return this.argU64(val); }
-  argU16(val: number): this { return this.argU64(val); }
-  argU32(val: number): this { return this.argU64(val); }
+  argU8(val: number): this {
+    return this.argU64(val);
+  }
+  argU16(val: number): this {
+    return this.argU64(val);
+  }
+  argU32(val: number): this {
+    return this.argU64(val);
+  }
   argU64(val: number | bigint): this {
     const buf = new Uint8Array(8);
     writeU64LE(buf, 0, BigInt(val));
     this.argsBuf = concatBytes([this.argsBuf, buf]);
     return this;
   }
-  argI8(val: number): this { return this.argI64(BigInt(val)); }
-  argI16(val: number): this { return this.argI64(BigInt(val)); }
-  argI32(val: number): this { return this.argI64(BigInt(val)); }
+  argI8(val: number): this {
+    return this.argI64(BigInt(val));
+  }
+  argI16(val: number): this {
+    return this.argI64(BigInt(val));
+  }
+  argI32(val: number): this {
+    return this.argI64(BigInt(val));
+  }
   argI64(val: number | bigint): this {
     const buf = new Uint8Array(8);
     writeI64LE(buf, 0, BigInt(val));
     this.argsBuf = concatBytes([this.argsBuf, buf]);
     return this;
   }
-  argBool(val: boolean): this { return this.argU64(val ? 1 : 0); }
+  argBool(val: boolean): this {
+    return this.argU64(val ? 1 : 0);
+  }
   // Wide integers
   argU128(val: bigint): this {
     const buf = new Uint8Array(16);
-    writeU64LE(buf, 0, val & 0xFFFFFFFFFFFFFFFFn);
-    writeU64LE(buf, 8, (val >> 64n) & 0xFFFFFFFFFFFFFFFFn);
+    writeU64LE(buf, 0, val & 0xffffffffffffffffn);
+    writeU64LE(buf, 8, (val >> 64n) & 0xffffffffffffffffn);
     this.argsBuf = concatBytes([this.argsBuf, buf]);
     return this;
   }
   argI128(val: bigint): this {
     const unsigned = val & ((1n << 128n) - 1n);
     const buf = new Uint8Array(16);
-    writeU64LE(buf, 0, unsigned & 0xFFFFFFFFFFFFFFFFn);
-    writeU64LE(buf, 8, (unsigned >> 64n) & 0xFFFFFFFFFFFFFFFFn);
+    writeU64LE(buf, 0, unsigned & 0xffffffffffffffffn);
+    writeU64LE(buf, 8, (unsigned >> 64n) & 0xffffffffffffffffn);
     this.argsBuf = concatBytes([this.argsBuf, buf]);
     return this;
   }
   argU256(val: bigint): this {
     const buf = new Uint8Array(32);
-    for (let i = 0; i < 4; i++) writeU64LE(buf, i * 8, (val >> BigInt(i * 64)) & 0xFFFFFFFFFFFFFFFFn);
+    for (let i = 0; i < 4; i++)
+      writeU64LE(buf, i * 8, (val >> BigInt(i * 64)) & 0xffffffffffffffffn);
     this.argsBuf = concatBytes([this.argsBuf, buf]);
     return this;
   }
   argI256(val: bigint): this {
     const unsigned = val & ((1n << 256n) - 1n);
     const buf = new Uint8Array(32);
-    for (let i = 0; i < 4; i++) writeU64LE(buf, i * 8, (unsigned >> BigInt(i * 64)) & 0xFFFFFFFFFFFFFFFFn);
+    for (let i = 0; i < 4; i++)
+      writeU64LE(buf, i * 8, (unsigned >> BigInt(i * 64)) & 0xffffffffffffffffn);
     this.argsBuf = concatBytes([this.argsBuf, buf]);
     return this;
   }

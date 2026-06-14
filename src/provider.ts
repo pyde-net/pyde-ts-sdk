@@ -127,17 +127,24 @@ export class Provider {
   /** Fetch nonce + chainId in one round-trip (used when building a tx).
    *  Returns `[bigint, number]` — nonce is u64, chainId is small in practice. */
   async getNonceAndChainId(address: string): Promise<[bigint, number]> {
-    const [nonce, chainId] = await Promise.all([
-      this.getNonce(address),
-      this.getChainId(),
-    ]);
+    const [nonce, chainId] = await Promise.all([this.getNonce(address), this.getChainId()]);
     return [nonce, chainId];
   }
 
-  /** Return the full account record. Spec: Chapter 11 §11.1 + chapter 17.4. */
+  /** Return the full account record. Returns null when the account has
+   *  never been touched on chain (chain returns null/undefined OR an
+   *  empty object). A real account always has at least an address +
+   *  one non-zero field in the response. Spec: Chapter 11 §11.1 +
+   *  chapter 17.4. */
   async getAccount(address: string): Promise<Account | null> {
     const result = await this.call_("pyde_getAccount", [address]);
-    return result ? fromWireAccount(result) : null;
+    if (!result || typeof result !== "object") return null;
+    // Distinguish "unknown account" from "exists but zeroed": a real
+    // account record carries the wire-format address field; an empty
+    // / placeholder response does not.
+    const o = result as Record<string, unknown>;
+    if (!o.address && !o.nonce && !o.balance) return null;
+    return fromWireAccount(result);
   }
 
   // ========================================================================
@@ -147,10 +154,7 @@ export class Provider {
   /** Return the contract's WASM bytecode as hex. Empty string for EOAs.
    *  Spec: chapter 17.4 `pyde_getContractCode`. */
   async getContractCode(address: string): Promise<string> {
-    return asString(
-      await this.call_("pyde_getContractCode", [address]),
-      "pyde_getContractCode",
-    );
+    return asString(await this.call_("pyde_getContractCode", [address]), "pyde_getContractCode");
   }
 
   /** Return the value of a single contract state slot.
@@ -253,11 +257,7 @@ export class Provider {
   }
 
   /** Estimate gas for a call. Spec: chapter 17.4 `pyde_estimateGas`. */
-  async estimateGas(
-    to: string,
-    data: string,
-    overrides?: CallOverrides,
-  ): Promise<number> {
+  async estimateGas(to: string, data: string, overrides?: CallOverrides): Promise<number> {
     const params = this.buildCallParams(to, data, overrides);
     const result = await this.call_("pyde_estimateGas", [params]);
     return parseUint(asString(result, "pyde_estimateGas"), "pyde_estimateGas");
@@ -318,9 +318,7 @@ export class Provider {
    * MEV-protected submission path. Spec: Chapter 8.5 + Chapter 9 +
    * chapter 17.4 `pyde_sendRawEncryptedTransaction`.
    */
-  async sendRawEncryptedTransaction(
-    encTxHex: string,
-  ): Promise<TransactionResponse> {
+  async sendRawEncryptedTransaction(encTxHex: string): Promise<TransactionResponse> {
     const result = await this.call_("pyde_sendRawEncryptedTransaction", [encTxHex]);
     return this.buildTxResponse(asString(result, "pyde_sendRawEncryptedTransaction"));
   }
@@ -356,9 +354,7 @@ export class Provider {
       if (r) return r;
       await sleep(100);
     }
-    throw new TimeoutError(
-      `Receipt not available after ${timeoutMs}ms for tx ${txHash}`,
-    );
+    throw new TimeoutError(`Receipt not available after ${timeoutMs}ms for tx ${txHash}`);
   }
 
   /** Send + wait + throw on revert. Convenience for one-shot calls. */
@@ -616,9 +612,7 @@ function bigIntToHex(v: bigint | number | string): string {
 
 function isReceiptNotFound(e: unknown): boolean {
   return (
-    e instanceof RpcError &&
-    typeof e.message === "string" &&
-    /receipt not found/i.test(e.message)
+    e instanceof RpcError && typeof e.message === "string" && /receipt not found/i.test(e.message)
   );
 }
 
@@ -681,20 +675,8 @@ function tryBigInt(v: unknown): bigint | null {
   return null;
 }
 
-/** Like `asString` but tolerates JSON numbers for bigint conversion. */
-function asStringOrNumber(v: unknown, ctx: string): string {
-  if (typeof v === "string") return v;
-  if (typeof v === "number" || typeof v === "bigint") return v.toString();
-  throw new RpcError(`${ctx} returned non-string/number: ${JSON.stringify(v)}`);
-}
-
 function parseAccountType(v: unknown): AccountTypeDiscriminant {
-  const n =
-    typeof v === "number"
-      ? v
-      : typeof v === "string"
-        ? parseInt(v, 10)
-        : 0;
+  const n = typeof v === "number" ? v : typeof v === "string" ? parseInt(v, 10) : 0;
   if (n === AccountType.EOA || n === AccountType.Contract || n === AccountType.System) {
     return n;
   }
@@ -714,8 +696,10 @@ function fromWireWaveHeader(w: unknown): WaveHeader {
     timestamp: asString(o.timestamp, "WaveHeader.timestamp"),
     anchor: asString(o.anchor, "WaveHeader.anchor"),
   };
-  if (o.state_root ?? o.stateRoot) out.stateRoot = asString(o.state_root ?? o.stateRoot, "stateRoot");
-  if (o.events_root ?? o.eventsRoot) out.eventsRoot = asString(o.events_root ?? o.eventsRoot, "eventsRoot");
+  if (o.state_root ?? o.stateRoot)
+    out.stateRoot = asString(o.state_root ?? o.stateRoot, "stateRoot");
+  if (o.events_root ?? o.eventsRoot)
+    out.eventsRoot = asString(o.events_root ?? o.eventsRoot, "eventsRoot");
   if (o.tx_count !== undefined || o.txCount !== undefined) {
     out.txCount = parseUint(asString(o.tx_count ?? o.txCount, "txCount"), "txCount");
   }
@@ -769,10 +753,9 @@ function fromWireSnapshotManifest(w: unknown): SnapshotManifest {
         chunkPath: asString(cc.chunk_path ?? cc.chunkPath, "ChunkRef.chunkPath"),
       };
     }),
-    committeePubkeys: ((o.committee_pubkeys ??
-      o.current_committee_pubkeys ??
-      o.committeePubkeys ??
-      []) as unknown[]).map((s) => asString(s, "committeePubkey")),
+    committeePubkeys: (
+      (o.committee_pubkeys ?? o.current_committee_pubkeys ?? o.committeePubkeys ?? []) as unknown[]
+    ).map((s) => asString(s, "committeePubkey")),
     signatures: ((o.signatures ?? []) as unknown[]).map((s) => asString(s, "signature")),
   };
 }
@@ -843,8 +826,10 @@ function fromWireTransactionInfo(w: unknown): TransactionInfo {
 // ----------------------------------------------------------------------------
 
 function parseAccessList(result: unknown): AccessEntry[] {
-  const arr = (result as { accessList?: unknown[]; access_list?: unknown[] })
-    ?.accessList ?? (result as { access_list?: unknown[] })?.access_list ?? [];
+  const arr =
+    (result as { accessList?: unknown[]; access_list?: unknown[] })?.accessList ??
+    (result as { access_list?: unknown[] })?.access_list ??
+    [];
   return (arr as unknown[]).map((e) => {
     const o = e as Record<string, unknown>;
     return {
@@ -887,7 +872,10 @@ function fromWireCursor(w: unknown): EventCursor {
   const o = w as Record<string, unknown>;
   return {
     waveId: parseBigIntLoose(o.wave_id ?? o.waveId, "EventCursor.waveId"),
-    txIndex: parseUint(asString(o.tx_index ?? o.txIndex, "EventCursor.txIndex"), "EventCursor.txIndex"),
+    txIndex: parseUint(
+      asString(o.tx_index ?? o.txIndex, "EventCursor.txIndex"),
+      "EventCursor.txIndex",
+    ),
     eventIndex: parseUint(
       asString(o.event_index ?? o.eventIndex, "EventCursor.eventIndex"),
       "EventCursor.eventIndex",

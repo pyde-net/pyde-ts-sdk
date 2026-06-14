@@ -46,10 +46,7 @@ export function parseUnits(value: string, decimals: number): bigint {
  * formatUnits(0n, 9) // "0.0"
  * ```
  */
-export function formatUnits(
-  value: bigint | number | string,
-  decimals: number,
-): string {
+export function formatUnits(value: bigint | number | string, decimals: number): string {
   if (decimals < 0 || !Number.isInteger(decimals)) {
     throw new Error(`Invalid decimals: ${decimals}`);
   }

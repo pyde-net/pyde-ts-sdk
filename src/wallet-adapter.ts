@@ -291,7 +291,9 @@ function assertSignedSenderMatches(signedHex: string, expectedAddress: string): 
     );
   }
   const sender = "0x" + hex.slice(0, 64).toLowerCase();
-  const expected = (expectedAddress.startsWith("0x") ? expectedAddress : "0x" + expectedAddress).toLowerCase();
+  const expected = (
+    expectedAddress.startsWith("0x") ? expectedAddress : "0x" + expectedAddress
+  ).toLowerCase();
   if (sender !== expected) {
     throw new SigningError(
       `BrowserWalletAdapter: signed tx sender (${sender}) does not match connected wallet (${expected}). ` +

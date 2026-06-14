@@ -2,19 +2,21 @@
  * ABI → TypeScript codegen.
  *
  * Reads an `otigen build` artifact (the `.abi.json` file emitted alongside
- * the `.wasm`) and produces a `.d.ts` ambient module declaring:
+ * the `.wasm`) and produces a `.d.ts` file declaring:
  *
- *   1. Strongly typed method signatures (one per contract function)
- *   2. Strongly typed event records (one per declared event)
- *   3. A `<ContractName>Contract` interface that callers can use to
- *      narrow the generic `Contract` from `pyde-ts-sdk`:
+ *   1. A `<ContractName>Abi` type — an {@link AbiShape} the SDK uses
+ *      to narrow `read` / `write` / `queryFilter` / `parseLog` etc.
+ *   2. Strongly typed event records (one per declared event).
+ *   3. A legacy `<ContractName>Contract` interface kept for callers
+ *      that prefer the cast-shape:
  *
  *      ```ts
  *      import { Contract } from "pyde-ts-sdk";
- *      import type { CounterContract } from "./counter.d.ts";
+ *      import type { CounterAbi } from "./counter";
  *
- *      const counter = await Contract.fromArtifact(...) as unknown as CounterContract;
- *      const balance = await counter.balance_of("0xabc...");  // bigint
+ *      const counter = await Contract.fromArtifact<CounterAbi>(...);
+ *      const balance = await counter.read("balance_of", { owner: "0xabc..." });
+ *      // ^ method name + arg shape + return type all inferred.
  *      ```
  *
  * Spec: SDK_AUTHOR_GUIDE + HOST_FN_ABI §3.7 (`pyde.abi` ContractAbi shape).
@@ -158,9 +160,31 @@ function methodSig(fn: NormalisedFunction): string {
 
 function eventInterface(prefix: string, ev: NormalisedEvent): string {
   const fields = ev.fields
-    .map((f) => `  /** ${f.indexed ? "indexed · " : ""}${f.type} */\n  ${safeIdent(f.name)}: ${tsType(f.type)};`)
+    .map(
+      (f) =>
+        `  /** ${f.indexed ? "indexed · " : ""}${f.type} */\n  ${safeIdent(f.name)}: ${tsType(f.type)};`,
+    )
     .join("\n");
   return `export interface ${prefix}${ev.name}Event {\n${fields}\n}`;
+}
+
+function fnSpecEntry(fn: NormalisedFunction): string {
+  const args =
+    fn.params.length === 0
+      ? "{}"
+      : `{ ${fn.params.map((p) => `${safeIdent(p.name)}: ${tsType(p.type)}`).join("; ")} }`;
+  const returns = tsType(fn.returns);
+  const ret = returns === "void" ? "void" : returns;
+  const flags = `view: ${fn.view ? "true" : "false"}; payable: ${fn.payable ? "true" : "false"}`;
+  return `    ${JSON.stringify(fn.name)}: { args: ${args}; returns: ${ret}; ${flags} };`;
+}
+
+function eventSpecEntry(ev: NormalisedEvent): string {
+  const args =
+    ev.fields.length === 0
+      ? "{}"
+      : `{ ${ev.fields.map((f) => `${safeIdent(f.name)}: ${tsType(f.type)}`).join("; ")} }`;
+  return `    ${JSON.stringify(ev.name)}: { args: ${args} };`;
 }
 
 /**
@@ -190,9 +214,33 @@ export function generateTypes(abiJson: string, contractName?: string): string {
   const methods = functions.map(methodSig).join("\n");
   const contractIface = `export interface ${name}Contract {\n${methods || "  // (no functions in ABI)"}\n}`;
 
-  const eventBlock = events.length > 0
-    ? "\n\n" + events.map((ev) => eventInterface(name, ev)).join("\n\n")
-    : "";
+  const fnSpecBody =
+    functions.length > 0 ? functions.map(fnSpecEntry).join("\n") : "    // (no functions in ABI)";
+  const evSpecBody =
+    events.length > 0 ? events.map(eventSpecEntry).join("\n") : "    // (no events in ABI)";
+  const abiShape = [
+    `/** Pass to \`Contract.fromArtifact<${name}Abi>(...)\` for typed`,
+    ` *  \`read\` / \`write\` / \`queryFilter\` / \`parseLog\` narrowing. */`,
+    `export interface ${name}Abi {`,
+    `  functions: {`,
+    fnSpecBody,
+    `  };`,
+    `  events: {`,
+    evSpecBody,
+    `  };`,
+    `}`,
+  ].join("\n");
 
-  return [header, contractIface + eventBlock, ``, `/* prettier-ignore-end */`, ``].join("\n");
+  const eventBlock =
+    events.length > 0 ? "\n\n" + events.map((ev) => eventInterface(name, ev)).join("\n\n") : "";
+
+  return [
+    header,
+    abiShape,
+    ``,
+    contractIface + eventBlock,
+    ``,
+    `/* prettier-ignore-end */`,
+    ``,
+  ].join("\n");
 }

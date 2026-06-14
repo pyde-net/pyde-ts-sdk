@@ -272,12 +272,12 @@ export function thresholdEncrypt(thresholdPkHex: string, payloadHex: string): st
  *
  * Spec: Chapter 8.5 + Chapter 9 (canonical MEV-protected path).
  */
-export function buildRawEncryptedTx(
-  params: EncryptedTxParams,
-  secretKeyHex: string,
-): string {
+export function buildRawEncryptedTx(params: EncryptedTxParams, secretKeyHex: string): string {
   // Pre-fill `calldata` so the WASM side never sees `undefined`.
-  const withDefaults: EncryptedTxParams = { calldata: "0x", ...params };
+  // Pre-fill calldata default. Spread first so explicit `calldata:
+  // undefined` from the caller doesn't shadow the default — the `??`
+  // fallback handles both undefined and missing keys uniformly.
+  const withDefaults: EncryptedTxParams = { ...params, calldata: params.calldata ?? "0x" };
   try {
     return wasm.buildRawEncryptedTx(toWasmJson(withDefaults), secretKeyHex);
   } catch (e) {
@@ -292,11 +292,11 @@ export function buildRawEncryptedTx(
  *
  * Spec: Chapter 8.5 + Chapter 9.
  */
-export function buildRawEncryptedTxWithHandle(
-  params: EncryptedTxParams,
-  handle: number,
-): string {
-  const withDefaults: EncryptedTxParams = { calldata: "0x", ...params };
+export function buildRawEncryptedTxWithHandle(params: EncryptedTxParams, handle: number): string {
+  // Pre-fill calldata default. Spread first so explicit `calldata:
+  // undefined` from the caller doesn't shadow the default — the `??`
+  // fallback handles both undefined and missing keys uniformly.
+  const withDefaults: EncryptedTxParams = { ...params, calldata: params.calldata ?? "0x" };
   try {
     return wasm.buildRawEncryptedTxWithHandle(toWasmJson(withDefaults), handle);
   } catch (e) {
