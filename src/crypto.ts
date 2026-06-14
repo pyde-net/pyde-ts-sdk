@@ -114,6 +114,21 @@ export function generateKeypairHandle(): KeypairHandle {
   return JSON.parse(wasm.generateKeypairHandle()) as KeypairHandle;
 }
 
+/** Deterministically derive a FALCON-512 keypair from a 32-byte seed.
+ *  Same hex-SK shape as `generateKeypair` — same security warning.
+ *
+ *  Matches the engine's devnet-prefund derivation:
+ *
+ *  ```
+ *  seed_i = Blake3("pyde-devnet-v1/" || (i as u64 LE bytes))
+ *  ```
+ *
+ *  Lets integration tests fund SDK-derived addresses via a devnet
+ *  prefunded wallet without round-tripping through the otigen keystore. */
+export function keypairFromSeed(seedHex: string): Keypair {
+  return JSON.parse(wasm.keypairFromSeed(seedHex)) as Keypair;
+}
+
 /** Drop a keypair handle, zeroizing the retained SK. Idempotent —
  *  returns `false` if the handle was already dropped. */
 export function dropKeypair(handle: number): boolean {

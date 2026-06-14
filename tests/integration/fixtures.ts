@@ -1,138 +1,100 @@
 /**
- * Test fixtures — funded wallet provisioning + canonical contract paths.
+ * Test fixtures — funded wallet provisioning.
  *
- * The devnet's pre-funded accounts are derived deterministically from
- * `Blake3("pyde-devnet-v1/" || i.to_le_bytes())`. Their addresses are
- * stable across runs but their FALCON signing keys live inside the
- * devnet process's keystore. To exercise the SDK's sign path we go via
- * the `otigen wallet --from-devnet` import flow + a CLI-driven transfer
- * to an SDK-generated test wallet:
+ * Funding path: re-derive the devnet's i-th prefunded account
+ * locally via the same seed the engine uses
+ * (`Blake3("pyde-devnet-v1/" || i.to_le_bytes())`), then transfer
+ * PYDE from it to the SDK-generated test wallet via a plain signed
+ * `Standard` tx.
  *
- *   1. (Once per session) `otigen wallet import --from-devnet` — adds
- *      `devnet-0`...`devnet-(N-1)` to `~/.pyde/keystore.json`.
- *   2. Generate a fresh SDK wallet (handle-based).
- *   3. Use `otigen` to send PYDE from `devnet-0` to the SDK wallet.
- *   4. Hand the funded SDK wallet to the test.
- *
- * The SDK keystore + otigen keystore use different AEADs (chacha vs
- * AES-GCM) so we can't load otigen's exported keystore directly. The
- * indirection through a real transfer mirrors how a dapp user would
- * acquire funds — closer to a real flow than direct keystore loading.
+ * No otigen CLI in the path — `keypairFromSeed` + the SDK's signing
+ * surface is enough. Makes the live test self-contained.
  */
 
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
-import { resolve } from "node:path";
+import { blake3 } from "@noble/hashes/blake3";
 
 import { Wallet } from "../../src/wallet";
-import type { Provider } from "../../src/provider";
+import { keypairFromSeed } from "../../src/crypto";
+import { Provider } from "../../src/provider";
 
-const exec = promisify(execFile);
+/** Devnet-i secret derivation. Matches engine's `devnet_secret(i)`
+ *  in `engine/crates/node/src/devnet/runner.rs`. */
+function devnetSeed(index: number): Uint8Array {
+  const prefix = new TextEncoder().encode("pyde-devnet-v1/");
+  const idx = new Uint8Array(8); // u64 LE
+  new DataView(idx.buffer).setBigUint64(0, BigInt(index), true);
+  const input = new Uint8Array(prefix.length + idx.length);
+  input.set(prefix, 0);
+  input.set(idx, prefix.length);
+  return blake3(input);
+}
 
-const DEFAULT_PASSWORD = "integration-test-password";
-const PYDE_NET_ROOT = resolve(__dirname, "../../..");
+function bytesToHex(b: Uint8Array): string {
+  return "0x" + Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
+}
 
-/**
- * Path to the canonical storage-stress contract bundle in the otigen
- * repo. Built via `otigen build` if absent.
- */
-export const STORAGE_STRESS_BUNDLE = resolve(
-  PYDE_NET_ROOT,
-  "otigen/examples/storage-stress/artifacts/storage-stress.bundle",
-);
-
-export const STORAGE_STRESS_ABI_JSON = resolve(STORAGE_STRESS_BUNDLE, "storage-stress.abi.json");
-
-/**
- * Bootstrap the otigen keystore with the devnet prefunded accounts.
- * Idempotent — subsequent calls are no-ops.
- */
-export async function importDevnetWallets(): Promise<void> {
-  try {
-    await exec("otigen", ["wallet", "import", "--from-devnet", "--password-stdin"], {
-      input: DEFAULT_PASSWORD,
-    });
-  } catch (e) {
-    // Already imported is fine; the otigen CLI is idempotent under the
-    // hood but logs a warning. Surface anything else.
-    const stderr = (e as { stderr?: string }).stderr ?? "";
-    if (!/already/i.test(stderr)) {
-      throw new Error(`otigen wallet import --from-devnet failed: ${stderr}`);
-    }
-  }
+/** Build a hex-backed Wallet matching `devnet-i` — same keypair the
+ *  engine pre-funds at genesis. */
+export function devnetWallet(index: number, provider: Provider): Wallet {
+  const seed = devnetSeed(index);
+  const kp = keypairFromSeed(bytesToHex(seed));
+  const w = Wallet.fromKeys(kp.publicKey, kp.secretKey);
+  w.connect(provider);
+  return w;
 }
 
 /**
- * Generate a fresh handle-backed SDK wallet + fund it from devnet-0.
+ * Generate a fresh handle-backed SDK wallet + fund it from devnet-i.
  * Returns the wallet bound to the provided provider.
  */
 export async function fundedTestWallet(
   provider: Provider,
-  options?: { amountPyde?: number; senderKeystoreName?: string },
+  options?: { amountPyde?: number; senderIndex?: number },
 ): Promise<Wallet> {
+  const sender = devnetWallet(options?.senderIndex ?? 0, provider);
+
   const wallet = Wallet.generate();
   wallet.connect(provider);
 
-  // First-time pubkey registration needs balance > 0; fund first.
-  await importDevnetWallets();
-  const amount = String((options?.amountPyde ?? 1000) * 1_000_000_000);
-  const sender = options?.senderKeystoreName ?? "devnet-0";
-  await exec(
-    "otigen",
-    [
-      "wallet",
-      "transfer",
-      "--from",
-      sender,
-      "--to",
-      wallet.address,
-      "--amount",
-      amount,
-      "--password-stdin",
-      "--network",
-      "devnet",
-    ],
-    { input: DEFAULT_PASSWORD },
-  ).catch(async () => {
-    // `otigen wallet transfer` may not exist on all builds; fall back
-    // to the explicit `otigen call` send-PYDE pattern.
-    await exec(
-      "otigen",
-      [
-        "call",
-        "--contract",
-        "0x" + "00".repeat(32), // value transfer target = zero address (Standard tx)
-        "--function",
-        "_transfer",
-        "--from",
-        sender,
-        "--value",
-        amount,
-        "--password-stdin",
-        "--network",
-        "devnet",
-      ],
-      { input: DEFAULT_PASSWORD },
-    ).catch(() => {
-      // If both paths fail, surface a clear message — the test will
-      // skip with this error.
-      throw new Error(
-        "could not fund test wallet via otigen CLI. Either `otigen wallet transfer` " +
-          "or `otigen call --contract 0x000... --function _transfer` is expected to exist; " +
-          "fall back to pre-funding via state injection.",
-      );
-    });
-  });
+  // Devnet prefunded accounts boot with `auth_keys: Single(fpk)` per
+  // `apply_prefund` in the engine's devnet runner — so the sender can
+  // send Standard txs immediately and calling `registerPubkey` on it
+  // would revert (AuthKeys::None is required by the handler).
 
-  // Register the SDK wallet's pubkey on-chain so it can sign + send.
-  await wallet.registerPubkey();
+  // Pre-fund the SDK wallet so it can pay gas for its own
+  // registerPubkey. Use Standard tx to push value to the unfunded EOA.
+  const amount = String((options?.amountPyde ?? 100) * 1_000_000_000);
+  // Step 1 — fund the SDK address.
+  let fundReceipt;
+  try {
+    fundReceipt = await sender.transfer(wallet.address, BigInt(amount));
+  } catch (e) {
+    throw new Error(
+      `fundedTestWallet: transfer threw — ${e instanceof Error ? e.message : String(e)}`,
+    );
+  }
+  if (!fundReceipt.success) {
+    throw new Error(`fundedTestWallet: pre-fund transfer failed: ${fundReceipt.txHash}`);
+  }
+
+  // Wait briefly so the fund-tx commit fully settles before we try
+  // to read the funded recipient's state in the next tx's handler.
+  await new Promise((r) => setTimeout(r, 500));
+
+  // Step 2 — register the SDK wallet's pubkey on-chain so its signed txs verify.
+  let regReceipt;
+  try {
+    regReceipt = await wallet.registerPubkey();
+  } catch (e) {
+    throw new Error(
+      `fundedTestWallet: registerPubkey threw — ${e instanceof Error ? e.message : String(e)}`,
+    );
+  }
+  if (!regReceipt.success) {
+    throw new Error(`fundedTestWallet: registerPubkey failed: ${regReceipt.txHash}`);
+  }
+
+  // Sender's hex SK lives in this process — wipe before returning.
+  sender.destroy();
   return wallet;
 }
-
-/** Canonical devnet prefunded addresses (first 3). Useful as `to` in
- *  read-only assertions where we just need a known-funded account. */
-export const PREFUNDED_ADDRESSES_HINT = [
-  // Derived from Blake3("pyde-devnet-v1/" || u64_le(i)); read at runtime
-  // via `provider.getAccount(banner_address)` if you need to verify the
-  // exact bytes — they're stable across runs.
-];

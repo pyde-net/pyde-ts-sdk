@@ -240,7 +240,11 @@ export class Wallet extends AbstractSigner {
       to: ZERO_ADDR,
       value: "0",
       data: this.publicKey,
-      gasLimit: 0,
+      // Engine floor is 21,000 (structural minimum). Pubkey
+      // installation reads + writes the auth_keys slot + has per-byte
+      // cost on the 897-byte FALCON pubkey carried in `data`. 200k
+      // covers both with headroom on every reasonable base-fee.
+      gasLimit: 200_000,
       nonce,
       chainId,
       txType: TxType.RegisterPubkey,

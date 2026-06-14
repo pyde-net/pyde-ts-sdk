@@ -796,15 +796,30 @@ function fromWireSnapshotManifest(w: unknown): SnapshotManifest {
 
 function fromWireReceipt(w: unknown): Receipt {
   const o = w as Record<string, unknown>;
+  // Engine drift: the chain emits a `status: "success" | "reverted"
+  // | "out_of_gas"` string AND/OR an older `success: boolean`. Accept
+  // both. Likewise not every field (effective_gas / fee_burned /
+  // fee_validator / logs) ships on every chain build; fall back to
+  // "0x0" / [] so callers see a stable shape.
+  const status = typeof o.status === "string" ? o.status : null;
+  const success =
+    typeof o.success === "boolean"
+      ? o.success
+      : status !== null
+        ? status === "success"
+        : false;
+  const asStringOr = (v: unknown, fallback: string): string =>
+    typeof v === "string" ? v : fallback;
+  const rawLogs = (o.logs ?? o.events ?? []) as unknown[];
   const out: Receipt = {
     txHash: asString(o.tx_hash ?? o.txHash, "Receipt.txHash"),
-    success: Boolean(o.success),
+    success,
     gasUsed: asString(o.gas_used ?? o.gasUsed, "Receipt.gasUsed"),
-    effectiveGas: asString(o.effective_gas ?? o.effectiveGas, "Receipt.effectiveGas"),
-    feePaid: asString(o.fee_paid ?? o.feePaid, "Receipt.feePaid"),
-    feeBurned: asString(o.fee_burned ?? o.feeBurned, "Receipt.feeBurned"),
-    feeValidator: asString(o.fee_validator ?? o.feeValidator, "Receipt.feeValidator"),
-    logs: ((o.logs ?? []) as unknown[]).map(fromWireLog),
+    effectiveGas: asStringOr(o.effective_gas ?? o.effectiveGas, "0x0"),
+    feePaid: asStringOr(o.fee_paid ?? o.feePaid, "0x0"),
+    feeBurned: asStringOr(o.fee_burned ?? o.feeBurned, "0x0"),
+    feeValidator: asStringOr(o.fee_validator ?? o.feeValidator, "0x0"),
+    logs: rawLogs.map(fromWireLog),
   };
   // exactOptionalPropertyTypes: only set returnData when present —
   // assigning `undefined` would violate the Receipt type contract.

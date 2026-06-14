@@ -74,6 +74,7 @@ export {
 export {
   generateKeypair,
   generateKeypairHandle,
+  keypairFromSeed,
   dropKeypair,
   deriveAddress,
   signMessage,
