@@ -1,0 +1,96 @@
+# 13 — Migration notes
+
+Upgrade guidance between SDK versions. The SDK is pre-1.0; APIs may still shift before mainnet.
+
+[← TOC](./README.md)
+
+## Versioning
+
+`package.json` is at `0.0.0` until the first npm publish. Until then, breaking changes are flagged here per major rewrite (audit cluster, codec rewrite, etc.) rather than per semver number.
+
+The first publish will be `0.1.0-beta.1` against `pyde-engine` ≥ v0.2 and `pyde-crypto-wasm` matching.
+
+## Unreleased — borsh codec + `CallPayload` (current `main`)
+
+**Breaking.** Contract calldata wire format changed.
+
+- The contract codec was rewritten from a host-fn-style layout (8-byte aligned ints, 24-byte Vec headers, length-prefixed structs) to **borsh-rs canonical** (1/2/4/8/16/32-byte LE ints, 4-byte LE Vec count, struct fields concatenated with no header).
+- `Contract.encodeCall` now emits the borsh-encoded **`CallPayload {function, calldata}`** struct the chain expects — not a 4-byte selector + args. The chain dispatches by function name, not selector.
+- `Contract.encodeCallArgs` is a new helper that returns just the borsh-encoded args (no `CallPayload` wrapper). Useful for byte-level comparison against a borsh-rs encoder.
+
+| Type | Old encoding | New (borsh) |
+|---|---|---|
+| `u8` | 8 LE bytes | 1 byte |
+| `u16` `u32` | 8 LE bytes | 2 / 4 LE bytes |
+| `u64` | 8 LE bytes | 8 LE bytes (unchanged) |
+| `bool` | 8 LE bytes | 1 byte |
+| `String` | 8-byte len + UTF-8 + pad | 4-byte LE len + UTF-8 |
+| `Vec<T>` | 24-byte header + items | 4-byte LE count + items |
+| `Struct` | 8-byte byte_len + fields | fields concatenated, no header |
+| `Enum` | 8-byte discriminant | 1-byte variant index |
+| `Address` `[u8; 32]` | 32 raw bytes | 32 raw bytes (unchanged) |
+
+**Action required:**
+- If you were sending wire bytes you constructed manually, regenerate via `Contract.encodeCall`.
+- If you were storing pre-computed calldata blobs in a DB, invalidate + re-encode.
+- If you were comparing wire bytes against a borsh-rs encoder, the SDK now produces identical bytes.
+
+Live-verified against `otigen/examples/borsh-coverage` — struct + enum + Vec live-round-trip in `tests/integration/contract.live.test.ts`.
+
+## Unreleased — `u64` wire fields → bigint (H-1)
+
+**Breaking.** Every `u64` wire field changed from `number` to `bigint`.
+
+- `Wave` (the wave-id type) is now `bigint`.
+- `Account.nonce`, `TxFields.nonce`, `TransactionInfo.nonce`, `EncryptedTxParams.nonce` are now `bigint`.
+- `Provider.getNonce`, `Provider.getNonceAndChainId`, `Wallet.getNonce` return `bigint` / `[bigint, number]`.
+- `Provider.getWave(waveId?)` takes `Wave` (bigint).
+- `Provider.latestWaveId()` returns `Wave` (bigint).
+- `Contract.queryFilter(name, fromWave?, toWave?)` takes `bigint?` for the wave bounds.
+- React hooks: `useNonce` returns `AsyncState<bigint>`, `useWave` takes `Wave?`.
+
+**Why:** JS Numbers lose precision above `2^53`. u64 fields on chain routinely exceed that range over a long-running validator's lifetime; silent truncation would corrupt downstream computation.
+
+**Action required:**
+- Replace numeric literals (`0`, `42`) with bigint literals (`0n`, `42n`) at call sites accepting wave / nonce.
+- Update local persistence (JSON, DB) — `JSON.stringify` throws on bigint by default; use `replacer` to stringify.
+- Wallet-builder code that constructs `TxFields` manually: set `nonce` as `bigint`.
+
+## Unreleased — security cluster (H-2, H-3, M-6, M-7)
+
+- **H-2 — HTTPS / WSS enforced at construction.** `new Provider("http://…")` now throws `InvalidArgumentError` unless `allowInsecureTransport: true` is passed. Same for `WebSocketProvider("ws://…")`. Add the opt-in to your devnet test setup; remove from any production code that had it.
+- **H-3 — `BrowserWalletAdapter` re-verifies returned signed tx.** Extracts the first 32 bytes (the `from` field) from the wire bytes and asserts they match the requested sender. Throws `SigningError("returned signed tx sender != requested sender")` on mismatch. No caller-side change needed.
+- **M-6 — `scrubError` catches non-`0x`-prefixed hex runs.** Error messages containing 200+ char raw hex (a 1,281-byte FALCON SK serialised) are now redacted. No API change.
+- **M-7 — `wallet.destroy()` flips a `{ destroyed: true }` marker.** Subsequent signing methods throw `WalletDestroyedError` with a clear message — previously they threw a generic `Error`. Catch via `instanceof WalletDestroyedError` or `e.code === "SIGNING_ERROR"`.
+
+## Unreleased — robustness + polish (M-1, M-4, M-5, L-1..L-6, D-1, D-3)
+
+- **M-1 — `Contract<TAbi>` generic.** Add a `pyde-tsgen`-emitted `<Name>Abi` shape to narrow `read` / `write` / `queryFilter` / `parseLog`. See [Chapter 04 → Type-safe contracts](./04-contract.md#type-safe-contracts).
+- **M-4 — `Provider.getAccount` distinguishes missing from zeroed.** Returns `null` when the wire envelope is empty (no on-chain record), the populated `Account` when zero-valued but registered.
+- **M-5 — `WebSocketProvider` surfaces terminal reconnect failure.** New `on("terminalError", fn)` + `lastError` accessor.
+- **L-2/L-3 — `Wallet.transfer` / `sendCall` auto-estimate `gasLimit`.** Calls `provider.estimateGas` with a 1.2× safety multiplier. Override via `opts.gasLimit` (pin) or `opts.gasMultiplier` (tune).
+- **L-6 — `wsToHttp` preserves host/port/path/query/fragment** via the URL constructor.
+- **D-1 — stale `gasLimit: 100_000_000` doc samples removed.** Real callers should omit it and let the auto-estimate handle it.
+
+## Unreleased — dev-dep upgrade (M-2)
+
+`vitest` 2 → 3, `tsup` 8.3 → 8.5. `npm` `overrides` pin `esbuild ^0.28.1` + `uuid ^11.1.1` to clear the dev-chain advisories. Production audit is 0 vulnerabilities and gated in CI at `--audit-level=high`.
+
+**Action required:** `npm install` to pull the new lockfile.
+
+## Future — when `pyde-crypto-wasm` ships `keypairFromSeed`
+
+The wallet end-to-end live test stays skipped until either `pyde-crypto-wasm.keypairFromSeed(seed: Uint8Array)` lands (lets the SDK re-derive devnet prefunded keys locally) or `otigen wallet transfer` ships. No SDK API change is anticipated.
+
+## Future — when the engine exposes `pyde_subscribe`
+
+The WebSocket subscription path is wired but unverified live. No SDK API change expected when the engine catches up.
+
+## Future — local wasmtime simulation (v1.1 Tier 1)
+
+`simulateTransaction` / `previewTransaction` currently route via the provider's `estimateGas` / `estimateAccess` / `call` (RPC-backed). v1.1 will replace with a local wasmtime executor + provider-backed host fns — same callable surface, same return type, just `source: "local"` instead of `source: "rpc"`. **No caller-side change** required at the v1.1 transition.
+
+## Removal log (for greppability)
+
+- `stripHex` (from `contract.ts`) — was unused; remove from imports.
+- `asStringOrNumber` (from `provider.ts`) — was unused; remove from imports.
