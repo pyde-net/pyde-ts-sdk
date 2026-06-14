@@ -8,8 +8,8 @@ Sample output from `pyde-tsgen` running against the canonical otigen example con
 
 ## Contents
 
-| File | Source contract |
-|---|---|
+| File                      | Source contract                                                                                    |
+| ------------------------- | -------------------------------------------------------------------------------------------------- |
 | `storage-stress.gen.d.ts` | `otigen/examples/storage-stress` — exercises every storage type the macro supports (29 functions). |
 
 ## Regenerating

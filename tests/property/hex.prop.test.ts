@@ -113,20 +113,23 @@ describe("hex — property tests", () => {
 
   it("stripZeros + zeroPadValue round-trip preserves any non-zero-tail bytes", () => {
     fc.assert(
-      fc.property(byteArr.filter((b) => b.length > 0 && b[b.length - 1] !== 0), (bytes) => {
-        const stripped = stripZeros(bytes);
-        // strip + pad to original length restores the original bytes
-        const padded = zeroPadValue(stripped, bytes.length);
-        // First non-zero byte index in the original should equal the
-        // offset where the stripped version starts.
-        const firstNonZero = bytes.findIndex((b) => b !== 0);
-        const restored = getBytes(padded);
-        expect(Array.from(restored)).toEqual(
-          Array.from(
-            new Uint8Array([...new Uint8Array(firstNonZero), ...bytes.subarray(firstNonZero)]),
-          ),
-        );
-      }),
+      fc.property(
+        byteArr.filter((b) => b.length > 0 && b[b.length - 1] !== 0),
+        (bytes) => {
+          const stripped = stripZeros(bytes);
+          // strip + pad to original length restores the original bytes
+          const padded = zeroPadValue(stripped, bytes.length);
+          // First non-zero byte index in the original should equal the
+          // offset where the stripped version starts.
+          const firstNonZero = bytes.findIndex((b) => b !== 0);
+          const restored = getBytes(padded);
+          expect(Array.from(restored)).toEqual(
+            Array.from(
+              new Uint8Array([...new Uint8Array(firstNonZero), ...bytes.subarray(firstNonZero)]),
+            ),
+          );
+        },
+      ),
     );
   });
 
@@ -150,12 +153,15 @@ describe("hex — property tests", () => {
 
   it("dataSlice respects byte boundaries", () => {
     fc.assert(
-      fc.property(byteArr.filter((b) => b.length >= 4), (bytes) => {
-        const hex = hexlify(bytes);
-        const sliced = dataSlice(hex, 1, 3);
-        const expected = "0x" + hexlify(bytes.subarray(1, 3)).slice(2);
-        expect(sliced).toBe(expected);
-      }),
+      fc.property(
+        byteArr.filter((b) => b.length >= 4),
+        (bytes) => {
+          const hex = hexlify(bytes);
+          const sliced = dataSlice(hex, 1, 3);
+          const expected = "0x" + hexlify(bytes.subarray(1, 3)).slice(2);
+          expect(sliced).toBe(expected);
+        },
+      ),
     );
   });
 });

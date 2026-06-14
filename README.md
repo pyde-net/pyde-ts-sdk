@@ -29,12 +29,12 @@ npm install pyde-ts-sdk
 import { Provider, Wallet } from "pyde-ts-sdk";
 
 const provider = new Provider("https://rpc.pyde.network");
-const wallet = Wallet.generate();              // handle-backed; SK stays in WASM heap
+const wallet = Wallet.generate(); // handle-backed; SK stays in WASM heap
 
-await wallet.registerPubkey(provider);         // one-time per address
+await wallet.registerPubkey(provider); // one-time per address
 const receipt = await wallet.transfer(
   "0xrecipient...",
-  1_000_000_000n,                              // 1 PYDE in quanta
+  1_000_000_000n, // 1 PYDE in quanta
   provider,
 );
 console.log("tx:", receipt.txHash, "success:", receipt.success);
@@ -52,30 +52,30 @@ const provider = new Provider("https://rpc.pyde.network", {
 });
 
 // Account / state queries
-await provider.getBalance(addr);                // → bigint (quanta)
-await provider.getNonce(addr);                  // → number
-await provider.getAccount(addr);                // → Account record (Chapter 11 §11.1)
-await provider.getContractCode(addr);           // → WASM bytes hex
-await provider.getContractState(addr, slot);    // → slot value hex
-await provider.resolveName("alice.pyde");       // → 32-byte address or null
+await provider.getBalance(addr); // → bigint (quanta)
+await provider.getNonce(addr); // → number
+await provider.getAccount(addr); // → Account record (Chapter 11 §11.1)
+await provider.getContractCode(addr); // → WASM bytes hex
+await provider.getContractState(addr, slot); // → slot value hex
+await provider.resolveName("alice.pyde"); // → 32-byte address or null
 
 // Wave + finality
-await provider.getWave();                       // → latest WaveHeader
-await provider.getWave(1234);                   // → specific wave
-await provider.getHardFinalityCert(1234);       // → threshold-signed cert
-await provider.getSnapshotManifest(1234);       // → light-client manifest
+await provider.getWave(); // → latest WaveHeader
+await provider.getWave(1234); // → specific wave
+await provider.getHardFinalityCert(1234); // → threshold-signed cert
+await provider.getSnapshotManifest(1234); // → light-client manifest
 
 // View calls + gas / access
-await provider.call(to, data);                  // → return-data hex (free)
-await provider.estimateGas(to, data);           // → number
-await provider.estimateAccess({ to, data });    // → AccessEntry[]
-await provider.getBaseFee();                    // → bigint (quanta/gas)
-await provider.getFeeData();                    // → { gasPrice, baseFee }
+await provider.call(to, data); // → return-data hex (free)
+await provider.estimateGas(to, data); // → number
+await provider.estimateAccess({ to, data }); // → AccessEntry[]
+await provider.getBaseFee(); // → bigint (quanta/gas)
+await provider.getFeeData(); // → { gasPrice, baseFee }
 
 // Tx lookup + receipts
-await provider.getTransaction(txHash);          // → TransactionInfo or null
-await provider.getTransactionReceipt(txHash);   // → Receipt or null
-await provider.waitForReceipt(txHash, 10_000);  // → Receipt (throws TimeoutError)
+await provider.getTransaction(txHash); // → TransactionInfo or null
+await provider.getTransactionReceipt(txHash); // → Receipt or null
+await provider.waitForReceipt(txHash, 10_000); // → Receipt (throws TimeoutError)
 
 // Historical events (HOST_FN_ABI §15.4 — cursor pagination, 5k-wave cap)
 const page = await provider.getLogs({
@@ -85,7 +85,9 @@ const page = await provider.getLogs({
   contract: tokenAddr,
   limit: 100,
 });
-for (const ev of page.events) { /* ... */ }
+for (const ev of page.events) {
+  /* ... */
+}
 if (page.nextCursor) await provider.getLogs({ ...filter, cursor: page.nextCursor });
 ```
 
@@ -109,14 +111,13 @@ await ws.subscribeAccountChanges("0xalice...", (account) => {
   console.log("alice's balance now:", account.balance);
 });
 
-await ws.subscribeLogs(
-  { contract: "0xtoken...", topics: [[transferTopic]] },
-  (log) => console.log("transfer:", log.waveId, log.topics, log.data),
+await ws.subscribeLogs({ contract: "0xtoken...", topics: [[transferTopic]] }, (log) =>
+  console.log("transfer:", log.waveId, log.topics, log.data),
 );
 
 // Later
 await unsubscribe();
-ws.destroy();          // tears down everything
+ws.destroy(); // tears down everything
 ```
 
 Subscriptions are at-least-once with cursor-based resume after a reconnect (HOST_FN_ABI §15.5). The provider tracks each subscription's last delivered cursor and re-subscribes on reconnect with `from: lastCursor`. Listeners may see duplicates around a reconnect — dedupe by `(waveId, txIndex, eventIndex)` if you need exactly-once.
@@ -141,11 +142,11 @@ const restored = await Wallet.fromEncrypted(keystore, "strong-passphrase");
 const w1 = await Wallet.fromKeystoreFile("/keys/alice.json", "passphrase");
 await unsafe.saveKeystoreFile("/keys/alice.json", "passphrase");
 
-// Sign / submit
+// Sign / submit — gasLimit auto-estimates via provider.estimateGas
+// (with a 1.2× safety multiplier). Pass `gasLimit` to override.
 const sig = wallet.sign("0xdeadbeef");
 const txReceipt = await wallet.sendCall(contractAddr, calldataHex, {
   provider,
-  gasLimit: 100_000_000,
 });
 
 // Wipe + drop the WASM-retained SK
@@ -163,9 +164,9 @@ const wallet = Wallet.generateUnsafe();
 
 const receipt = await wallet.sendEncrypted(contractAddr, calldata, {
   provider,
-  gasLimit: 100_000_000,
   value: 0n,
-  deadline: 999_999,                  // optional wave deadline
+  deadline: 999_999n, // optional wave deadline
+  // gasLimit: 1_000_000,             // omit to auto-estimate
   // estimateAccess: true,            // OFF by default — privacy leak
 });
 ```
@@ -179,21 +180,21 @@ import { Contract } from "pyde-ts-sdk";
 
 // Load + bind
 const counter = await Contract.fromArtifact(
-  "out/Counter.bundle/Counter.abi.json",   // otigen build output
+  "out/Counter.bundle/Counter.abi.json", // otigen build output
   "0xcontract...",
   provider,
 );
 const withSigner = counter.connect(wallet);
 
 // Read (view call)
-const count = await counter.read("get_count");           // → decoded return
+const count = await counter.read("get_count"); // → decoded return
 
 // Write (signed tx)
 const receipt = await withSigner.write("deposit", { amount: 500n });
 const decoded = receipt.decodeReturnData();
 
 // Events
-const transfers = await counter.queryFilter("Transfer", 1000, 2000);
+const transfers = await counter.queryFilter("Transfer", 1000n, 2000n);
 const decoded = counter.parseLog(rawLog);
 ```
 
@@ -253,15 +254,33 @@ Community wallets implement `WalletAdapter` directly; their packages ship the ad
 ```ts
 import {
   // hex (isomorphic Uint8Array)
-  isHexString, hexlify, getBytes, toBeHex, concat, zeroPadValue, stripZeros, dataLength, dataSlice,
+  isHexString,
+  hexlify,
+  getBytes,
+  toBeHex,
+  concat,
+  zeroPadValue,
+  stripZeros,
+  dataLength,
+  dataSlice,
   // units (PYDE / quanta, 9 decimals)
-  parsePyde, formatPyde, parseQuanta, formatQuanta,
+  parsePyde,
+  formatPyde,
+  parseQuanta,
+  formatQuanta,
   // addresses
   Address,
   // errors
-  PydeError, CallExceptionError, ConnectionError, TimeoutError,
-  InvalidArgumentError, InsufficientFundsError, RpcError, SigningError,
-  isError, isCallException,
+  PydeError,
+  CallExceptionError,
+  ConnectionError,
+  TimeoutError,
+  InvalidArgumentError,
+  InsufficientFundsError,
+  RpcError,
+  SigningError,
+  isError,
+  isCallException,
 } from "pyde-ts-sdk";
 ```
 
@@ -271,11 +290,19 @@ Wait — the units helpers expose `parsePyde` / `formatPyde` as aliases for `par
 
 ```ts
 import {
-  generateKeypairHandle, dropKeypair,
-  signMessageWithHandle, signTransactionWithHandle,
-  generateKeypair, signMessage, signTransaction,   // hex variants
-  deriveAddress, poseidon2Hash, verifySignature, computeSelector,
-  buildRawEncryptedTx, thresholdEncrypt,           // MEV-protected flow
+  generateKeypairHandle,
+  dropKeypair,
+  signMessageWithHandle,
+  signTransactionWithHandle,
+  generateKeypair,
+  signMessage,
+  signTransaction, // hex variants
+  deriveAddress,
+  poseidon2Hash,
+  verifySignature,
+  computeSelector,
+  buildRawEncryptedTx,
+  thresholdEncrypt, // MEV-protected flow
   encodeRegisterPubkeyTx,
 } from "pyde-ts-sdk";
 ```
@@ -286,19 +313,19 @@ Everything routes to `pyde-crypto-wasm` — the SDK does not implement primitive
 
 Every public type and method carries a TSDoc reference to the spec section it implements. Quick map:
 
-| Surface | Spec |
-|---|---|
-| Account record | Chapter 11 §11.1 |
-| TxType discriminants | Chapter 11 §11.8 |
-| Wave + HardFinalityCert | Chapter 6 |
-| Snapshot manifest | STATE_SYNC.md |
-| Receipt + fee fields | Chapter 10 |
-| Log + EventCursor + LogFilter | HOST_FN_ABI §15.2 + §15.4 |
-| Subscription mechanics | HOST_FN_ABI §15.5 |
-| Keystore format | Chapter 17 (`pyde keys generate`) |
-| Cryptographic primitives | Chapter 8.2 / 8.3 / 8.4 / 8.5 |
-| ABI codec + selector | SDK_AUTHOR_GUIDE + HOST_FN_ABI §3.7 |
-| MEV-protected submission | Chapter 8.5 + Chapter 9 |
+| Surface                       | Spec                                |
+| ----------------------------- | ----------------------------------- |
+| Account record                | Chapter 11 §11.1                    |
+| TxType discriminants          | Chapter 11 §11.8                    |
+| Wave + HardFinalityCert       | Chapter 6                           |
+| Snapshot manifest             | STATE_SYNC.md                       |
+| Receipt + fee fields          | Chapter 10                          |
+| Log + EventCursor + LogFilter | HOST_FN_ABI §15.2 + §15.4           |
+| Subscription mechanics        | HOST_FN_ABI §15.5                   |
+| Keystore format               | Chapter 17 (`pyde keys generate`)   |
+| Cryptographic primitives      | Chapter 8.2 / 8.3 / 8.4 / 8.5       |
+| ABI codec + selector          | SDK_AUTHOR_GUIDE + HOST_FN_ABI §3.7 |
+| MEV-protected submission      | Chapter 8.5 + Chapter 9             |
 
 The full book lives at [book.pyde.network](https://book.pyde.network).
 

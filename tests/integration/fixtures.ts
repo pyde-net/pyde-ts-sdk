@@ -41,10 +41,7 @@ export const STORAGE_STRESS_BUNDLE = resolve(
   "otigen/examples/storage-stress/artifacts/storage-stress.bundle",
 );
 
-export const STORAGE_STRESS_ABI_JSON = resolve(
-  STORAGE_STRESS_BUNDLE,
-  "storage-stress.abi.json",
-);
+export const STORAGE_STRESS_ABI_JSON = resolve(STORAGE_STRESS_BUNDLE, "storage-stress.abi.json");
 
 /**
  * Bootstrap the otigen keystore with the devnet prefunded accounts.
@@ -52,11 +49,9 @@ export const STORAGE_STRESS_ABI_JSON = resolve(
  */
 export async function importDevnetWallets(): Promise<void> {
   try {
-    await exec(
-      "otigen",
-      ["wallet", "import", "--from-devnet", "--password-stdin"],
-      { input: DEFAULT_PASSWORD },
-    );
+    await exec("otigen", ["wallet", "import", "--from-devnet", "--password-stdin"], {
+      input: DEFAULT_PASSWORD,
+    });
   } catch (e) {
     // Already imported is fine; the otigen CLI is idempotent under the
     // hood but logs a warning. Surface anything else.

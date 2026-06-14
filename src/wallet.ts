@@ -31,7 +31,7 @@ import { AbstractSigner } from "./signer";
 import * as crypto from "./crypto";
 import type { AccessEntry, Receipt, TxFields } from "./types";
 import { TxType } from "./types";
-import { SigningError } from "./errors";
+import { SigningError, WalletDestroyedError } from "./errors";
 
 // ============================================================================
 // Keystore format (matches `pyde keys generate`, per Chapter 17)
@@ -78,9 +78,9 @@ const NONCE_LEN = 12;
 // Wallet
 // ============================================================================
 
-/** Internal key-material discriminator — either a WASM-retained handle or
- *  an in-JS hex secret. Never both. */
-type KeyMaterial = { handle: number } | { hex: string };
+/** Internal key-material discriminator — either a WASM-retained handle,
+ *  an in-JS hex secret, or destroyed (post-destroy(); signing throws). */
+type KeyMaterial = { handle: number } | { hex: string } | { destroyed: true };
 
 /**
  * FALCON-512 wallet. Implements `AbstractSigner` so it can be passed
@@ -156,6 +156,7 @@ export class Wallet extends AbstractSigner {
   /** Encrypt the wallet's SK with `password` and return the keystore.
    *  Throws on handle-only wallets (no hex SK to encrypt). */
   async toKeystore(password: string, params?: Partial<typeof KDF_DEFAULTS>): Promise<Keystore> {
+    if ("destroyed" in this.key) throw new WalletDestroyedError();
     if (!("hex" in this.key)) {
       throw new SigningError(
         "Cannot export keystore from a handle-only wallet. Use Wallet.generateUnsafe() if you need a hex SK.",
@@ -187,6 +188,7 @@ export class Wallet extends AbstractSigner {
 
   /** Sign a transaction. Returns wire-encoded signed tx hex. */
   signTransaction(tx: TxFields): string {
+    if ("destroyed" in this.key) throw new WalletDestroyedError();
     return "handle" in this.key
       ? crypto.signTransactionWithHandle(tx, this.key.handle)
       : crypto.signTransaction(tx, this.key.hex);
@@ -194,6 +196,7 @@ export class Wallet extends AbstractSigner {
 
   /** Sign an arbitrary message. Returns signature hex. */
   sign(messageHex: string): string {
+    if ("destroyed" in this.key) throw new WalletDestroyedError();
     return "handle" in this.key
       ? crypto.signMessageWithHandle(this.key.handle, messageHex)
       : crypto.signMessage(this.key.hex, messageHex);
@@ -218,8 +221,9 @@ export class Wallet extends AbstractSigner {
     if ("handle" in this.key) {
       crypto.dropKeypair(this.key.handle);
     }
-    // Replace key with a no-op placeholder so subsequent sign calls fail.
-    this.key = { hex: "" };
+    // Mark destroyed — every signing method below checks this branch
+    // first and throws WalletDestroyedError with a clear message.
+    this.key = { destroyed: true };
   }
 
   // ==========================================================================
@@ -247,16 +251,32 @@ export class Wallet extends AbstractSigner {
     return p.sendAndWait(wire);
   }
 
-  /** Build, sign, send a native PYDE transfer. */
-  async transfer(to: string, amount: bigint | number, provider?: Provider): Promise<Receipt> {
-    const p = this.resolveProvider(provider);
+  /** Build, sign, send a native PYDE transfer. Gas limit is estimated
+   *  via `provider.estimateGas` and multiplied by `gasMultiplier`
+   *  (default 1.2) to absorb chain-state drift between the estimate
+   *  and the commit. Callers can override with `opts.gasLimit`. */
+  async transfer(
+    to: string,
+    amount: bigint | number,
+    optsOrProvider?: Provider | { provider?: Provider; gasLimit?: number; gasMultiplier?: number },
+  ): Promise<Receipt> {
+    // Backward-compat: callers may pass `Provider` positionally.
+    const opts =
+      optsOrProvider instanceof Object && "getChainId" in optsOrProvider
+        ? { provider: optsOrProvider as Provider }
+        : ((optsOrProvider as
+            | { provider?: Provider; gasLimit?: number; gasMultiplier?: number }
+            | undefined) ?? {});
+    const p = this.resolveProvider(opts.provider);
     const [nonce, chainId] = await p.getNonceAndChainId(this.address);
+    const gasLimit =
+      opts.gasLimit ?? (await this.estimateGasFor(p, to, "0x", amount, opts.gasMultiplier));
     const tx: TxFields = {
       from: this.address,
       to,
       value: amount.toString(),
       data: "0x",
-      gasLimit: 21_000,
+      gasLimit,
       nonce,
       chainId,
       // Standard (id 0) covers both transfers and contract calls per
@@ -266,16 +286,43 @@ export class Wallet extends AbstractSigner {
     return p.sendAndWait(this.signTransaction(tx));
   }
 
+  private async estimateGasFor(
+    p: Provider,
+    to: string,
+    data: string,
+    value: bigint | number | string,
+    multiplier?: number,
+  ): Promise<number> {
+    try {
+      const est = await p.estimateGas(to, data, {
+        from: this.address,
+        ...(BigInt(value) > 0n ? { value } : {}),
+      });
+      return Math.ceil(est * (multiplier ?? 1.2));
+    } catch {
+      // estimateGas may fail (chain doesn't expose it yet, or call
+      // would revert). Fall back to a conservative default — 100k for
+      // simple transfers, 5M for contract calls with calldata.
+      return data === "0x" ? 100_000 : 5_000_000;
+    }
+  }
+
   /** Build, sign, send a contract call. Auto-fetches an access list via
    *  `Provider.estimateAccess()`. Spec: Chapter 11 §11.8 (Standard). */
   async sendCall(
     to: string,
     data: string,
-    opts?: { gasLimit?: number; value?: bigint | number | string; provider?: Provider },
+    opts?: {
+      gasLimit?: number;
+      gasMultiplier?: number;
+      value?: bigint | number | string;
+      provider?: Provider;
+    },
   ): Promise<Receipt> {
     const p = this.resolveProvider(opts?.provider);
-    const gasLimit = opts?.gasLimit ?? 100_000_000;
     const value = opts?.value ?? 0;
+    const gasLimit =
+      opts?.gasLimit ?? (await this.estimateGasFor(p, to, data, value, opts?.gasMultiplier));
     const [nonce, chainId] = await p.getNonceAndChainId(this.address);
 
     let accessList: AccessEntry[] | undefined;
@@ -402,6 +449,7 @@ export class Wallet extends AbstractSigner {
       ...(opts?.deadline !== undefined ? { deadline: opts.deadline } : {}),
     };
 
+    if ("destroyed" in this.key) throw new WalletDestroyedError();
     const wire =
       "handle" in this.key
         ? crypto.buildRawEncryptedTxWithHandle(params, this.key.handle)
@@ -520,8 +568,8 @@ export class Wallet extends AbstractSigner {
     return this.resolveProvider(provider).getBalance(this.address);
   }
 
-  /** Get nonce via the bound provider. */
-  async getNonce(provider?: Provider): Promise<number> {
+  /** Get nonce via the bound provider (u64 → bigint). */
+  async getNonce(provider?: Provider): Promise<bigint> {
     return this.resolveProvider(provider).getNonce(this.address);
   }
 

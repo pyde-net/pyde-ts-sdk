@@ -26,14 +26,8 @@
  *     exactly-once semantics should dedupe by `(waveId, txIndex, eventIndex)`.
  */
 
-import { Provider } from "./provider";
-import type {
-  Log,
-  WaveHeader,
-  Account,
-  EventCursor,
-  Hash,
-} from "./types";
+import { Provider, enforceSecureScheme } from "./provider";
+import type { Log, WaveHeader, Account, EventCursor, Hash } from "./types";
 import { ConnectionError, RpcError, TimeoutError } from "./errors";
 
 // ============================================================================
@@ -42,6 +36,10 @@ import { ConnectionError, RpcError, TimeoutError } from "./errors";
 
 /** Constructor type compatible with browser + Node WebSocket. */
 export type WebSocketCtor = new (url: string, protocols?: string | string[]) => WebSocketLike;
+
+/** Event surface for `WebSocketProvider.on(...)`. */
+export type WebSocketProviderEvent = "terminalError";
+type WSEventListener = (error: Error) => void;
 
 /** Minimal WebSocket surface this module uses. */
 export interface WebSocketLike {
@@ -70,6 +68,8 @@ export interface WebSocketProviderOptions {
   reconnectMaxAttempts?: number;
   /** RPC call timeout in ms. Default 30,000. */
   rpcTimeoutMs?: number;
+  /** Allow non-TLS `ws://` transports. Default false. See ProviderOptions. */
+  allowInsecureTransport?: boolean;
 }
 
 /** Filter for `subscribeLogs` — same positional topics + contract shape as
@@ -131,7 +131,9 @@ export class WebSocketProvider {
   readonly ready: Promise<void>;
 
   private url: string;
-  private opts: Required<Omit<WebSocketProviderOptions, "webSocketConstructor" | "httpRpcUrl">> & {
+  private opts: Required<
+    Omit<WebSocketProviderOptions, "webSocketConstructor" | "httpRpcUrl" | "allowInsecureTransport">
+  > & {
     webSocketConstructor: WebSocketCtor;
   };
   private ws: WebSocketLike | null = null;
@@ -144,8 +146,13 @@ export class WebSocketProvider {
   private reconnectAttempt = 0;
   private resolveReady!: () => void;
   private rejectReady!: (e: Error) => void;
+  /** Last error that ended the reconnect cycle (if any). Available
+   *  after the `terminalError` event fires. */
+  private _lastError: Error | null = null;
+  private terminalListeners = new Set<WSEventListener>();
 
   constructor(url: string, options?: WebSocketProviderOptions) {
+    enforceSecureScheme(url, options?.allowInsecureTransport, "WebSocketProvider");
     this.url = url;
     const ctor = options?.webSocketConstructor ?? globalThisWebSocket();
     if (!ctor) {
@@ -160,7 +167,11 @@ export class WebSocketProvider {
       reconnectMaxAttempts: options?.reconnectMaxAttempts ?? 0,
       rpcTimeoutMs: options?.rpcTimeoutMs ?? 30_000,
     };
-    this.http = new Provider(options?.httpRpcUrl ?? wsToHttp(url));
+    // The HTTP fallback honors the same insecure-transport allowance
+    // the WS endpoint was granted.
+    this.http = new Provider(options?.httpRpcUrl ?? wsToHttp(url), {
+      ...(options?.allowInsecureTransport ? { allowInsecureTransport: true } : {}),
+    });
     this.ready = new Promise<void>((resolve, reject) => {
       this.resolveReady = resolve;
       this.rejectReady = reject;
@@ -226,8 +237,25 @@ export class WebSocketProvider {
     this.subs.clear();
     this.pending.forEach((p) => p.reject(new ConnectionError("WebSocketProvider destroyed")));
     this.pending.clear();
+    this.terminalListeners.clear();
     this.ws?.close();
     this.ws = null;
+  }
+
+  /** Subscribe to provider-level events. Currently exposes
+   *  `terminalError` — fired exactly once when reconnect gives up. */
+  on(event: WebSocketProviderEvent, listener: WSEventListener): void {
+    if (event === "terminalError") this.terminalListeners.add(listener);
+  }
+
+  /** Unsubscribe from a provider-level event. */
+  off(event: WebSocketProviderEvent, listener: WSEventListener): void {
+    if (event === "terminalError") this.terminalListeners.delete(listener);
+  }
+
+  /** Last error that ended the reconnect cycle (null if not terminal). */
+  get lastError(): Error | null {
+    return this._lastError;
   }
 
   // ==========================================================================
@@ -245,20 +273,28 @@ export class WebSocketProvider {
   }
 
   private onOpen(): void {
-    this.reconnectAttempt = 0;
+    // Reset reconnect counter only after subs are re-issued successfully;
+    // an open-then-immediate-close cycle that loses every sub mid-flight
+    // should still count toward the max.
     if (this.subs.size === 0) {
-      // First connect: signal ready.
+      this.reconnectAttempt = 0;
       this.resolveReady();
       return;
     }
     // Reconnect: re-issue every active subscription with the right
-    // `from` cursor for logs (§15.5 at-least-once resume).
-    for (const sub of this.subs.values()) {
-      this.serverSubscribe(sub).catch(() => {
-        // Suppress here — the next reconnect will retry. Failures get
-        // surfaced when the caller next uses an SDK method.
-      });
-    }
+    // `from` cursor for logs (§15.5 at-least-once resume). Reset the
+    // attempt counter only once every active sub has re-issued cleanly.
+    Promise.all(
+      Array.from(this.subs.values()).map((sub) =>
+        this.serverSubscribe(sub).catch(() => false as const),
+      ),
+    ).then((results) => {
+      if (results.every((r) => r !== false)) {
+        this.reconnectAttempt = 0;
+      }
+      // If any sub failed to re-issue we leave the counter alone — the
+      // next onClose will increment it and the cycle continues.
+    });
     this.resolveReady();
   }
 
@@ -304,8 +340,22 @@ export class WebSocketProvider {
     if (this.destroyed) return;
     this.failPending(new ConnectionError("WebSocket closed"));
     // Schedule a reconnect with exponential backoff.
-    if (this.opts.reconnectMaxAttempts > 0 && this.reconnectAttempt >= this.opts.reconnectMaxAttempts) {
+    if (
+      this.opts.reconnectMaxAttempts > 0 &&
+      this.reconnectAttempt >= this.opts.reconnectMaxAttempts
+    ) {
+      const err = new ConnectionError(
+        `WebSocket reconnect gave up after ${this.opts.reconnectMaxAttempts} attempts`,
+      );
+      this._lastError = err;
       this.destroyed = true;
+      for (const listener of this.terminalListeners) {
+        try {
+          listener(err);
+        } catch {
+          // Listener errors must not break peer subscribers.
+        }
+      }
       return;
     }
     this.reconnectAttempt += 1;
@@ -359,7 +409,9 @@ export class WebSocketProvider {
     const params = this.subscribeParams(sub);
     const result = await this.rpc("pyde_subscribe", [params]);
     if (typeof result !== "string") {
-      throw new RpcError(`pyde_subscribe returned non-string subscription id: ${JSON.stringify(result)}`);
+      throw new RpcError(
+        `pyde_subscribe returned non-string subscription id: ${JSON.stringify(result)}`,
+      );
     }
     sub.serverSubId = result;
   }
@@ -450,12 +502,14 @@ export class WebSocketProvider {
   private toWaveHeader(w: unknown): WaveHeader {
     const o = w as Record<string, unknown>;
     const out: WaveHeader = {
-      waveId: numHex(o.wave_id ?? o.waveId, "waveId"),
+      waveId: bigHex(o.wave_id ?? o.waveId, "waveId"),
       timestamp: asString(o.timestamp, "timestamp"),
       anchor: asString(o.anchor, "anchor"),
     };
-    if (o.state_root ?? o.stateRoot) out.stateRoot = asString(o.state_root ?? o.stateRoot, "stateRoot");
-    if (o.events_root ?? o.eventsRoot) out.eventsRoot = asString(o.events_root ?? o.eventsRoot, "eventsRoot");
+    if (o.state_root ?? o.stateRoot)
+      out.stateRoot = asString(o.state_root ?? o.stateRoot, "stateRoot");
+    if (o.events_root ?? o.eventsRoot)
+      out.eventsRoot = asString(o.events_root ?? o.eventsRoot, "eventsRoot");
     if (o.tx_count !== undefined || o.txCount !== undefined) {
       out.txCount = numHex(o.tx_count ?? o.txCount, "txCount");
     }
@@ -465,7 +519,7 @@ export class WebSocketProvider {
   private toLog(w: unknown): Log {
     const o = w as Record<string, unknown>;
     return {
-      waveId: numHex(o.wave_id ?? o.waveId, "waveId"),
+      waveId: bigHex(o.wave_id ?? o.waveId, "waveId"),
       txIndex: numHex(o.tx_index ?? o.txIndex, "txIndex"),
       eventIndex: numHex(o.event_index ?? o.eventIndex, "eventIndex"),
       contract: asString(o.contract_addr ?? o.contract ?? o.address, "contract"),
@@ -479,7 +533,7 @@ export class WebSocketProvider {
     const o = w as Record<string, unknown>;
     return {
       address: asString(o.address, "address"),
-      nonce: numHex(o.nonce, "nonce"),
+      nonce: bigHex(o.nonce, "nonce"),
       balance: BigInt(asString(o.balance, "balance")),
       codeHash: asString(o.code_hash ?? o.codeHash, "codeHash"),
       storageRoot: asString(o.storage_root ?? o.storageRoot, "storageRoot"),
@@ -500,10 +554,24 @@ function globalThisWebSocket(): WebSocketCtor | undefined {
   return g.WebSocket;
 }
 
+/** Convert a ws:// or wss:// URL to the http(s) sibling, preserving
+ *  host, port, path, query, and fragment. If the URL has a path that
+ *  isn't the HTTP RPC endpoint, callers should pass `options.httpRpcUrl`
+ *  explicitly rather than relying on this helper. */
 function wsToHttp(wsUrl: string): string {
-  if (wsUrl.startsWith("wss://")) return "https://" + wsUrl.slice(6);
-  if (wsUrl.startsWith("ws://")) return "http://" + wsUrl.slice(5);
-  return wsUrl;
+  try {
+    const u = new URL(wsUrl);
+    if (u.protocol === "wss:") u.protocol = "https:";
+    else if (u.protocol === "ws:") u.protocol = "http:";
+    return u.toString();
+  } catch {
+    // Fallback to prefix-swap for URLs the URL constructor can't parse
+    // (rare; mostly malformed input that should already be rejected
+    // upstream).
+    if (wsUrl.startsWith("wss://")) return "https://" + wsUrl.slice(6);
+    if (wsUrl.startsWith("ws://")) return "http://" + wsUrl.slice(5);
+    return wsUrl;
+  }
 }
 
 function asString(v: unknown, ctx: string): string {
@@ -519,4 +587,17 @@ function numHex(v: unknown, ctx: string): number {
   const n = s.startsWith("0x") ? parseInt(s, 16) : parseInt(s, 10);
   if (!Number.isFinite(n)) throw new RpcError(`${ctx} not a number: ${s}`);
   return n;
+}
+
+/** Bigint variant for u64 wire fields. Accepts numbers, hex strings,
+ *  decimal strings, and bigints. */
+function bigHex(v: unknown, ctx: string): bigint {
+  if (typeof v === "bigint") return v;
+  if (typeof v === "number") return BigInt(v);
+  const s = asString(v, ctx);
+  try {
+    return BigInt(s);
+  } catch {
+    throw new RpcError(`${ctx} not a u64: ${s}`);
+  }
 }

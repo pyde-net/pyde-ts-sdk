@@ -15,7 +15,9 @@ import { WebSocketProvider } from "../src/index";
 
 async function main(): Promise<void> {
   const wsUrl = process.env.PYDE_WS_URL ?? "ws://127.0.0.1:8546";
-  const ws = new WebSocketProvider(wsUrl);
+  const ws = new WebSocketProvider(wsUrl, {
+    allowInsecureTransport: wsUrl.startsWith("ws://"),
+  });
   await ws.ready;
 
   // Match every event by leaving topics empty. In production indexers,

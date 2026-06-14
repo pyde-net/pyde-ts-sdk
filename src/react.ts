@@ -132,7 +132,7 @@ function useAsync<T>(
     } finally {
       setLoading(false);
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, deps);
 
   React.useEffect(() => {
@@ -143,25 +143,27 @@ function useAsync<T>(
     }
     let cancelled = false;
     setLoading(true);
-    fetcher().then(
-      (v) => {
-        if (!cancelled) {
-          setData(v);
-          setError(null);
-        }
-      },
-      (e) => {
-        if (!cancelled) {
-          setError(e instanceof Error ? e : new Error(String(e)));
-        }
-      },
-    ).finally(() => {
-      if (!cancelled) setLoading(false);
-    });
+    fetcher()
+      .then(
+        (v) => {
+          if (!cancelled) {
+            setData(v);
+            setError(null);
+          }
+        },
+        (e) => {
+          if (!cancelled) {
+            setError(e instanceof Error ? e : new Error(String(e)));
+          }
+        },
+      )
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
     return () => {
       cancelled = true;
     };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, deps);
 
   return { data, error, loading, refetch };
@@ -177,28 +179,22 @@ function useAsync<T>(
  *  `useEffect` that calls `refetch` on relevant events. */
 export function useBalance(address: string | undefined): AsyncState<bigint> {
   const provider = usePydeProvider();
-  return useAsync<bigint>(
-    address ? () => provider.getBalance(address) : null,
-    [provider, address],
-  );
+  return useAsync<bigint>(address ? () => provider.getBalance(address) : null, [provider, address]);
 }
 
 /** Read an account's nonce (next available slot in the 16-slot window). */
-export function useNonce(address: string | undefined): AsyncState<number> {
+export function useNonce(address: string | undefined): AsyncState<bigint> {
   const provider = usePydeProvider();
-  return useAsync<number>(
-    address ? () => provider.getNonce(address) : null,
-    [provider, address],
-  );
+  return useAsync<bigint>(address ? () => provider.getNonce(address) : null, [provider, address]);
 }
 
 /** Read the full Account record. */
 export function useAccount(address: string | undefined): AsyncState<Account | null> {
   const provider = usePydeProvider();
-  return useAsync<Account | null>(
-    address ? () => provider.getAccount(address) : null,
-    [provider, address],
-  );
+  return useAsync<Account | null>(address ? () => provider.getAccount(address) : null, [
+    provider,
+    address,
+  ]);
 }
 
 // ============================================================================
@@ -208,10 +204,7 @@ export function useAccount(address: string | undefined): AsyncState<Account | nu
 /** Read a specific wave header (or the latest, when `waveId` is undefined). */
 export function useWave(waveId?: Wave): AsyncState<WaveHeader | null> {
   const provider = usePydeProvider();
-  return useAsync<WaveHeader | null>(
-    () => provider.getWave(waveId),
-    [provider, waveId],
-  );
+  return useAsync<WaveHeader | null>(() => provider.getWave(waveId), [provider, waveId]);
 }
 
 /** Subscribe to the live wave-commit stream when a WS provider is bound.
@@ -294,8 +287,8 @@ export function useEvents(filter: LogSubscriptionFilter): Log[] {
       cancelled = true;
       if (unsubscribe) void unsubscribe();
     };
-  // filterKey is the serialised representation; ws is the provider instance.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // filterKey is the serialised representation; ws is the provider instance.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ws, filterKey]);
 
   return events;

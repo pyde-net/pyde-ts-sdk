@@ -15,10 +15,10 @@
 // Type aliases
 // ============================================================================
 
-/** Wave ID — Pyde's primary chain primitive. u64 on chain; values up to
- *  Number.MAX_SAFE_INTEGER fit in a JS number, beyond that callers should
- *  pass / receive a bigint or hex string. Spec: Chapter 6. */
-export type Wave = number;
+/** Wave ID — Pyde's primary chain primitive (u64 on chain).
+ *  Typed as `bigint` so the SDK never silently truncates near the
+ *  2^53 JS safe-integer boundary. Spec: Chapter 6. */
+export type Wave = bigint;
 
 /** 32-byte hex hash (Poseidon2 or Blake3 output). */
 export type Hash = string;
@@ -52,8 +52,9 @@ export type AccountTypeDiscriminant = (typeof AccountType)[keyof typeof AccountT
  */
 export interface Account {
   address: string;
-  /** Low end of the 16-slot nonce window. */
-  nonce: number;
+  /** Low end of the 16-slot nonce window (u64; typed bigint to avoid
+   *  silent truncation for long-running accounts). */
+  nonce: bigint;
   /** Spendable balance in quanta (u128). */
   balance: bigint;
   /** WASM code hash (Poseidon2). Zero hash for EOAs. */
@@ -263,8 +264,8 @@ export interface TxFields {
   /** Calldata hex; "0x" for value-only transfers. */
   data: string;
   gasLimit: number;
-  /** Per-sender counter within the 16-slot nonce window. */
-  nonce: number;
+  /** Per-sender counter within the 16-slot nonce window (u64). */
+  nonce: bigint;
   /** Chain ID for replay protection. */
   chainId: number;
   /** Transaction-type discriminant (see `TxType` const below). */
@@ -343,7 +344,8 @@ export interface TransactionInfo {
   data: string;
   /** Hex-encoded u64. */
   gasLimit: string;
-  nonce: number;
+  /** Per-sender counter (u64). */
+  nonce: bigint;
   chainId: number;
   txType: number;
   /** Wave the tx was included in (omitted if pending — though Pyde has

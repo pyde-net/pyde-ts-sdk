@@ -29,6 +29,7 @@ import type {
   LogFilter,
   GetLogsResponse,
   EventCursor,
+  Wave,
   WaveHeader,
   HardFinalityCert,
   SnapshotManifest,
@@ -44,6 +45,7 @@ import { AccountType } from "./types";
 import {
   CallExceptionError,
   ConnectionError,
+  InvalidArgumentError,
   RpcError,
   TimeoutError,
 } from "./errors";
@@ -56,6 +58,11 @@ export interface ProviderOptions {
   retries?: number;
   /** Custom HTTP headers (e.g. auth keys, x-trace-id). */
   headers?: Record<string, string>;
+  /** Allow non-TLS `http://` transports. Defaults to false — the
+   *  constructor throws for plaintext URLs unless this is explicitly
+   *  opted in (devnet, localhost testing, CI). Production deployments
+   *  should never set this. */
+  allowInsecureTransport?: boolean;
 }
 
 /**
@@ -70,11 +77,12 @@ export class Provider {
   readonly rpcUrl: string;
   private rpcId = 0;
   private cachedChainId: number | null = null;
-  private options: Required<Omit<ProviderOptions, "headers">> & {
+  private options: Required<Omit<ProviderOptions, "headers" | "allowInsecureTransport">> & {
     headers: Record<string, string>;
   };
 
   constructor(rpcUrl: string, options?: ProviderOptions) {
+    enforceSecureScheme(rpcUrl, options?.allowInsecureTransport, "Provider");
     this.rpcUrl = rpcUrl;
     this.options = {
       timeout: options?.timeout ?? 30_000,
@@ -96,16 +104,14 @@ export class Provider {
   /** Return the account's low-end nonce (next available slot in the
    *  16-slot sliding window per Chapter 11). Spec: chapter 17.4.
    *
-   *  Backward-compat: some chain builds still expose this only under
-   *  the pre-pivot `pyde_getTransactionCount` name. Falls back when the
-   *  canonical name isn't found. Remove the fallback once the engine
-   *  rename ships. */
-  async getNonce(address: string): Promise<number> {
+   *  Returns a bigint — nonce is u64 on chain, and the SDK refuses to
+   *  silently truncate above 2^53. */
+  async getNonce(address: string): Promise<bigint> {
     const result = await this.callWithFallback(
       ["pyde_getNonce", "pyde_getTransactionCount"],
       [address],
     );
-    return parseUintLoose(result, "getNonce");
+    return parseBigIntLoose(result, "getNonce");
   }
 
   /** Return the chain ID (used for replay protection in signed txs).
@@ -118,19 +124,27 @@ export class Provider {
     return n;
   }
 
-  /** Fetch nonce + chainId in one round-trip (used when building a tx). */
-  async getNonceAndChainId(address: string): Promise<[number, number]> {
-    const [nonce, chainId] = await Promise.all([
-      this.getNonce(address),
-      this.getChainId(),
-    ]);
+  /** Fetch nonce + chainId in one round-trip (used when building a tx).
+   *  Returns `[bigint, number]` — nonce is u64, chainId is small in practice. */
+  async getNonceAndChainId(address: string): Promise<[bigint, number]> {
+    const [nonce, chainId] = await Promise.all([this.getNonce(address), this.getChainId()]);
     return [nonce, chainId];
   }
 
-  /** Return the full account record. Spec: Chapter 11 §11.1 + chapter 17.4. */
+  /** Return the full account record. Returns null when the account has
+   *  never been touched on chain (chain returns null/undefined OR an
+   *  empty object). A real account always has at least an address +
+   *  one non-zero field in the response. Spec: Chapter 11 §11.1 +
+   *  chapter 17.4. */
   async getAccount(address: string): Promise<Account | null> {
     const result = await this.call_("pyde_getAccount", [address]);
-    return result ? fromWireAccount(result) : null;
+    if (!result || typeof result !== "object") return null;
+    // Distinguish "unknown account" from "exists but zeroed": a real
+    // account record carries the wire-format address field; an empty
+    // / placeholder response does not.
+    const o = result as Record<string, unknown>;
+    if (!o.address && !o.nonce && !o.balance) return null;
+    return fromWireAccount(result);
   }
 
   // ========================================================================
@@ -140,10 +154,7 @@ export class Provider {
   /** Return the contract's WASM bytecode as hex. Empty string for EOAs.
    *  Spec: chapter 17.4 `pyde_getContractCode`. */
   async getContractCode(address: string): Promise<string> {
-    return asString(
-      await this.call_("pyde_getContractCode", [address]),
-      "pyde_getContractCode",
-    );
+    return asString(await this.call_("pyde_getContractCode", [address]), "pyde_getContractCode");
   }
 
   /** Return the value of a single contract state slot.
@@ -176,12 +187,12 @@ export class Provider {
    *  Backward-compat: the engine currently requires the `wave_id`
    *  param. When omitted the SDK resolves "latest" via a synthetic
    *  block-number query first and then fetches that wave. */
-  async getWave(waveId?: number): Promise<WaveHeader | null> {
+  async getWave(waveId?: Wave): Promise<WaveHeader | null> {
     let target = waveId;
     if (target === undefined) {
       target = await this.latestWaveId();
     }
-    const result = await this.call_("pyde_getWave", [target]);
+    const result = await this.call_("pyde_getWave", [target.toString()]);
     return result ? fromWireWaveHeader(result) : null;
   }
 
@@ -189,9 +200,9 @@ export class Provider {
    *  `pyde_blockNumber` (pre-pivot name still wired by the engine) or a
    *  receipt-style indirection. Used by `getWave()` when no wave id is
    *  passed explicitly. */
-  private async latestWaveId(): Promise<number> {
+  private async latestWaveId(): Promise<Wave> {
     const result = await this.callWithFallback(["pyde_getWaveNumber", "pyde_blockNumber"], []);
-    return parseUintLoose(result, "latestWaveId");
+    return parseBigIntLoose(result, "latestWaveId");
   }
 
   /** Return the threshold-signed hard finality certificate for a wave.
@@ -246,11 +257,7 @@ export class Provider {
   }
 
   /** Estimate gas for a call. Spec: chapter 17.4 `pyde_estimateGas`. */
-  async estimateGas(
-    to: string,
-    data: string,
-    overrides?: CallOverrides,
-  ): Promise<number> {
+  async estimateGas(to: string, data: string, overrides?: CallOverrides): Promise<number> {
     const params = this.buildCallParams(to, data, overrides);
     const result = await this.call_("pyde_estimateGas", [params]);
     return parseUint(asString(result, "pyde_estimateGas"), "pyde_estimateGas");
@@ -311,9 +318,7 @@ export class Provider {
    * MEV-protected submission path. Spec: Chapter 8.5 + Chapter 9 +
    * chapter 17.4 `pyde_sendRawEncryptedTransaction`.
    */
-  async sendRawEncryptedTransaction(
-    encTxHex: string,
-  ): Promise<TransactionResponse> {
+  async sendRawEncryptedTransaction(encTxHex: string): Promise<TransactionResponse> {
     const result = await this.call_("pyde_sendRawEncryptedTransaction", [encTxHex]);
     return this.buildTxResponse(asString(result, "pyde_sendRawEncryptedTransaction"));
   }
@@ -349,9 +354,7 @@ export class Provider {
       if (r) return r;
       await sleep(100);
     }
-    throw new TimeoutError(
-      `Receipt not available after ${timeoutMs}ms for tx ${txHash}`,
-    );
+    throw new TimeoutError(`Receipt not available after ${timeoutMs}ms for tx ${txHash}`);
   }
 
   /** Send + wait + throw on revert. Convenience for one-shot calls. */
@@ -534,6 +537,27 @@ export class Provider {
 
 const ZERO_ADDR = "0x" + "00".repeat(32);
 
+/** Reject plaintext transports unless the caller opted in. Throws an
+ *  `InvalidArgumentError` so the failure is visible at constructor
+ *  time rather than at first request (when sensitive data may already
+ *  be in flight). */
+export function enforceSecureScheme(
+  url: string,
+  allowInsecure: boolean | undefined,
+  ctx: string,
+): void {
+  if (allowInsecure) return;
+  const lower = url.toLowerCase();
+  if (lower.startsWith("http://") || lower.startsWith("ws://")) {
+    throw new InvalidArgumentError(
+      `${ctx}: plaintext transport (${lower.startsWith("http") ? "http://" : "ws://"}) rejected. ` +
+        `Pass options.allowInsecureTransport: true for devnet / localhost; production must use https:// / wss://.`,
+      "url",
+      url,
+    );
+  }
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -563,15 +587,32 @@ function parseUintLoose(v: unknown, ctx: string): number {
   throw new RpcError(`${ctx} returned non-numeric: ${JSON.stringify(v)}`);
 }
 
+/** Tolerant u64 parser → bigint. Accepts JSON numbers, hex strings,
+ *  decimal strings, and bigints. Returns a bigint so values up to 2^64-1
+ *  are represented without loss. */
+function parseBigIntLoose(v: unknown, ctx: string): bigint {
+  if (typeof v === "bigint") return v;
+  if (typeof v === "number") {
+    if (!Number.isFinite(v)) throw new RpcError(`${ctx} returned invalid number: ${v}`);
+    return BigInt(v);
+  }
+  if (typeof v === "string") {
+    try {
+      return BigInt(v);
+    } catch {
+      throw new RpcError(`${ctx} returned invalid u64: ${v}`);
+    }
+  }
+  throw new RpcError(`${ctx} returned non-numeric: ${JSON.stringify(v)}`);
+}
+
 function bigIntToHex(v: bigint | number | string): string {
   return "0x" + BigInt(v).toString(16);
 }
 
 function isReceiptNotFound(e: unknown): boolean {
   return (
-    e instanceof RpcError &&
-    typeof e.message === "string" &&
-    /receipt not found/i.test(e.message)
+    e instanceof RpcError && typeof e.message === "string" && /receipt not found/i.test(e.message)
   );
 }
 
@@ -597,7 +638,7 @@ function fromWireAccount(w: unknown): Account {
   // subset the chain serialised.
   return {
     address: asString(o.address, "Account.address"),
-    nonce: tryParseUint(o.nonce) ?? 0,
+    nonce: tryBigInt(o.nonce) ?? 0n,
     balance: tryBigInt(o.balance) ?? 0n,
     codeHash: tryString(o.code_hash ?? o.codeHash) ?? ZERO_HASH,
     storageRoot: tryString(o.storage_root ?? o.storageRoot) ?? ZERO_HASH,
@@ -634,20 +675,8 @@ function tryBigInt(v: unknown): bigint | null {
   return null;
 }
 
-/** Like `asString` but tolerates JSON numbers for bigint conversion. */
-function asStringOrNumber(v: unknown, ctx: string): string {
-  if (typeof v === "string") return v;
-  if (typeof v === "number" || typeof v === "bigint") return v.toString();
-  throw new RpcError(`${ctx} returned non-string/number: ${JSON.stringify(v)}`);
-}
-
 function parseAccountType(v: unknown): AccountTypeDiscriminant {
-  const n =
-    typeof v === "number"
-      ? v
-      : typeof v === "string"
-        ? parseInt(v, 10)
-        : 0;
+  const n = typeof v === "number" ? v : typeof v === "string" ? parseInt(v, 10) : 0;
   if (n === AccountType.EOA || n === AccountType.Contract || n === AccountType.System) {
     return n;
   }
@@ -663,12 +692,14 @@ function parseAccountType(v: unknown): AccountTypeDiscriminant {
 function fromWireWaveHeader(w: unknown): WaveHeader {
   const o = w as Record<string, unknown>;
   const out: WaveHeader = {
-    waveId: parseUint(asString(o.wave_id ?? o.waveId, "WaveHeader.waveId"), "WaveHeader.waveId"),
+    waveId: parseBigIntLoose(o.wave_id ?? o.waveId, "WaveHeader.waveId"),
     timestamp: asString(o.timestamp, "WaveHeader.timestamp"),
     anchor: asString(o.anchor, "WaveHeader.anchor"),
   };
-  if (o.state_root ?? o.stateRoot) out.stateRoot = asString(o.state_root ?? o.stateRoot, "stateRoot");
-  if (o.events_root ?? o.eventsRoot) out.eventsRoot = asString(o.events_root ?? o.eventsRoot, "eventsRoot");
+  if (o.state_root ?? o.stateRoot)
+    out.stateRoot = asString(o.state_root ?? o.stateRoot, "stateRoot");
+  if (o.events_root ?? o.eventsRoot)
+    out.eventsRoot = asString(o.events_root ?? o.eventsRoot, "eventsRoot");
   if (o.tx_count !== undefined || o.txCount !== undefined) {
     out.txCount = parseUint(asString(o.tx_count ?? o.txCount, "txCount"), "txCount");
   }
@@ -682,7 +713,7 @@ function fromWireWaveHeader(w: unknown): WaveHeader {
 function fromWireHardFinalityCert(w: unknown): HardFinalityCert {
   const o = w as Record<string, unknown>;
   return {
-    waveId: parseUint(asString(o.wave_id ?? o.waveId, "HFC.waveId"), "HFC.waveId"),
+    waveId: parseBigIntLoose(o.wave_id ?? o.waveId, "HFC.waveId"),
     stateRoot: asString(o.state_root ?? o.stateRoot, "HFC.stateRoot"),
     eventsRoot: asString(o.events_root ?? o.eventsRoot, "HFC.eventsRoot"),
     eventsBloom: asString(o.events_bloom ?? o.eventsBloom, "HFC.eventsBloom"),
@@ -722,10 +753,9 @@ function fromWireSnapshotManifest(w: unknown): SnapshotManifest {
         chunkPath: asString(cc.chunk_path ?? cc.chunkPath, "ChunkRef.chunkPath"),
       };
     }),
-    committeePubkeys: ((o.committee_pubkeys ??
-      o.current_committee_pubkeys ??
-      o.committeePubkeys ??
-      []) as unknown[]).map((s) => asString(s, "committeePubkey")),
+    committeePubkeys: (
+      (o.committee_pubkeys ?? o.current_committee_pubkeys ?? o.committeePubkeys ?? []) as unknown[]
+    ).map((s) => asString(s, "committeePubkey")),
     signatures: ((o.signatures ?? []) as unknown[]).map((s) => asString(s, "signature")),
   };
 }
@@ -756,7 +786,7 @@ function fromWireReceipt(w: unknown): Receipt {
 function fromWireLog(w: unknown): Log {
   const o = w as Record<string, unknown>;
   return {
-    waveId: parseUint(asString(o.wave_id ?? o.waveId, "Log.waveId"), "Log.waveId"),
+    waveId: parseBigIntLoose(o.wave_id ?? o.waveId, "Log.waveId"),
     txIndex: parseUint(asString(o.tx_index ?? o.txIndex, "Log.txIndex"), "Log.txIndex"),
     eventIndex: parseUint(
       asString(o.event_index ?? o.eventIndex, "Log.eventIndex"),
@@ -781,12 +811,12 @@ function fromWireTransactionInfo(w: unknown): TransactionInfo {
     value: asString(o.value, "Tx.value"),
     data: asString(o.data, "Tx.data"),
     gasLimit: asString(o.gas_limit ?? o.gasLimit, "Tx.gasLimit"),
-    nonce: parseUint(asString(o.nonce, "Tx.nonce"), "Tx.nonce"),
+    nonce: parseBigIntLoose(o.nonce, "Tx.nonce"),
     chainId: parseUint(asString(o.chain_id ?? o.chainId, "Tx.chainId"), "Tx.chainId"),
     txType: parseUint(asString(o.tx_type ?? o.txType, "Tx.txType"), "Tx.txType"),
   };
   if (o.wave_id !== undefined || o.waveId !== undefined) {
-    out.waveId = parseUint(asString(o.wave_id ?? o.waveId, "Tx.waveId"), "Tx.waveId");
+    out.waveId = parseBigIntLoose(o.wave_id ?? o.waveId, "Tx.waveId");
   }
   return out;
 }
@@ -796,8 +826,10 @@ function fromWireTransactionInfo(w: unknown): TransactionInfo {
 // ----------------------------------------------------------------------------
 
 function parseAccessList(result: unknown): AccessEntry[] {
-  const arr = (result as { accessList?: unknown[]; access_list?: unknown[] })
-    ?.accessList ?? (result as { access_list?: unknown[] })?.access_list ?? [];
+  const arr =
+    (result as { accessList?: unknown[]; access_list?: unknown[] })?.accessList ??
+    (result as { access_list?: unknown[] })?.access_list ??
+    [];
   return (arr as unknown[]).map((e) => {
     const o = e as Record<string, unknown>;
     return {
@@ -839,8 +871,11 @@ function toWireCursor(c: EventCursor): Record<string, unknown> {
 function fromWireCursor(w: unknown): EventCursor {
   const o = w as Record<string, unknown>;
   return {
-    waveId: parseUint(asString(o.wave_id ?? o.waveId, "EventCursor.waveId"), "EventCursor.waveId"),
-    txIndex: parseUint(asString(o.tx_index ?? o.txIndex, "EventCursor.txIndex"), "EventCursor.txIndex"),
+    waveId: parseBigIntLoose(o.wave_id ?? o.waveId, "EventCursor.waveId"),
+    txIndex: parseUint(
+      asString(o.tx_index ?? o.txIndex, "EventCursor.txIndex"),
+      "EventCursor.txIndex",
+    ),
     eventIndex: parseUint(
       asString(o.event_index ?? o.eventIndex, "EventCursor.eventIndex"),
       "EventCursor.eventIndex",

@@ -252,7 +252,21 @@ export class BrowserWalletAdapter implements WalletAdapter {
 
   async signTransaction(tx: TxFields): Promise<string> {
     if (!this._address) throw new SigningError("BrowserWalletAdapter: not connected");
-    return this.injected.request({ method: "pyde_signTransaction", params: [tx] });
+    if (tx.from.toLowerCase() !== this._address.toLowerCase()) {
+      throw new SigningError(
+        `BrowserWalletAdapter: tx.from (${tx.from}) does not match connected address (${this._address})`,
+      );
+    }
+    const signed = await this.injected.request({ method: "pyde_signTransaction", params: [tx] });
+    // Defense-in-depth: a malicious or buggy injected provider could
+    // return a signed tx for a different sender. The wire format starts
+    // with the sender's 32-byte address; verify those bytes match what
+    // we asked for before forwarding to the chain. Full (to / value /
+    // data / nonce) verification needs pyde-crypto-wasm to expose a
+    // decoder — tracked separately. The sender check catches the most
+    // common substitution attack today.
+    assertSignedSenderMatches(signed, this._address);
+    return signed;
   }
 
   async sendTransaction(tx: TxFields, provider: Provider): Promise<Receipt> {
@@ -266,6 +280,25 @@ export class BrowserWalletAdapter implements WalletAdapter {
 
   off(event: WalletAdapterEvent, listener: EventListener): void {
     this.emitter.off(event, listener);
+  }
+}
+
+function assertSignedSenderMatches(signedHex: string, expectedAddress: string): void {
+  const hex = signedHex.startsWith("0x") ? signedHex.slice(2) : signedHex;
+  if (hex.length < 64) {
+    throw new SigningError(
+      `BrowserWalletAdapter: returned signed tx is too short to contain a sender (got ${hex.length / 2} bytes)`,
+    );
+  }
+  const sender = "0x" + hex.slice(0, 64).toLowerCase();
+  const expected = (
+    expectedAddress.startsWith("0x") ? expectedAddress : "0x" + expectedAddress
+  ).toLowerCase();
+  if (sender !== expected) {
+    throw new SigningError(
+      `BrowserWalletAdapter: signed tx sender (${sender}) does not match connected wallet (${expected}). ` +
+        `The injected provider may be malicious or buggy.`,
+    );
   }
 }
 

@@ -19,7 +19,7 @@ async function main(): Promise<void> {
   }
 
   const rpc = process.env.PYDE_RPC_URL ?? "http://127.0.0.1:8545";
-  const provider = new Provider(rpc);
+  const provider = new Provider(rpc, { allowInsecureTransport: rpc.startsWith("http://") });
 
   const [balance, nonce, account] = await Promise.all([
     provider.getBalance(address),

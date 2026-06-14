@@ -21,13 +21,13 @@ The runner is configured for serial execution (one devnet on `127.0.0.1:9933` at
 
 ## File layout
 
-| File | What it exercises |
-|---|---|
-| `devnet.ts` | Devnet lifecycle helper — spawn, wait-for-ready, teardown |
-| `fixtures.ts` | Funded wallet provisioning via `otigen wallet --from-devnet` + transfer |
+| File                    | What it exercises                                                                             |
+| ----------------------- | --------------------------------------------------------------------------------------------- |
+| `devnet.ts`             | Devnet lifecycle helper — spawn, wait-for-ready, teardown                                     |
+| `fixtures.ts`           | Funded wallet provisioning via `otigen wallet --from-devnet` + transfer                       |
 | `provider.live.test.ts` | Every read path on `Provider` (chain id / wave / balance / nonce / account / batch / getLogs) |
-| `wallet.live.test.ts` | End-to-end sign + send — generate, fund, registerPubkey, transfer |
-| `ws.live.test.ts` | `WebSocketProvider.subscribeNewHeads` against a live tick |
+| `wallet.live.test.ts`   | End-to-end sign + send — generate, fund, registerPubkey, transfer                             |
+| `ws.live.test.ts`       | `WebSocketProvider.subscribeNewHeads` against a live tick                                     |
 
 ## What's covered
 
