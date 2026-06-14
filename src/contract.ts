@@ -91,6 +91,39 @@ function readI64LE(b: Uint8Array, offset: number): bigint {
   return viewOf(b).getBigInt64(offset, true);
 }
 
+function readU32LE(b: Uint8Array, offset: number): number {
+  return viewOf(b).getUint32(offset, true);
+}
+
+function readU16LE(b: Uint8Array, offset: number): number {
+  return viewOf(b).getUint16(offset, true);
+}
+
+function readI16LE(b: Uint8Array, offset: number): number {
+  return viewOf(b).getInt16(offset, true);
+}
+
+function readI32LE(b: Uint8Array, offset: number): number {
+  return viewOf(b).getInt32(offset, true);
+}
+
+function readWideLE(b: Uint8Array, offset: number, bytes: 16 | 32): bigint {
+  let result = 0n;
+  for (let i = bytes - 1; i >= 0; i--) {
+    result = (result << 8n) | BigInt(b[offset + i] ?? 0);
+  }
+  return result;
+}
+
+function writeWideLE(out: number[], v: bigint, bytes: 16 | 32): void {
+  const mask = 0xffn;
+  let cur = v & ((1n << BigInt(bytes * 8)) - 1n);
+  for (let i = 0; i < bytes; i++) {
+    out.push(Number(cur & mask));
+    cur >>= 8n;
+  }
+}
+
 /** Receipt from a Contract.write() call — extends Receipt with ABI-aware decoding. */
 export interface ContractReceipt extends Receipt {
   /** Decode returnData using the ABI return type. Returns null if returnData is absent.
@@ -105,6 +138,11 @@ export interface ContractReceipt extends Receipt {
 interface AbiFunction {
   name: string;
   selector: string;
+  /** Pre-computed 4-byte selector from the artifact (engine ships this
+   *  directly as `selector: [b0, b1, b2, b3]`). When present, the
+   *  encoder uses it verbatim instead of re-hashing the name — keeps
+   *  the SDK forward-compatible with future selector schemes. */
+  selectorBytes?: Uint8Array;
   params: AbiParam[];
   returns: string;
   view: boolean;
@@ -272,23 +310,35 @@ export class Contract<TAbi extends AbiShape = DefaultAbi> {
     const contract = new Contract(address, provider);
     const abi = artifact.abi || artifact;
 
-    // Parse functions
-    for (const f of abi.functions || []) {
-      contract.functions.set(f.name, f);
+    // Functions — normalise the engine's native shape
+    // (`{ty: {Custom: "Order"}}`, `attrs: {bits}`, `selector: number[]`)
+    // into the encoder's expected flat strings + boolean flags.
+    for (const raw of abi.functions || []) {
+      const fn = normaliseAbiFunction(raw);
+      contract.functions.set(fn.name, fn);
     }
 
-    // Parse struct definitions
+    // Structs + enums — accept either:
+    //   - flat `structs: [...]` / `enums: [...]` (older spec drafts)
+    //   - engine's discriminated `types: [{name, kind: {Struct|Enum}}]`
     for (const s of abi.structs || []) {
-      contract.structs.set(s.name, s);
+      contract.structs.set(s.name, normaliseStructDef(s));
     }
-
-    // Parse enum definitions
     for (const e of abi.enums || []) {
-      contract.enums.set(e.name, e);
+      contract.enums.set(e.name, normaliseEnumDef(e));
+    }
+    for (const t of abi.types || []) {
+      const kind = t.kind ?? {};
+      if (kind.Struct) {
+        contract.structs.set(t.name, normaliseStructDef({ name: t.name, ...kind.Struct }));
+      } else if (kind.Enum) {
+        contract.enums.set(t.name, normaliseEnumDef({ name: t.name, ...kind.Enum }));
+      }
     }
 
-    // Parse event definitions
-    for (const ev of abi.events || []) {
+    // Events
+    for (const raw of abi.events || []) {
+      const ev = normaliseAbiEvent(raw);
       contract.events.set(ev.name, ev);
       // topic[0] = FNV-1a selector of event name, stored as LE u32 zero-padded to 32 bytes
       const sel = computeSelector(ev.name);
@@ -562,21 +612,57 @@ export class Contract<TAbi extends AbiShape = DefaultAbi> {
   // Encoding — args to calldata
   // ========================================================================
 
-  /** Encode a function call with named args. Validates types against ABI. */
+  /** Encode a function call into the borsh-encoded `CallPayload` bytes
+   *  the chain's RPC + tx surface expects. Wire shape per
+   *  `pyde_engine_types::CallPayload`:
+   *
+   *  ```rust
+   *  struct CallPayload {
+   *      function: String,   // 4-byte LE len + UTF-8 bytes
+   *      calldata: Vec<u8>,  // 4-byte LE len + borsh-encoded args
+   *  }
+   *  ```
+   *
+   *  The returned hex goes verbatim into `provider.call({data})` for
+   *  read-side calls and `Tx.data` for state-mutating txs. */
   encodeCall(method: string, args: Record<string, any> = {}): string {
     const fn = this.functions.get(method);
     if (!fn) throw new Error(`Unknown function '${method}'.`);
 
-    const selector = computeSelector(method);
+    // Step 1 — borsh-encode each arg into the calldata payload. Multi-
+    // arg = concat (`#[pyde::entry]` decodes the args tuple via
+    // `<(T1, T2, ...)>::try_from_slice`).
+    const argsBuf: number[] = [];
+    for (const param of fn.params) {
+      const value = args[param.name];
+      if (value === undefined) {
+        throw new Error(`${method}(): missing required param '${param.name}' (${param.type})`);
+      }
+      this.encodeValue(argsBuf, value, param.type, `${method}().${param.name}`);
+    }
+
+    // Step 2 — wrap in `CallPayload { function, calldata }` and borsh-
+    // encode the whole struct. String + Vec<u8> are 4-byte LE len-
+    // prefixed.
+    const out: number[] = [];
+    const fnNameBytes = bytesFromUtf8(fn.name);
+    const fnLen = fnNameBytes.length;
+    out.push(fnLen & 0xff, (fnLen >> 8) & 0xff, (fnLen >> 16) & 0xff, (fnLen >> 24) & 0xff);
+    for (let i = 0; i < fnNameBytes.length; i++) out.push(fnNameBytes[i]!);
+    const cdLen = argsBuf.length;
+    out.push(cdLen & 0xff, (cdLen >> 8) & 0xff, (cdLen >> 16) & 0xff, (cdLen >> 24) & 0xff);
+    for (let i = 0; i < argsBuf.length; i++) out.push(argsBuf[i]!);
+
+    return "0x" + bytesToHex(new Uint8Array(out));
+  }
+
+  /** Encode just the raw borsh-encoded args (no `CallPayload` wrapper,
+   *  no selector). Useful for tests that compare wire bytes against a
+   *  borsh-rs encoder. */
+  encodeCallArgs(method: string, args: Record<string, any> = {}): string {
+    const fn = this.functions.get(method);
+    if (!fn) throw new Error(`Unknown function '${method}'.`);
     const buf: number[] = [];
-
-    // Selector (4 bytes BE)
-    buf.push((selector >> 24) & 0xff);
-    buf.push((selector >> 16) & 0xff);
-    buf.push((selector >> 8) & 0xff);
-    buf.push(selector & 0xff);
-
-    // Encode each param
     for (const param of fn.params) {
       const value = args[param.name];
       if (value === undefined) {
@@ -584,117 +670,142 @@ export class Contract<TAbi extends AbiShape = DefaultAbi> {
       }
       this.encodeValue(buf, value, param.type, `${method}().${param.name}`);
     }
-
     return "0x" + bytesToHex(new Uint8Array(buf));
   }
 
-  /** Encode a single value based on its ABI type. Validates type match. */
+  /** Borsh-encode a single value into `buf`. Validates type + range.
+   *  Wire format follows the borsh-rs canonical spec — matches what the
+   *  chain's `#[pyde::entry]` macro decodes via
+   *  `borsh::BorshDeserialize::try_from_slice`. */
   private encodeValue(buf: number[], value: any, type: string, path: string): void {
-    // GP integers (8 bytes LE)
-    if (["u8", "u16", "u32", "u64", "i8", "i16", "i32", "i64"].includes(type)) {
-      if (typeof value !== "number" && typeof value !== "bigint") {
-        throw new Error(`${path}: expected ${type}, got ${typeof value}`);
-      }
-      const n = BigInt(value);
+    // ----- 1-byte ints -----
+    if (type === "u8") {
+      const n = this.toBigInt(value, type, path);
+      this.validateIntRange(n, type, path);
+      buf.push(Number(n) & 0xff);
+      return;
+    }
+    if (type === "i8") {
+      const n = this.toBigInt(value, type, path);
+      this.validateIntRange(n, type, path);
+      buf.push(Number(n) & 0xff);
+      return;
+    }
+
+    // ----- 2-byte ints -----
+    if (type === "u16" || type === "i16") {
+      const n = this.toBigInt(value, type, path);
+      this.validateIntRange(n, type, path);
+      const v = Number(n) & 0xffff;
+      buf.push(v & 0xff, (v >> 8) & 0xff);
+      return;
+    }
+
+    // ----- 4-byte ints -----
+    if (type === "u32" || type === "i32") {
+      const n = this.toBigInt(value, type, path);
+      this.validateIntRange(n, type, path);
+      // Mask to 32 bits for two's-complement signed encoding.
+      const v = Number(n & 0xffffffffn);
+      buf.push(v & 0xff, (v >> 8) & 0xff, (v >> 16) & 0xff, (v >> 24) & 0xff);
+      return;
+    }
+
+    // ----- 8-byte ints -----
+    if (type === "u64" || type === "i64") {
+      const n = this.toBigInt(value, type, path);
       this.validateIntRange(n, type, path);
       const b = new Uint8Array(8);
-      if (type.startsWith("i")) {
-        writeI64LE(b, 0, n);
-      } else {
-        writeU64LE(b, 0, n);
-      }
+      if (type === "i64") writeI64LE(b, 0, n);
+      else writeU64LE(b, 0, n);
       buf.push(...b);
       return;
     }
 
-    // u128/i128 (16 bytes LE)
+    // ----- 16-byte ints -----
     if (type === "u128" || type === "i128") {
-      if (typeof value !== "bigint" && typeof value !== "number") {
-        throw new Error(`${path}: expected ${type}, got ${typeof value}`);
-      }
-      const n = BigInt(value);
+      const n = this.toBigInt(value, type, path);
       this.validateWideRange(n, type, path);
-      // Two's complement: mask to 128 bits so negative values encode correctly
-      const unsigned = n & ((1n << 128n) - 1n);
-      const b = new Uint8Array(16);
-      writeU64LE(b, 0, unsigned & 0xffffffffffffffffn);
-      writeU64LE(b, 8, (unsigned >> 64n) & 0xffffffffffffffffn);
-      buf.push(...b);
+      writeWideLE(buf, n, 16);
       return;
     }
 
-    // u256/i256 (32 bytes LE)
+    // ----- 32-byte ints (Pyde extension; borsh-rs has no native u256) -----
     if (type === "u256" || type === "i256") {
-      if (typeof value !== "bigint" && typeof value !== "number") {
-        throw new Error(`${path}: expected ${type}, got ${typeof value}`);
-      }
-      const n = BigInt(value);
+      const n = this.toBigInt(value, type, path);
       this.validateWideRange(n, type, path);
-      // Two's complement: mask to 256 bits so negative values encode correctly
-      const unsigned = n & ((1n << 256n) - 1n);
-      const b = new Uint8Array(32);
-      for (let i = 0; i < 4; i++) {
-        writeU64LE(b, i * 8, (unsigned >> BigInt(i * 64)) & 0xffffffffffffffffn);
-      }
-      buf.push(...b);
+      writeWideLE(buf, n, 32);
       return;
     }
 
-    // bool
+    // ----- bool: 1 byte (0 / 1) -----
     if (type === "bool") {
       if (typeof value !== "boolean") {
         throw new Error(`${path}: expected bool, got ${typeof value}`);
       }
-      const b = new Uint8Array(8);
-      writeU64LE(b, 0, value ? 1n : 0n);
-      buf.push(...b);
+      buf.push(value ? 1 : 0);
       return;
     }
 
-    // Address (32 bytes)
+    // ----- Address: 32 raw bytes (borsh `[u8; 32]`) -----
     if (type === "Address") {
-      if (typeof value !== "string") {
-        throw new Error(`${path}: expected Address (hex string), got ${typeof value}`);
-      }
-      const hex = value.startsWith("0x") ? value.slice(2) : value;
-      if (!/^[0-9a-fA-F]{64}$/.test(hex)) {
-        throw new Error(
-          `${path}: Address must be 64 hex chars (0-9, a-f), got "${hex.length > 20 ? hex.slice(0, 20) + "..." : hex}"`,
-        );
-      }
+      const hex = this.requireFixedHex(value, 32, type, path);
       buf.push(...bytesFromHex(hex));
       return;
     }
 
-    // String
+    // ----- FixedBytes:N: N raw bytes -----
+    if (type.startsWith("FixedBytes:")) {
+      const n = parseInt(type.slice("FixedBytes:".length), 10);
+      const hex = this.requireFixedHex(value, n, type, path);
+      buf.push(...bytesFromHex(hex));
+      return;
+    }
+
+    // ----- String: 4-byte u32 LE length + UTF-8 bytes -----
     if (type === "String") {
       if (typeof value !== "string") {
         throw new Error(`${path}: expected String, got ${typeof value}`);
       }
       const bytes = bytesFromUtf8(value);
-      const lenBuf = new Uint8Array(8);
-      writeU64LE(lenBuf, 0, BigInt(bytes.length));
-      buf.push(...lenBuf, ...bytes);
-      const pad = (8 - (bytes.length % 8)) % 8;
-      for (let i = 0; i < pad; i++) buf.push(0);
+      const len = bytes.length;
+      buf.push(len & 0xff, (len >> 8) & 0xff, (len >> 16) & 0xff, (len >> 24) & 0xff);
+      for (const b of bytes) buf.push(b);
       return;
     }
 
-    // Bytes (length-prefixed, 8-byte aligned)
+    // ----- Bytes (Vec<u8>): 4-byte u32 LE length + raw bytes -----
     if (type === "Bytes" || type === "bytes") {
-      if (!(value instanceof Uint8Array)) {
-        throw new Error(`${path}: expected Uint8Array for ${type}, got ${typeof value}`);
+      const bytes =
+        value instanceof Uint8Array
+          ? value
+          : typeof value === "string"
+            ? bytesFromHex(value.startsWith("0x") ? value.slice(2) : value)
+            : null;
+      if (!bytes) {
+        throw new Error(
+          `${path}: expected Uint8Array or hex string for Bytes, got ${typeof value}`,
+        );
       }
-      const bytes = value;
-      const lenBuf = new Uint8Array(8);
-      writeU64LE(lenBuf, 0, BigInt(bytes.length));
-      buf.push(...lenBuf, ...bytes);
-      const pad = (8 - (bytes.length % 8)) % 8;
-      for (let i = 0; i < pad; i++) buf.push(0);
+      const len = bytes.length;
+      buf.push(len & 0xff, (len >> 8) & 0xff, (len >> 16) & 0xff, (len >> 24) & 0xff);
+      for (let i = 0; i < bytes.length; i++) buf.push(bytes[i]!);
       return;
     }
 
-    // Tuple "(T1, T2, ...)" — sequential fields, no length prefix
+    // ----- Option<T>: 1-byte tag + T if Some -----
+    if (type.startsWith("Option<") && type.endsWith(">")) {
+      const innerType = type.slice(7, -1);
+      if (value === null || value === undefined) {
+        buf.push(0);
+      } else {
+        buf.push(1);
+        this.encodeValue(buf, value, innerType, `${path}.Some`);
+      }
+      return;
+    }
+
+    // ----- Tuple "(T1, T2, ...)": fields concatenated, no header -----
     if (type.startsWith("(") && type.endsWith(")")) {
       const inner = type.slice(1, -1);
       if (inner && inner !== "()") {
@@ -714,7 +825,7 @@ export class Contract<TAbi extends AbiShape = DefaultAbi> {
       return;
     }
 
-    // Array "[T; N]" — N sequential elements, no length prefix
+    // ----- Array "[T; N]": N items concatenated, no header -----
     if (type.startsWith("[") && type.endsWith("]")) {
       const parsed = parseArrayType(type.slice(1, -1));
       if (!parsed) throw new Error(`${path}: bad array type '${type}'`);
@@ -731,47 +842,37 @@ export class Contract<TAbi extends AbiShape = DefaultAbi> {
       return;
     }
 
-    // Vec<T>
+    // ----- Vec<T>: 4-byte u32 LE count + T items -----
     if (type.startsWith("Vec<") && type.endsWith(">")) {
       if (!Array.isArray(value)) {
         throw new Error(`${path}: expected array for ${type}, got ${typeof value}`);
       }
       const elemType = type.slice(4, -1);
-      const elemBuf: number[] = [];
-      for (let i = 0; i < value.length; i++) {
-        this.encodeValue(elemBuf, value[i], elemType, `${path}[${i}]`);
+      const len = value.length;
+      buf.push(len & 0xff, (len >> 8) & 0xff, (len >> 16) & 0xff, (len >> 24) & 0xff);
+      for (let i = 0; i < len; i++) {
+        this.encodeValue(buf, value[i], elemType, `${path}[${i}]`);
       }
-      const dataLen = 16 + elemBuf.length;
-      const header = new Uint8Array(24);
-      writeU64LE(header, 0, BigInt(dataLen));
-      writeU64LE(header, 8, BigInt(value.length));
-      writeU64LE(header, 16, BigInt(value.length));
-      buf.push(...header, ...elemBuf);
       return;
     }
 
-    // Struct (by name — look up in ABI)
+    // ----- Struct: fields concatenated in declaration order, no header -----
     const structDef = this.structs.get(type);
     if (structDef) {
       if (typeof value !== "object" || value === null || Array.isArray(value)) {
         throw new Error(`${path}: expected object for struct ${type}, got ${typeof value}`);
       }
-      const fieldBuf: number[] = [];
       for (const field of structDef.fields) {
-        const fieldVal = value[field.name];
+        const fieldVal = (value as Record<string, unknown>)[field.name];
         if (fieldVal === undefined) {
           throw new Error(`${path}: missing field '${field.name}' for struct ${type}`);
         }
-        this.encodeValue(fieldBuf, fieldVal, field.type, `${path}.${field.name}`);
+        this.encodeValue(buf, fieldVal, field.type, `${path}.${field.name}`);
       }
-      // [byte_len:8][fields...]
-      const lenBuf = new Uint8Array(8);
-      writeU64LE(lenBuf, 0, BigInt(fieldBuf.length));
-      buf.push(...lenBuf, ...fieldBuf);
       return;
     }
 
-    // Enum (by name)
+    // ----- Enum (unit variants only): 1-byte variant index -----
     const enumDef = this.enums.get(type);
     if (enumDef) {
       if (typeof value !== "string" && typeof value !== "number") {
@@ -789,22 +890,50 @@ export class Contract<TAbi extends AbiShape = DefaultAbi> {
       } else {
         disc = value;
       }
-      const b = new Uint8Array(8);
-      writeU64LE(b, 0, BigInt(disc));
-      buf.push(...b);
+      if (disc < 0 || disc > 255) {
+        throw new Error(
+          `${path}: variant discriminant ${disc} out of range 0..255 for enum ${type}`,
+        );
+      }
+      buf.push(disc);
       return;
     }
 
-    // Unknown type (Contract/Interface) → treat as Address
+    throw new Error(`${path}: unsupported type '${type}'`);
+  }
+
+  /** Convert a number / bigint / decimal-string into a bigint. */
+  private toBigInt(value: unknown, type: string, path: string): bigint {
+    if (typeof value === "bigint") return value;
+    if (typeof value === "number") {
+      if (!Number.isInteger(value)) {
+        throw new Error(`${path}: expected integer for ${type}, got ${value}`);
+      }
+      return BigInt(value);
+    }
     if (typeof value === "string") {
-      const hex = value.startsWith("0x") ? value.slice(2) : value;
-      if (/^[0-9a-fA-F]{64}$/.test(hex)) {
-        buf.push(...bytesFromHex(hex));
-        return;
+      try {
+        return BigInt(value);
+      } catch {
+        // fall through
       }
     }
+    throw new Error(`${path}: expected ${type}, got ${typeof value}`);
+  }
 
-    throw new Error(`${path}: unsupported type '${type}'`);
+  /** Validate + canonicalise a fixed-byte-size hex input. */
+  private requireFixedHex(value: unknown, byteCount: number, type: string, path: string): string {
+    if (typeof value !== "string") {
+      throw new Error(`${path}: expected hex string for ${type}, got ${typeof value}`);
+    }
+    const hex = value.startsWith("0x") || value.startsWith("0X") ? value.slice(2) : value;
+    if (hex.length !== byteCount * 2) {
+      throw new Error(`${path}: ${type} expects ${byteCount * 2} hex chars, got ${hex.length}`);
+    }
+    if (!/^[0-9a-fA-F]+$/.test(hex)) {
+      throw new Error(`${path}: ${type} has non-hex characters`);
+    }
+    return hex;
   }
 
   private validateIntRange(n: bigint, type: string, path: string): void {
@@ -825,89 +954,114 @@ export class Contract<TAbi extends AbiShape = DefaultAbi> {
   // Decoding — return hex to values
   // ========================================================================
 
+  /** Borsh-decode the return type from a hex-string payload. */
   private decodeReturn(type: string, hex: string): any {
+    if (type === "()" || type === "unit" || type === "void") return null;
     const data = bytesFromHex(hex);
     return this.decodeValue(data, type, 0).value;
   }
 
+  /** Borsh-decode a single value at `offset` in `data`. */
   private decodeValue(
     data: Uint8Array,
     type: string,
     offset: number,
   ): { value: any; bytesRead: number } {
-    if (["u8", "u16", "u32", "u64"].includes(type)) {
-      if (data.length < offset + 8) return { value: 0n, bytesRead: 8 };
+    // ----- 1-byte ints -----
+    if (type === "u8") {
+      return { value: BigInt(data[offset] ?? 0), bytesRead: 1 };
+    }
+    if (type === "i8") {
+      const b = data[offset] ?? 0;
+      return { value: BigInt(b < 128 ? b : b - 256), bytesRead: 1 };
+    }
+
+    // ----- 2-byte ints -----
+    if (type === "u16") {
+      return { value: BigInt(readU16LE(data, offset)), bytesRead: 2 };
+    }
+    if (type === "i16") {
+      return { value: BigInt(readI16LE(data, offset)), bytesRead: 2 };
+    }
+
+    // ----- 4-byte ints -----
+    if (type === "u32") {
+      return { value: BigInt(readU32LE(data, offset)), bytesRead: 4 };
+    }
+    if (type === "i32") {
+      return { value: BigInt(readI32LE(data, offset)), bytesRead: 4 };
+    }
+
+    // ----- 8-byte ints -----
+    if (type === "u64") {
       return { value: readU64LE(data, offset), bytesRead: 8 };
     }
-    if (["i8", "i16", "i32", "i64"].includes(type)) {
-      if (data.length < offset + 8) return { value: 0n, bytesRead: 8 };
+    if (type === "i64") {
       return { value: readI64LE(data, offset), bytesRead: 8 };
     }
+
+    // ----- 16-byte ints -----
     if (type === "u128") {
-      if (data.length < offset + 16) return { value: 0n, bytesRead: 16 };
-      const lo = readU64LE(data, offset);
-      const hi = readU64LE(data, offset + 8);
-      return { value: lo | (hi << 64n), bytesRead: 16 };
+      return { value: readWideLE(data, offset, 16), bytesRead: 16 };
     }
     if (type === "i128") {
-      if (data.length < offset + 16) return { value: 0n, bytesRead: 16 };
-      const lo = readU64LE(data, offset);
-      const hi = readU64LE(data, offset + 8);
-      let val = lo | (hi << 64n);
+      let val = readWideLE(data, offset, 16);
       if (val >= 1n << 127n) val -= 1n << 128n;
       return { value: val, bytesRead: 16 };
     }
+
+    // ----- 32-byte ints (Pyde extension) -----
     if (type === "u256") {
-      if (data.length < offset + 32) return { value: 0n, bytesRead: 32 };
-      let val = 0n;
-      for (let i = 0; i < 4; i++) {
-        val |= readU64LE(data, offset + i * 8) << BigInt(i * 64);
-      }
-      return { value: val, bytesRead: 32 };
+      return { value: readWideLE(data, offset, 32), bytesRead: 32 };
     }
     if (type === "i256") {
-      if (data.length < offset + 32) return { value: 0n, bytesRead: 32 };
-      let val = 0n;
-      for (let i = 0; i < 4; i++) {
-        val |= readU64LE(data, offset + i * 8) << BigInt(i * 64);
-      }
+      let val = readWideLE(data, offset, 32);
       if (val >= 1n << 255n) val -= 1n << 256n;
       return { value: val, bytesRead: 32 };
     }
+
+    // ----- bool: 1 byte -----
     if (type === "bool") {
-      if (data.length < offset + 8) return { value: false, bytesRead: 8 };
-      return { value: readU64LE(data, offset) !== 0n, bytesRead: 8 };
+      return { value: (data[offset] ?? 0) !== 0, bytesRead: 1 };
     }
+
+    // ----- Address: 32 raw bytes -----
     if (type === "Address") {
-      // Full 32-byte address if available; otherwise read what's available
-      // (PVM event data may use 8-byte GP register format for Address fields)
-      if (data.length >= offset + 32) {
-        return { value: "0x" + bytesToHex(data.subarray(offset, offset + 32)), bytesRead: 32 };
-      }
-      if (data.length >= offset + 8) {
-        // Compact GP format: 8 bytes (truncated address or pointer)
-        const partial = bytesToHex(data.subarray(offset, offset + 8));
-        return { value: "0x" + partial.padEnd(64, "0"), bytesRead: 8 };
-      }
-      return { value: "0x" + "00".repeat(32), bytesRead: 8 };
+      const end = Math.min(offset + 32, data.length);
+      return { value: "0x" + bytesToHex(data.subarray(offset, end)), bytesRead: 32 };
     }
+
+    // ----- FixedBytes:N -----
+    if (type.startsWith("FixedBytes:")) {
+      const n = parseInt(type.slice("FixedBytes:".length), 10);
+      const end = Math.min(offset + n, data.length);
+      return { value: "0x" + bytesToHex(data.subarray(offset, end)), bytesRead: n };
+    }
+
+    // ----- String: 4-byte u32 LE len + UTF-8 -----
     if (type === "String") {
-      if (data.length < offset + 8) return { value: "", bytesRead: 8 };
-      const len = Number(readU64LE(data, offset));
-      if (data.length < offset + 8 + len) return { value: "", bytesRead: 8 };
-      const str = bytesToUtf8(data.subarray(offset + 8, offset + 8 + len));
-      const aligned = 8 + len + ((8 - (len % 8)) % 8);
-      return { value: str, bytesRead: aligned };
+      const len = readU32LE(data, offset);
+      const str = bytesToUtf8(data.subarray(offset + 4, offset + 4 + len));
+      return { value: str, bytesRead: 4 + len };
     }
+
+    // ----- Bytes (Vec<u8>): 4-byte len + raw bytes -----
     if (type === "Bytes" || type === "bytes") {
-      if (data.length < offset + 8) return { value: new Uint8Array(0), bytesRead: 8 };
-      const len = Number(readU64LE(data, offset));
-      if (data.length < offset + 8 + len) return { value: new Uint8Array(0), bytesRead: 8 };
-      const bytes = data.subarray(offset + 8, offset + 8 + len);
-      const aligned = 8 + len + ((8 - (len % 8)) % 8);
-      return { value: bytes, bytesRead: aligned };
+      const len = readU32LE(data, offset);
+      const bytes = new Uint8Array(data.subarray(offset + 4, offset + 4 + len));
+      return { value: bytes, bytesRead: 4 + len };
     }
-    // Tuple "(T1, T2, ...)" — sequential decode
+
+    // ----- Option<T>: 1-byte tag + T if Some -----
+    if (type.startsWith("Option<") && type.endsWith(">")) {
+      const tag = data[offset] ?? 0;
+      if (tag === 0) return { value: null, bytesRead: 1 };
+      const innerType = type.slice(7, -1);
+      const inner = this.decodeValue(data, innerType, offset + 1);
+      return { value: inner.value, bytesRead: 1 + inner.bytesRead };
+    }
+
+    // ----- Tuple "(T1, T2, ...)": fields concatenated -----
     if (type.startsWith("(") && type.endsWith(")")) {
       const inner = type.slice(1, -1);
       if (!inner || inner === "()") return { value: null, bytesRead: 0 };
@@ -921,7 +1075,8 @@ export class Contract<TAbi extends AbiShape = DefaultAbi> {
       }
       return { value: items, bytesRead: cursor - offset };
     }
-    // Array "[T; N]" — N sequential elements
+
+    // ----- Array "[T; N]": N items concatenated -----
     if (type.startsWith("[") && type.endsWith("]")) {
       const parsed = parseArrayType(type.slice(1, -1));
       if (parsed) {
@@ -929,7 +1084,6 @@ export class Contract<TAbi extends AbiShape = DefaultAbi> {
         let cursor = offset;
         const items: any[] = [];
         for (let i = 0; i < count; i++) {
-          if (cursor >= data.length) break;
           const { value, bytesRead } = this.decodeValue(data, elemType, cursor);
           items.push(value);
           cursor += bytesRead;
@@ -937,55 +1091,47 @@ export class Contract<TAbi extends AbiShape = DefaultAbi> {
         return { value: items, bytesRead: cursor - offset };
       }
     }
+
+    // ----- Vec<T>: 4-byte u32 LE count + T items -----
     if (type.startsWith("Vec<") && type.endsWith(">")) {
       const elemType = type.slice(4, -1);
-      if (data.length < offset + 24) return { value: [], bytesRead: 24 };
-      const byteLen = Number(readU64LE(data, offset));
-      const count = Number(readU64LE(data, offset + 8));
-      let cursor = offset + 24;
+      const count = readU32LE(data, offset);
+      let cursor = offset + 4;
       const items: any[] = [];
       for (let i = 0; i < count; i++) {
         const { value, bytesRead } = this.decodeValue(data, elemType, cursor);
         items.push(value);
         cursor += bytesRead;
       }
-      return { value: items, bytesRead: 8 + byteLen };
+      return { value: items, bytesRead: cursor - offset };
     }
 
-    // Struct
+    // ----- Struct: fields concatenated in declaration order -----
     const structDef = this.structs.get(type);
     if (structDef) {
-      if (data.length < offset + 8) return { value: {}, bytesRead: 8 };
-      const byteLen = Number(readU64LE(data, offset));
-      let cursor = offset + 8;
+      let cursor = offset;
       const obj: Record<string, any> = {};
       for (const field of structDef.fields) {
         const { value, bytesRead } = this.decodeValue(data, field.type, cursor);
         obj[field.name] = value;
         cursor += bytesRead;
       }
-      return { value: obj, bytesRead: 8 + byteLen };
+      return { value: obj, bytesRead: cursor - offset };
     }
 
-    // Enum
+    // ----- Enum (unit variants only): 1-byte variant index -----
     const enumDef = this.enums.get(type);
     if (enumDef) {
-      if (data.length < offset + 8) return { value: null, bytesRead: 8 };
-      const disc = Number(readU64LE(data, offset));
+      const disc = data[offset] ?? 0;
       const variant = enumDef.variants.find((v) => v.discriminant === disc);
-      return { value: variant?.name || disc, bytesRead: 8 };
+      return { value: variant?.name ?? disc, bytesRead: 1 };
     }
 
-    if (type === "()" || type === "unit") {
+    if (type === "()" || type === "unit" || type === "void") {
       return { value: null, bytesRead: 0 };
     }
 
-    // Unknown type (Contract/Interface) → decode as Address (32 bytes)
-    if (data.length >= offset + 32) {
-      return { value: "0x" + bytesToHex(data.subarray(offset, offset + 32)), bytesRead: 32 };
-    }
-
-    return { value: "0x" + bytesToHex(data.subarray(offset)), bytesRead: data.length - offset };
+    throw new Error(`unsupported type '${type}' at decode offset ${offset}`);
   }
 }
 
@@ -1379,6 +1525,160 @@ function parseTupleTypes(s: string): string[] {
   const t = s.slice(start).trim();
   if (t) types.push(t);
   return types;
+}
+
+// ============================================================================
+// ABI normalisation — engine's native shape → encoder's flat shape.
+// ============================================================================
+//
+// The `otigen build` output uses a discriminated union for types
+// (`{Custom: "Order"} | {Vec: "U64"} | {FixedBytes: 32} | "U64"`) and a
+// packed `attrs.bits` field for view/payable. Older spec drafts use a
+// flat string type + boolean flags. Both are accepted at load time and
+// flattened to the encoder/decoder's expected `{type: string, view:
+// boolean, payable: boolean}` shape.
+
+const ATTR_VIEW_BIT = 0x01;
+const ATTR_PAYABLE_BIT = 0x02;
+
+/** Engine wire-shape type spec — either a flat string or a discriminated
+ *  union (`{Custom}`, `{Vec}`, `{FixedBytes}`, `{Option}`, `{Tuple}`,
+ *  `{Array}`, `{Map}`). */
+type EngineAbiType = string | null | undefined | { [k: string]: unknown };
+
+function normaliseAbiType(t: EngineAbiType): string {
+  if (t == null) return "()";
+  if (typeof t === "string") {
+    const lower = t.toLowerCase();
+    if (
+      [
+        "u8",
+        "u16",
+        "u32",
+        "u64",
+        "u128",
+        "u256",
+        "i8",
+        "i16",
+        "i32",
+        "i64",
+        "i128",
+        "i256",
+        "bool",
+      ].includes(lower)
+    ) {
+      return lower;
+    }
+    if (lower === "string") return "String";
+    if (lower === "bytes") return "Bytes";
+    if (lower === "address" || lower === "hash" || lower === "hash32") return "Address";
+    // Pass through any user-named type (struct/enum); the encoder
+    // resolves it via the struct/enum registry.
+    return t;
+  }
+  if (typeof t === "object" && t !== null) {
+    const o = t as Record<string, unknown>;
+    if (typeof o.Custom === "string") return o.Custom;
+    if (o.Vec !== undefined) return `Vec<${normaliseAbiType(o.Vec as EngineAbiType)}>`;
+    if (typeof o.FixedBytes === "number") {
+      return o.FixedBytes === 32 ? "Address" : `FixedBytes:${o.FixedBytes}`;
+    }
+    if (o.Option !== undefined) return `Option<${normaliseAbiType(o.Option as EngineAbiType)}>`;
+    if (Array.isArray(o.Tuple)) {
+      return `(${(o.Tuple as EngineAbiType[]).map(normaliseAbiType).join(",")})`;
+    }
+    if (Array.isArray(o.Array) && o.Array.length === 2) {
+      return `[${normaliseAbiType((o.Array as [EngineAbiType, number])[0])}; ${(o.Array as [EngineAbiType, number])[1]}]`;
+    }
+    if (Array.isArray(o.Map) && o.Map.length === 2) {
+      return `Map<${normaliseAbiType((o.Map as [EngineAbiType, EngineAbiType])[0])}, ${normaliseAbiType((o.Map as [EngineAbiType, EngineAbiType])[1])}>`;
+    }
+  }
+  return String(t);
+}
+
+function normaliseAbiFunction(raw: Record<string, unknown>): AbiFunction {
+  const params = ((raw.params as unknown[]) ?? []).map((p, i) => {
+    const o = p as Record<string, unknown>;
+    return {
+      name: (o.name as string | undefined) ?? `arg${i}`,
+      type: normaliseAbiType((o.ty ?? o.type) as EngineAbiType),
+    };
+  });
+
+  // attrs.bits: bit 0 = view, bit 1 = payable. Older drafts use direct
+  // booleans — honour them when present.
+  let view = Boolean(raw.view);
+  let payable = Boolean(raw.payable);
+  const attrs = raw.attrs as { bits?: number } | undefined;
+  if (typeof attrs?.bits === "number") {
+    view = (attrs.bits & ATTR_VIEW_BIT) !== 0;
+    payable = (attrs.bits & ATTR_PAYABLE_BIT) !== 0;
+  } else if (typeof raw.attributes === "number") {
+    view = (raw.attributes & ATTR_VIEW_BIT) !== 0;
+    payable = (raw.attributes & ATTR_PAYABLE_BIT) !== 0;
+  }
+
+  // selector: engine emits a 4-byte array; older drafts a hex string.
+  let selectorHex: string;
+  let selectorBytes: Uint8Array | undefined;
+  if (Array.isArray(raw.selector) && raw.selector.length === 4) {
+    selectorBytes = new Uint8Array(raw.selector as number[]);
+    selectorHex = "0x" + bytesToHex(selectorBytes);
+  } else if (typeof raw.selector === "string") {
+    selectorHex = raw.selector;
+  } else {
+    selectorHex =
+      "0x" +
+      computeSelector(raw.name as string)
+        .toString(16)
+        .padStart(8, "0");
+  }
+
+  return {
+    name: raw.name as string,
+    selector: selectorHex,
+    ...(selectorBytes ? { selectorBytes } : {}),
+    params,
+    returns: normaliseAbiType(raw.returns as EngineAbiType),
+    view,
+    payable,
+    constructor: Boolean(raw.constructor),
+  };
+}
+
+function normaliseStructDef(raw: Record<string, unknown>): AbiStructDef {
+  const fields = ((raw.fields as unknown[]) ?? []).map((f, i) => {
+    const o = f as Record<string, unknown>;
+    return {
+      name: (o.name as string | undefined) ?? `field${i}`,
+      type: normaliseAbiType((o.ty ?? o.type) as EngineAbiType),
+    };
+  });
+  return { name: raw.name as string, fields };
+}
+
+function normaliseEnumDef(raw: Record<string, unknown>): AbiEnumDef {
+  const variants = ((raw.variants as unknown[]) ?? []).map((v, i) => {
+    const o = v as Record<string, unknown>;
+    return {
+      name: (o.name as string | undefined) ?? `Variant${i}`,
+      discriminant: typeof o.discriminant === "number" ? o.discriminant : i,
+    };
+  });
+  return { name: raw.name as string, variants };
+}
+
+function normaliseAbiEvent(raw: Record<string, unknown>): AbiEvent {
+  const fields = ((raw.fields as unknown[]) ?? []).map((f, i) => {
+    const o = f as Record<string, unknown>;
+    return {
+      name: (o.name as string | undefined) ?? `field${i}`,
+      type: normaliseAbiType((o.ty ?? o.type) as EngineAbiType),
+      indexed: Boolean(o.indexed),
+    };
+  });
+  return { name: raw.name as string, fields };
 }
 
 /** Parse "[T; N]" inner string → [elementType, count]. */

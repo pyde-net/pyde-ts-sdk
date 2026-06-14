@@ -71,8 +71,13 @@ export async function spawnDevnet(opts?: {
       String(tickMs),
       "--chain-id",
       String(chainId),
+      "--quiet", // we don't read the banner; --quiet stops the wave-committer log spam
     ],
-    { stdio: ["ignore", "pipe", "pipe"] },
+    // `ignore` rather than `pipe` so the child's stdio writes go straight
+    // to /dev/null. Unread piped stdout/stderr fill the kernel buffer at
+    // ~64 KB and then BLOCK the engine's logger, which manifests as the
+    // devnet hanging mid-test.
+    { stdio: ["ignore", "ignore", "ignore"] },
   );
 
   proc.on("error", (e) => {
