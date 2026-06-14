@@ -520,8 +520,8 @@ export class Wallet extends AbstractSigner {
     return this.resolveProvider(provider).getBalance(this.address);
   }
 
-  /** Get nonce via the bound provider. */
-  async getNonce(provider?: Provider): Promise<number> {
+  /** Get nonce via the bound provider (u64 → bigint). */
+  async getNonce(provider?: Provider): Promise<bigint> {
     return this.resolveProvider(provider).getNonce(this.address);
   }
 

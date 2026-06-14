@@ -78,8 +78,8 @@ export interface EncryptedTxParams {
   thresholdPk: string;
   /** Sender address (32-byte hex). Plaintext on the wire. */
   sender: string;
-  /** Per-sender tx counter — see chapter 11's 16-slot nonce window. */
-  nonce: number;
+  /** Per-sender tx counter (u64) — see chapter 11's 16-slot nonce window. */
+  nonce: bigint;
   /** Gas budget for the decrypted inner tx. */
   gasLimit: number;
   /** Optional. Used by the parallel scheduler to place the tx without
@@ -161,7 +161,7 @@ export function signMessageWithHandle(handle: number, messageHex: string): strin
  *  ⚠️ Prefer the handle variant. Spec: Chapter 8.2 + Chapter 11. */
 export function signTransaction(tx: TxFields, secretKeyHex: string): string {
   try {
-    return wasm.signTransaction(JSON.stringify(tx), secretKeyHex);
+    return wasm.signTransaction(toWasmJson(tx), secretKeyHex);
   } catch (e) {
     throw new SigningError(scrubError(e));
   }
@@ -170,7 +170,7 @@ export function signTransaction(tx: TxFields, secretKeyHex: string): string {
 /** Sign a transaction using a retained handle. Spec: Chapter 8.2 + Chapter 11. */
 export function signTransactionWithHandle(tx: TxFields, handle: number): string {
   try {
-    return wasm.signTransactionWithHandle(JSON.stringify(tx), handle);
+    return wasm.signTransactionWithHandle(toWasmJson(tx), handle);
   } catch (e) {
     throw new SigningError(scrubError(e));
   }
@@ -216,7 +216,7 @@ export function computeSelector(methodName: string): number {
 /** Canonical tx hash without signing — same formula the node uses.
  *  Spec: Chapter 11 (tx wire format). */
 export function hashTransaction(tx: TxFields): string {
-  return wasm.hashTransaction(JSON.stringify(tx));
+  return wasm.hashTransaction(toWasmJson(tx));
 }
 
 // ============================================================================
@@ -238,7 +238,7 @@ export function hashTransaction(tx: TxFields): string {
  * Spec: Chapter 11 (RegisterPubkey tx type).
  */
 export function encodeRegisterPubkeyTx(tx: TxFields): string {
-  return wasm.encodeRegisterPubkeyTx(JSON.stringify(tx));
+  return wasm.encodeRegisterPubkeyTx(toWasmJson(tx));
 }
 
 // ============================================================================
@@ -279,7 +279,7 @@ export function buildRawEncryptedTx(
   // Pre-fill `calldata` so the WASM side never sees `undefined`.
   const withDefaults: EncryptedTxParams = { calldata: "0x", ...params };
   try {
-    return wasm.buildRawEncryptedTx(JSON.stringify(withDefaults), secretKeyHex);
+    return wasm.buildRawEncryptedTx(toWasmJson(withDefaults), secretKeyHex);
   } catch (e) {
     throw new SigningError(scrubError(e));
   }
@@ -298,7 +298,7 @@ export function buildRawEncryptedTxWithHandle(
 ): string {
   const withDefaults: EncryptedTxParams = { calldata: "0x", ...params };
   try {
-    return wasm.buildRawEncryptedTxWithHandle(JSON.stringify(withDefaults), handle);
+    return wasm.buildRawEncryptedTxWithHandle(toWasmJson(withDefaults), handle);
   } catch (e) {
     throw new SigningError(scrubError(e));
   }
@@ -307,6 +307,35 @@ export function buildRawEncryptedTxWithHandle(
 // ============================================================================
 // Helpers
 // ============================================================================
+
+/**
+ * JSON.stringify replacer that converts bigint values to JS numbers
+ * for the WASM boundary. pyde-crypto-wasm's serde_json deserializer
+ * accepts JSON numbers for u64 fields but cannot decode strings as
+ * u64. Conversion is guarded — values above Number.MAX_SAFE_INTEGER
+ * throw a clear SigningError rather than silently truncating.
+ *
+ * Used by every `toWasmJson(tx)` call in this module so the
+ * SDK's public bigint types survive the round-trip without loss for
+ * any realistically-achievable value.
+ */
+function jsonBigIntReplacer(_: string, value: unknown): unknown {
+  if (typeof value === "bigint") {
+    if (value > BigInt(Number.MAX_SAFE_INTEGER) || value < BigInt(Number.MIN_SAFE_INTEGER)) {
+      throw new SigningError(
+        "bigint value exceeds JS safe-integer range; pyde-crypto-wasm boundary requires u64 fit in 2^53",
+      );
+    }
+    return Number(value);
+  }
+  return value;
+}
+
+/** Stringify with bigint support — every WASM-boundary serialization in
+ *  this module routes through here. */
+function toWasmJson(v: unknown): string {
+  return JSON.stringify(v, jsonBigIntReplacer);
+}
 
 /**
  * Defense-in-depth: replace any long hex run in an error message with

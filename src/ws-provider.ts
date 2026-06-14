@@ -450,7 +450,7 @@ export class WebSocketProvider {
   private toWaveHeader(w: unknown): WaveHeader {
     const o = w as Record<string, unknown>;
     const out: WaveHeader = {
-      waveId: numHex(o.wave_id ?? o.waveId, "waveId"),
+      waveId: bigHex(o.wave_id ?? o.waveId, "waveId"),
       timestamp: asString(o.timestamp, "timestamp"),
       anchor: asString(o.anchor, "anchor"),
     };
@@ -465,7 +465,7 @@ export class WebSocketProvider {
   private toLog(w: unknown): Log {
     const o = w as Record<string, unknown>;
     return {
-      waveId: numHex(o.wave_id ?? o.waveId, "waveId"),
+      waveId: bigHex(o.wave_id ?? o.waveId, "waveId"),
       txIndex: numHex(o.tx_index ?? o.txIndex, "txIndex"),
       eventIndex: numHex(o.event_index ?? o.eventIndex, "eventIndex"),
       contract: asString(o.contract_addr ?? o.contract ?? o.address, "contract"),
@@ -479,7 +479,7 @@ export class WebSocketProvider {
     const o = w as Record<string, unknown>;
     return {
       address: asString(o.address, "address"),
-      nonce: numHex(o.nonce, "nonce"),
+      nonce: bigHex(o.nonce, "nonce"),
       balance: BigInt(asString(o.balance, "balance")),
       codeHash: asString(o.code_hash ?? o.codeHash, "codeHash"),
       storageRoot: asString(o.storage_root ?? o.storageRoot, "storageRoot"),
@@ -519,4 +519,17 @@ function numHex(v: unknown, ctx: string): number {
   const n = s.startsWith("0x") ? parseInt(s, 16) : parseInt(s, 10);
   if (!Number.isFinite(n)) throw new RpcError(`${ctx} not a number: ${s}`);
   return n;
+}
+
+/** Bigint variant for u64 wire fields. Accepts numbers, hex strings,
+ *  decimal strings, and bigints. */
+function bigHex(v: unknown, ctx: string): bigint {
+  if (typeof v === "bigint") return v;
+  if (typeof v === "number") return BigInt(v);
+  const s = asString(v, ctx);
+  try {
+    return BigInt(s);
+  } catch {
+    throw new RpcError(`${ctx} not a u64: ${s}`);
+  }
 }

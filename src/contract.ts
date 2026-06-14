@@ -376,7 +376,7 @@ export class Contract {
    * }
    * ```
    */
-  async queryFilter(eventName: string, fromWave?: number, toWave?: number): Promise<EventLog[]> {
+  async queryFilter(eventName: string, fromWave?: bigint, toWave?: bigint): Promise<EventLog[]> {
     const ev = this.events.get(eventName);
     if (!ev) throw new Error(`Unknown event '${eventName}'. Load ABI with events.`);
 
@@ -387,8 +387,8 @@ export class Contract {
     // (5,000-wave cap per request).
     const response = await this.provider.getLogs({
       contract: this.address,
-      fromWave: fromWave ?? 0,
-      toWave: toWave ?? 0,
+      fromWave: fromWave ?? 0n,
+      toWave: toWave ?? 0n,
       topics: [[topic0]],
     });
 

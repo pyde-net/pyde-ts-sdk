@@ -184,9 +184,9 @@ export function useBalance(address: string | undefined): AsyncState<bigint> {
 }
 
 /** Read an account's nonce (next available slot in the 16-slot window). */
-export function useNonce(address: string | undefined): AsyncState<number> {
+export function useNonce(address: string | undefined): AsyncState<bigint> {
   const provider = usePydeProvider();
-  return useAsync<number>(
+  return useAsync<bigint>(
     address ? () => provider.getNonce(address) : null,
     [provider, address],
   );
