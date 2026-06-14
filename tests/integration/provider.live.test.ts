@@ -1,23 +1,19 @@
 /**
  * Provider — read-side live tests against a spawned devnet.
  *
- * Some methods are gated as `it.skip` until the engine implements them
- * (or renames its existing RPC surfaces to match chapter 17.4):
+ * Engine-blocked surfaces (`describe.skip` until the engine ships):
+ *   - pyde_getBaseFee / pyde_gasPrice — neither exposed.
+ *   - pyde_getWaveNumber / pyde_blockNumber — no way to resolve the
+ *     head wave id, so `getWave()` no-arg can't bind.
  *
- *   - pyde_getBaseFee   — chain currently exposes neither this nor the
- *                         pre-pivot `pyde_gasPrice` fallback.
- *   - pyde_getNonce     — chain has neither this nor pre-pivot
- *                         `pyde_getTransactionCount`.
- *   - pyde_getWave      — chain doesn't accept the no-arg form (no
- *                         "latest" support yet) and we can't resolve
- *                         the head wave id either (no
- *                         pyde_blockNumber).
- *   - pyde_getLogs      — chain ignores the `from_wave` field and
- *                         treats every query as `[0, current_head]`,
- *                         which always exceeds the 5,000-wave cap.
- *
- * The SDK code calls the spec-correct names with sensible fallbacks
- * — the integration tests will flip green once the engine catches up.
+ * Engine-supported now (un-skipped on this branch):
+ *   - getNonce → pyde_getTransactionCount fallback works.
+ *   - getAccount → wire-shape matches after the M-4 adapter.
+ *   - getWave(specificId) → numeric param + tolerant wire-shape
+ *     adapter (hex-or-bytes for anchor/state_root) lands here.
+ *   - getLogs → SDK accepts both `entries` (engine) and `events`
+ *     (older spec drafts) for the result envelope.
+ *   - batch → composes the supported sub-methods.
  */
 
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
@@ -44,6 +40,55 @@ describe("Provider — live RPC (chain-implemented surfaces)", () => {
     const balance = await devnet.provider.getBalance(random);
     expect(balance).toBe(0n);
   });
+
+  it("getAccount returns a default Account for an unknown address", async () => {
+    const random = "0x" + "cd".repeat(32);
+    const account = await devnet.provider.getAccount(random);
+    expect(account).not.toBeNull();
+    expect(account!.nonce).toBe(0n);
+    expect(account!.balance).toBe(0n);
+  });
+
+  it("getNonce returns 0n for an unknown address", async () => {
+    const random = "0x" + "ef".repeat(32);
+    const nonce = await devnet.provider.getNonce(random);
+    expect(nonce).toBe(0n);
+  });
+
+  it("batch returns results in the same order as the request", async () => {
+    const random = "0x" + "12".repeat(32);
+    const [chainId, balance, nonce] = await devnet.provider.batch([
+      { method: "pyde_chainId", params: [] },
+      { method: "pyde_getBalance", params: [random] },
+      { method: "pyde_getTransactionCount", params: [random] },
+    ]);
+    expect(parseInt(chainId as string, 16)).toBe(devnet.chainId);
+    expect(BigInt(balance as string)).toBe(0n);
+    expect(parseInt(nonce as string, 16)).toBe(0);
+  });
+
+  it("getWave(0) decodes the genesis header once devnet ticks past it", async () => {
+    // Helper-spawn races genesis publication; the chain-id RPC binds
+    // before the genesis wave materialises in the RPC store. Poll up
+    // to ~3s, then assert.
+    let head = null;
+    for (let i = 0; i < 30 && head === null; i++) {
+      head = await devnet.provider.getWave(0n);
+      if (head === null) await new Promise((r) => setTimeout(r, 100));
+    }
+    expect(head).not.toBeNull();
+    expect(head!.waveId).toBe(0n);
+    expect(head!.anchor.startsWith("0x")).toBe(true);
+  });
+
+  it("getLogs returns an empty page for a valid sub-cap wave range", async () => {
+    const page = await devnet.provider.getLogs({
+      fromWave: 0n,
+      toWave: 100n,
+    });
+    expect(Array.isArray(page.events)).toBe(true);
+    expect(page.events.length).toBeLessThanOrEqual(1_000);
+  });
 });
 
 describe.skip("Provider — live RPC (waiting on engine to implement)", () => {
@@ -58,56 +103,8 @@ describe.skip("Provider — live RPC (waiting on engine to implement)", () => {
     expect(fd.baseFee).toBe(fd.gasPrice);
   });
 
-  it("getWave returns the latest wave header with anchor + timestamp", async () => {
+  it("getWave() — no-arg latest — needs pyde_getWaveNumber", async () => {
     const head = await devnet.provider.getWave();
     expect(head).not.toBeNull();
-    expect(head!.waveId).toBeGreaterThanOrEqual(0);
-    expect(typeof head!.timestamp).toBe("string");
-    expect(head!.anchor.startsWith("0x")).toBe(true);
-  });
-
-  it("getWave(specificId) returns that wave's header (or null)", async () => {
-    const head = await devnet.provider.getWave();
-    if (!head) return;
-    const specific = await devnet.provider.getWave(head.waveId);
-    expect(specific?.waveId).toBe(head.waveId);
-  });
-
-  it("getAccount returns a default Account for an unknown address", async () => {
-    // The chain returns a partial response for unknown addresses; the
-    // SDK parser fills zero-valued defaults so callers get a stable
-    // Account shape (nonce: 0, balance: 0n, codeHash: 0x00..00, ...).
-    const random = "0x" + "cd".repeat(32);
-    const account = await devnet.provider.getAccount(random);
-    expect(account).not.toBeNull();
-    expect(account!.nonce).toBe(0);
-    expect(account!.balance).toBe(0n);
-  });
-
-  it("getNonce returns 0 for an unknown address", async () => {
-    const random = "0x" + "ef".repeat(32);
-    const nonce = await devnet.provider.getNonce(random);
-    expect(nonce).toBe(0);
-  });
-
-  it("batch returns results in the same order as the request", async () => {
-    const random = "0x" + "12".repeat(32);
-    const [chainId, balance, nonce] = await devnet.provider.batch([
-      { method: "pyde_chainId", params: [] },
-      { method: "pyde_getBalance", params: [random] },
-      { method: "pyde_getNonce", params: [random] },
-    ]);
-    expect(parseInt(chainId as string, 16)).toBe(devnet.chainId);
-    expect(BigInt(balance as string)).toBe(0n);
-    expect(parseInt(nonce as string, 16)).toBe(0);
-  });
-
-  it("getLogs returns a page (possibly empty) for a small valid wave range", async () => {
-    const page = await devnet.provider.getLogs({
-      fromWave: 0,
-      toWave: 100,
-    });
-    expect(Array.isArray(page.events)).toBe(true);
-    expect(page.events.length).toBeLessThanOrEqual(1_000);
   });
 });

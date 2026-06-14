@@ -192,7 +192,10 @@ export class Provider {
     if (target === undefined) {
       target = await this.latestWaveId();
     }
-    const result = await this.call_("pyde_getWave", [target.toString()]);
+    // Engine expects a numeric param (`u64`) not a hex string. We've
+    // already validated `target` is in safe-integer range via
+    // parseBigIntLoose / latestWaveId; Number() is precision-safe here.
+    const result = await this.call_("pyde_getWave", [Number(target)]);
     return result ? fromWireWaveHeader(result) : null;
   }
 
@@ -691,19 +694,46 @@ function parseAccountType(v: unknown): AccountTypeDiscriminant {
 
 function fromWireWaveHeader(w: unknown): WaveHeader {
   const o = w as Record<string, unknown>;
+  const anchor = o.anchor ?? o.anchor_hash ?? o.anchorHash;
+  const stateRoot = o.state_root ?? o.stateRoot;
+  const eventsRoot = o.events_root ?? o.eventsRoot;
+  const txCount = o.tx_count ?? o.txCount;
+  // The engine's `next_epoch_beacon`-bearing header has no `timestamp`
+  // field (anchor_round + epoch carry equivalent ordering). Synthesize
+  // a stable placeholder so downstream callers don't observe an
+  // unexpected `undefined`. When the engine ships proper timestamps,
+  // the parse falls through to the real value.
+  const timestamp = o.timestamp ?? o.anchor_round ?? o.anchorRound ?? 0;
   const out: WaveHeader = {
     waveId: parseBigIntLoose(o.wave_id ?? o.waveId, "WaveHeader.waveId"),
-    timestamp: asString(o.timestamp, "WaveHeader.timestamp"),
-    anchor: asString(o.anchor, "WaveHeader.anchor"),
+    timestamp: String(timestamp),
+    anchor: hexlifyAnchor(anchor),
   };
-  if (o.state_root ?? o.stateRoot)
-    out.stateRoot = asString(o.state_root ?? o.stateRoot, "stateRoot");
-  if (o.events_root ?? o.eventsRoot)
-    out.eventsRoot = asString(o.events_root ?? o.eventsRoot, "eventsRoot");
-  if (o.tx_count !== undefined || o.txCount !== undefined) {
-    out.txCount = parseUint(asString(o.tx_count ?? o.txCount, "txCount"), "txCount");
-  }
+  if (stateRoot !== undefined && stateRoot !== null) out.stateRoot = hexlifyAnchor(stateRoot);
+  if (eventsRoot !== undefined && eventsRoot !== null) out.eventsRoot = hexlifyAnchor(eventsRoot);
+  if (txCount !== undefined) out.txCount = Number(txCount);
   return out;
+}
+
+/** Tolerate three wire shapes for hash-like fields:
+ *   - already-hex `"0xabcd..."` string
+ *   - raw 32-byte JSON array `[15, 156, 224, ...]`
+ *   - dual-hash struct `{blake3: number[], poseidon2: number[]}`
+ *     (engine ships this for state_root per the Poseidon2/Blake3 hybrid
+ *     in `hash_strategy_and_validation`). The Blake3 leg is the
+ *     execution-side authority so we surface that one. */
+function hexlifyAnchor(raw: unknown): string {
+  if (raw == null) return "0x";
+  if (typeof raw === "string") return raw.startsWith("0x") ? raw : "0x" + raw;
+  if (Array.isArray(raw)) {
+    return "0x" + raw.map((b) => Number(b).toString(16).padStart(2, "0")).join("");
+  }
+  if (typeof raw === "object") {
+    const o = raw as Record<string, unknown>;
+    if (Array.isArray(o.blake3)) return hexlifyAnchor(o.blake3);
+    if (Array.isArray(o.poseidon2)) return hexlifyAnchor(o.poseidon2);
+  }
+  return String(raw);
 }
 
 // ----------------------------------------------------------------------------
@@ -853,9 +883,11 @@ function toWireLogFilter(f: LogFilter): Record<string, unknown> {
       topics[i] = f.topics[i] ?? null;
     }
   }
+  // u64 wave bounds — engine accepts hex strings. JSON.stringify
+  // would throw on a raw bigint, so encode here.
   const wire: Record<string, unknown> = {
-    from_wave: f.fromWave,
-    to_wave: f.toWave,
+    from_wave: "0x" + f.fromWave.toString(16),
+    to_wave: "0x" + f.toWave.toString(16),
     topics,
     contract: f.contract ?? null,
     limit: f.limit ?? 100,
@@ -865,7 +897,12 @@ function toWireLogFilter(f: LogFilter): Record<string, unknown> {
 }
 
 function toWireCursor(c: EventCursor): Record<string, unknown> {
-  return { wave_id: c.waveId, tx_index: c.txIndex, event_index: c.eventIndex };
+  // wave_id is bigint on the JS side; hex-encode for JSON safety.
+  return {
+    wave_id: "0x" + c.waveId.toString(16),
+    tx_index: c.txIndex,
+    event_index: c.eventIndex,
+  };
 }
 
 function fromWireCursor(w: unknown): EventCursor {
@@ -885,7 +922,11 @@ function fromWireCursor(w: unknown): EventCursor {
 
 function fromWireGetLogsResponse(w: unknown): GetLogsResponse {
   const o = w as Record<string, unknown>;
-  const events = ((o.events ?? []) as unknown[]).map(fromWireLog);
+  // Engine exposes the field as `entries`; older spec drafts + the
+  // SDK type call it `events`. Accept both — engine is the authority
+  // for the current shape.
+  const raw = (o.entries ?? o.events ?? []) as unknown[];
+  const events = raw.map(fromWireLog);
   const out: GetLogsResponse = { events };
   const next = o.next_cursor ?? o.nextCursor;
   if (next != null) out.nextCursor = fromWireCursor(next);

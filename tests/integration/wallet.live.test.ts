@@ -22,13 +22,15 @@ afterAll(async () => {
   await devnet?.stop();
 });
 
-// Skipped end-to-end while the engine catches up to chapter 17.4 RPC
-// renames — `Wallet.registerPubkey` + `Wallet.transfer` both call
-// `getNonceAndChainId` → `getNonce`, and the chain currently exposes
-// neither `pyde_getNonce` nor the pre-pivot `pyde_getTransactionCount`.
-// SDK code itself is spec-correct; unskip when the engine ships either
-// name.
-describe.skip("Wallet — end-to-end live flow (gated on engine getNonce)", () => {
+// Blocked on funding-path tooling, NOT on the SDK code:
+//   - `otigen wallet transfer` doesn't exist; `otigen call` requires a
+//     deployed contract target and rejects the zero-address.
+//   - `pyde-crypto-wasm` exposes no `keypairFromSeed` so the SDK can't
+//     re-derive the devnet prefunded keys locally either.
+// The SDK code itself (registerPubkey, sign, sendRawTransaction) is
+// spec-correct against the engine's current RPC surface. Un-skip when
+// either of those two surfaces lands.
+describe.skip("Wallet — end-to-end live flow (gated on funding path)", () => {
   it("generate → fund → registerPubkey → transfer → balance check", async () => {
     const sender = await fundedTestWallet(devnet.provider, { amountPyde: 100 });
     const recipient = "0x" + "aa".repeat(32);
