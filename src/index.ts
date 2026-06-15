@@ -112,5 +112,10 @@ export type {
   TransactionResponse,
   FeeData,
   CallOverrides,
+  ThresholdPublicKey,
+  MetricsSnapshot,
+  NodeInfo,
+  ValidatorInfo,
+  SimulateTransactionResult,
 } from "./types";
 export { ReceiptUtils, TxType, AccountType } from "./types";

@@ -37,9 +37,13 @@ import type {
   AccountTypeDiscriminant,
   TransactionInfo,
   TransactionResponse,
-  FeeData,
   CallOverrides,
   AccessEntry,
+  ThresholdPublicKey,
+  MetricsSnapshot,
+  NodeInfo,
+  ValidatorInfo,
+  SimulateTransactionResult,
 } from "./types";
 import { AccountType } from "./types";
 import {
@@ -246,14 +250,24 @@ export class Provider {
     return asString(await this.call_("pyde_call", [params]), "pyde_call");
   }
 
-  // NOTE: dedicated `pyde_estimateGas` / `pyde_estimateAccess` RPC
-  // methods do NOT exist in v1. The engine surfaces both via the
-  // unified `pyde_simulateTransaction` dry-run (returns receipt + gas
-  // + access_list together) — adding that wrapper is queued as a
-  // Tier-2 catalog-alignment item. Until then, `Wallet.transfer` /
-  // `sendCall` fall back to fixed gas defaults (100k for plain
-  // transfers, 5M for contract calls) and access lists must be
-  // attached manually.
+  /**
+   * Dry-run a signed transaction. Returns the receipt the chain WOULD
+   * produce + the access list (slots read / written) for Block-STM
+   * parallelism on real submission. Same input shape as
+   * `sendRawTransaction` — borsh-encoded `Tx` hex.
+   *
+   * Engine RPC catalog v0.1 §12 / `pyde_simulateTransaction`.
+   *
+   * Per catalog: `receipt: null` for no-op txs (system tx types,
+   * plain transfers to EOAs). For contract calls / deploys the
+   * receipt's `gas_used` is the **real chain estimate**, not the
+   * SDK's conservative default. Use this from `Wallet.transfer` /
+   * `sendCall` to replace the fixed 100k / 5M floors.
+   */
+  async simulateTransaction(signedTxHex: string): Promise<SimulateTransactionResult> {
+    const result = await this.call_("pyde_simulateTransaction", [signedTxHex]);
+    return fromWireSimulateResult(result);
+  }
 
   // ========================================================================
   // Transaction submission
@@ -272,19 +286,42 @@ export class Provider {
    * preserves the pubkey (only shares rotate). Required input to
    * `buildRawEncryptedTx`. Spec: Chapter 8.5 + chapter 17.4.
    */
-  async getThresholdPublicKey(): Promise<string> {
-    return asString(
-      await this.call_("pyde_getThresholdPublicKey", []),
-      "pyde_getThresholdPublicKey",
-    );
+  async getThresholdPublicKey(): Promise<ThresholdPublicKey | null> {
+    const result = await this.call_("pyde_getThresholdPublicKey", []);
+    if (result == null) return null;
+    if (typeof result !== "object") {
+      throw new RpcError(
+        `pyde_getThresholdPublicKey returned non-object: ${JSON.stringify(result)}`,
+      );
+    }
+    const o = result as Record<string, unknown>;
+    const scheme = asString(o.scheme, "ThresholdPublicKey.scheme");
+    return {
+      epoch: parseBigIntLoose(o.epoch, "ThresholdPublicKey.epoch"),
+      scheme: scheme === "kyber-768" ? "kyber-768" : "mock",
+      publicKey: asString(o.public_key ?? o.publicKey, "ThresholdPublicKey.publicKey"),
+    };
   }
 
   /**
-   * Submit a client-built, client-signed `EncryptedTx` (wire-hex from
-   * `buildRawEncryptedTx`). Plaintext never leaves the client; the
-   * signature binds to a ciphertext the client produced. Canonical
-   * MEV-protected submission path. Spec: Chapter 8.5 + Chapter 9 +
-   * chapter 17.4 `pyde_sendRawEncryptedTransaction`.
+   * Submit a client-built, client-signed encrypted-tx envelope (wire-hex
+   * from `buildRawEncryptedTx`). Plaintext never leaves the client; the
+   * envelope is FALCON-signed over an `EncryptedTx::hash` that binds to
+   * the ciphertext + cleartext (sender, nonce, gas, chain).
+   *
+   * **Important — two distinct hashes:**
+   * - The RPC result is the **envelope hash**
+   *   (`Blake3(version || ciphertext_len_le || ciphertext)`). Use it to
+   *   confirm local admit / track gossip publication.
+   * - Receipts after wave-commit are keyed by the **plaintext tx hash**
+   *   the chain reconstructs post-decryption — NOT the envelope hash.
+   *
+   * The returned `TransactionResponse.wait()` will time out polling the
+   * envelope hash. Callers wanting the receipt should hash the inner
+   * Tx client-side (via `crypto.hashTransaction` against the reconstructed
+   * plaintext shape) and poll `getTransactionReceipt` against that.
+   *
+   * Spec: Engine RPC catalog v0.1 §8 · `pyde_sendRawEncryptedTransaction`.
    */
   async sendRawEncryptedTransaction(encTxHex: string): Promise<TransactionResponse> {
     const result = await this.call_("pyde_sendRawEncryptedTransaction", [encTxHex]);
@@ -355,6 +392,136 @@ export class Provider {
     const wire = toWireLogFilter(filter);
     const result = await this.call_("pyde_getLogs", [wire]);
     return fromWireGetLogsResponse(result);
+  }
+
+  /**
+   * Permissive event scan. Same event-record shape as
+   * `pyde_getTransactionReceipt.events` and `pyde_getLogs.entries`,
+   * sorted by `(wave_id, tx_index, event_index)`. Malformed filters
+   * silently return `[]` — for strict validation use `getLogs`.
+   *
+   * Engine RPC catalog v0.1 §13 · `pyde_getEvents`.
+   */
+  async getEvents(filter?: { fromWave?: Wave; toWave?: Wave; contract?: string }): Promise<Log[]> {
+    const wire: Record<string, unknown> = {};
+    if (filter?.fromWave !== undefined) wire.fromWave = "0x" + filter.fromWave.toString(16);
+    if (filter?.toWave !== undefined) wire.toWave = "0x" + filter.toWave.toString(16);
+    if (filter?.contract !== undefined) wire.contract = filter.contract;
+    const result = await this.call_("pyde_getEvents", [wire]);
+    const raw = (result ?? []) as unknown[];
+    return raw.map(fromWireLog);
+  }
+
+  // ========================================================================
+  // Validator queries
+  // ========================================================================
+
+  /** Return the validator record at `address` or `null` if none exists.
+   *  Engine RPC catalog v0.1 §16 · `pyde_getValidator`. */
+  async getValidator(address: string): Promise<ValidatorInfo | null> {
+    const result = await this.call_("pyde_getValidator", [address]);
+    if (result == null || typeof result !== "object") return null;
+    const o = result as Record<string, unknown>;
+    const status = asString(o.status, "ValidatorInfo.status");
+    const normStatus: ValidatorInfo["status"] =
+      status === "active" || status === "unbonding" || status === "exited" || status === "jailed"
+        ? status
+        : "exited";
+    const optWave = (key: string, alt: string): bigint | null => {
+      const v = (o[key] ?? o[alt]) as unknown;
+      if (v == null) return null;
+      return parseBigIntLoose(v, `ValidatorInfo.${key}`);
+    };
+    return {
+      validatorAddress: asString(
+        o.validator_address ?? o.validatorAddress,
+        "ValidatorInfo.validatorAddress",
+      ),
+      operator: asString(o.operator, "ValidatorInfo.operator"),
+      pubkey: asString(o.pubkey, "ValidatorInfo.pubkey"),
+      stake: parseBigIntLoose(o.stake, "ValidatorInfo.stake"),
+      status: normStatus,
+      unbondAtWave: optWave("unbond_at_wave", "unbondAtWave"),
+      jailUntilWave: optWave("jail_until_wave", "jailUntilWave"),
+      lastClaimedRps: parseBigIntLoose(
+        o.last_claimed_rps ?? o.lastClaimedRps,
+        "ValidatorInfo.lastClaimedRps",
+      ),
+      uptimeBps: Number(o.uptime_bps ?? o.uptimeBps ?? 0),
+    };
+  }
+
+  /** Return every validator-address an operator controls. Empty array
+   *  if the operator runs no validators. Operators cap at 3 per the
+   *  staking model. Engine RPC catalog v0.1 §17 ·
+   *  `pyde_getOperatorValidators`. */
+  async getOperatorValidators(operatorAddress: string): Promise<string[]> {
+    const result = await this.call_("pyde_getOperatorValidators", [operatorAddress]);
+    return ((result ?? []) as unknown[]).map((v) => asString(v, "getOperatorValidators[i]"));
+  }
+
+  // ========================================================================
+  // Node identity + metrics
+  // ========================================================================
+
+  /** Return node identity + capabilities. `falconPubkey: null` means
+   *  the node has no consensus signing identity (full / archive node).
+   *  Engine RPC catalog v0.1 §18 · `pyde_getNodeInfo`. */
+  async getNodeInfo(): Promise<NodeInfo> {
+    const result = await this.call_("pyde_getNodeInfo", []);
+    if (!result || typeof result !== "object") {
+      throw new RpcError(`pyde_getNodeInfo returned non-object: ${JSON.stringify(result)}`);
+    }
+    const o = result as Record<string, unknown>;
+    const falcon = o.falcon_pubkey ?? o.falconPubkey;
+    return {
+      peerId: asString(o.peer_id ?? o.peerId, "NodeInfo.peerId"),
+      falconPubkey: falcon == null ? null : asString(falcon, "NodeInfo.falconPubkey"),
+      listenAddrs: ((o.listen_addrs ?? o.listenAddrs ?? []) as unknown[]).map((a) =>
+        asString(a, "NodeInfo.listenAddrs[i]"),
+      ),
+      agentVersion: asString(o.agent_version ?? o.agentVersion, "NodeInfo.agentVersion"),
+      protocolVersion: asString(
+        o.protocol_version ?? o.protocolVersion,
+        "NodeInfo.protocolVersion",
+      ),
+    };
+  }
+
+  /** Return an instantaneous metrics snapshot — counter per mainloop
+   *  subsystem, schema mirrors the engine's `MainLoopMetrics`. For
+   *  time-series scrape the Prometheus `/metrics` HTTP route instead.
+   *  Engine RPC catalog v0.1 §19 · `pyde_getMetrics`. */
+  async getMetrics(): Promise<MetricsSnapshot> {
+    const result = await this.call_("pyde_getMetrics", []);
+    if (!result || typeof result !== "object") {
+      throw new RpcError(`pyde_getMetrics returned non-object: ${JSON.stringify(result)}`);
+    }
+    return result as MetricsSnapshot;
+  }
+
+  // ========================================================================
+  // Archival receipts + raw tx + snapshot bundle
+  // ========================================================================
+
+  /** Archival receipt query — raw serde-derived wire shape with byte
+   *  arrays + JSON numbers (NOT the hex-string convention of
+   *  `getTransactionReceipt`). Use this for explorer / indexer code
+   *  that wants the canonical borsh-shape data without the SDK's
+   *  hex normalization. Returns `null` if not found.
+   *  Engine RPC catalog v0.1 §21 · `pyde_getReceipt`. */
+  async getReceiptArchival(txHash: string): Promise<unknown | null> {
+    const result = await this.call_("pyde_getReceipt", [txHash]);
+    return result ?? null;
+  }
+
+  /** Return the full snapshot bundle as a standard-base64 string
+   *  (RFC 4648 §4 — NOT URL-safe). Decodes to a borsh-encoded
+   *  `SnapshotBundle { manifest, chunks }` — multi-MB on a populated
+   *  chain. For just the manifest use `getSnapshotManifest()`.
+   *  Engine RPC catalog v0.1 §25 · `pyde_getSnapshot`. */
+  async getSnapshot(): Promise<string> {
+    return asString(await this.call_("pyde_getSnapshot", []), "pyde_getSnapshot");
   }
 
   // ========================================================================
@@ -899,6 +1066,55 @@ function fromWireCursor(w: unknown): EventCursor {
       asString(o.event_index ?? o.eventIndex, "EventCursor.eventIndex"),
       "EventCursor.eventIndex",
     ),
+  };
+}
+
+function fromWireSimulateResult(w: unknown): SimulateTransactionResult {
+  const o = (w ?? {}) as Record<string, unknown>;
+  const accessList = (o.access_list ?? o.accessList ?? {}) as Record<string, unknown>;
+  const rawReads = (accessList.reads ?? []) as unknown[];
+  const rawWrites = (accessList.writes ?? []) as unknown[];
+  const rawReceipt = o.receipt;
+
+  let receipt: SimulateTransactionResult["receipt"] = null;
+  if (rawReceipt && typeof rawReceipt === "object") {
+    const r = rawReceipt as Record<string, unknown>;
+    const status = asString(r.status, "SimulateReceipt.status");
+    const normStatus: "Success" | "Reverted" | "OutOfGas" =
+      status === "Success" || status === "Reverted" || status === "OutOfGas" ? status : "Reverted";
+    receipt = {
+      status: normStatus,
+      gasUsed: BigInt(asString(r.gas_used ?? r.gasUsed, "SimulateReceipt.gasUsed")),
+      feePaid: BigInt(asString(r.fee_paid ?? r.feePaid, "SimulateReceipt.feePaid")),
+      returnData:
+        typeof (r.return_data ?? r.returnData) === "string"
+          ? ((r.return_data ?? r.returnData) as string)
+          : "0x",
+    };
+  }
+
+  return {
+    receipt,
+    reads: rawReads.map((entry) => {
+      const e = (entry ?? {}) as Record<string, unknown>;
+      const observed = e.observed_version ?? e.observedVersion;
+      const observedVersion =
+        observed && typeof observed === "object"
+          ? {
+              txIndex: Number(
+                (observed as Record<string, unknown>).tx_index ??
+                  (observed as Record<string, unknown>).txIndex ??
+                  0,
+              ),
+              attempt: Number((observed as Record<string, unknown>).attempt ?? 0),
+            }
+          : null;
+      return {
+        slot: asString(e.slot, "SimulateRead.slot"),
+        observedVersion,
+      };
+    }),
+    writes: rawWrites.map((s) => asString(s, "SimulateWrite.slot")),
   };
 }
 

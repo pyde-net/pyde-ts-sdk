@@ -315,21 +315,43 @@ export class Wallet extends AbstractSigner {
       gasLimit?: number;
       gasMultiplier?: number;
       value?: bigint | number | string;
+      accessList?: AccessEntry[];
       provider?: Provider;
     },
   ): Promise<Receipt> {
     const p = this.resolveProvider(opts?.provider);
     const value = opts?.value ?? 0;
-    const gasLimit =
-      opts?.gasLimit ?? (await this.estimateGasFor(p, to, data, value, opts?.gasMultiplier));
     const [nonce, chainId] = await p.getNonceAndChainId(this.address);
 
-    // v1 engine has no dedicated `pyde_estimateAccess`. The chain
-    // serializes txs without a declared access list (costing parallel
-    // throughput but not correctness). Tier-2 wires this through the
-    // `pyde_simulateTransaction` dry-run which returns the access list
-    // alongside the gas estimate.
-    const accessList: AccessEntry[] | undefined = undefined;
+    // Sim-first when no explicit gasLimit + accessList — engine RPC
+    // catalog v0.1 §12 surfaces gas + access-list together via
+    // `pyde_simulateTransaction`. Fall back to fixed defaults on
+    // simulate failure so the dapp still goes through (the chain
+    // serialises against missing access lists, costing parallel
+    // throughput but not correctness).
+    let gasLimit = opts?.gasLimit;
+    let accessList = opts?.accessList;
+    if (gasLimit === undefined || accessList === undefined) {
+      const simResult = await this.runSimulate(p, {
+        from: this.address,
+        to,
+        value: value.toString(),
+        data,
+        gasLimit: 5_000_000,
+        nonce,
+        chainId,
+        txType: TxType.Standard,
+      });
+      if (gasLimit === undefined) {
+        gasLimit = simResult.gasLimit ?? 5_000_000;
+        if (simResult.gasLimit !== undefined) {
+          gasLimit = Math.ceil(gasLimit * (opts?.gasMultiplier ?? 1.2));
+        }
+      }
+      if (accessList === undefined && simResult.accessList.length > 0) {
+        accessList = simResult.accessList;
+      }
+    }
 
     const tx: TxFields = {
       from: this.address,
@@ -343,6 +365,38 @@ export class Wallet extends AbstractSigner {
       ...(accessList ? { accessList } : {}),
     };
     return p.sendAndWait(this.signTransaction(tx));
+  }
+
+  /** Sign a probe tx + ask the chain to simulate it. Returns the
+   *  chain-reported gas + access list when the simulate succeeds; the
+   *  callee uses fixed defaults on failure. */
+  private async runSimulate(
+    p: Provider,
+    tx: TxFields,
+  ): Promise<{ gasLimit: number | undefined; accessList: AccessEntry[] }> {
+    try {
+      const wire = this.signTransaction(tx);
+      const sim = await p.simulateTransaction(wire);
+      const writeSet = new Set(sim.writes);
+      const accessEntries: AccessEntry[] = [];
+      // Group slots into a single AccessEntry per target address; the
+      // engine's simulator returns slot keys, not address-keyed entries.
+      // The minimal scheduler-correct envelope is one address (the
+      // call target) with all touched slots split into reads + writes.
+      const reads = sim.reads.filter((r) => !writeSet.has(r.slot)).map((r) => r.slot);
+      const writes = sim.writes;
+      if (reads.length > 0 || writes.length > 0) {
+        accessEntries.push({ address: tx.to, reads, writes });
+      }
+      return {
+        gasLimit: sim.receipt ? Number(sim.receipt.gasUsed) : undefined,
+        accessList: accessEntries,
+      };
+    } catch {
+      // Engine missing the method, returned an error, or sim throws on
+      // its own — degrade silently to defaults.
+      return { gasLimit: undefined, accessList: [] };
+    }
   }
 
   /** Build, sign, send a contract deploy. Spec: Chapter 11 §11.8 (Deploy). */
@@ -394,6 +448,15 @@ export class Wallet extends AbstractSigner {
    * pre-computed `opts.accessList` from a local simulator (Phase 14).
    * The chain still parallelises without an access list; the cost is
    * conservative serialisation, not correctness.
+   *
+   * Returns the **envelope hash** the engine echoed back from
+   * `pyde_sendRawEncryptedTransaction` — NOT a receipt. Per engine RPC
+   * catalog v0.1 §8, receipts after wave commit are keyed by the
+   * **plaintext** tx hash the chain reconstructs post-decryption, not
+   * the envelope hash. Polling `provider.waitForReceipt(envelopeHash)`
+   * will time out. Receipt-polling for encrypted submissions is a
+   * gap pending an inner-hash exposure on the wasm side; until then
+   * treat a successful return as "admitted to encrypted mempool".
    */
   async sendEncrypted(
     to: string,
@@ -406,12 +469,32 @@ export class Wallet extends AbstractSigner {
       estimateAccess?: boolean;
       provider?: Provider;
     },
-  ): Promise<Receipt> {
+  ): Promise<{ envelopeHash: string }> {
     const p = this.resolveProvider(opts?.provider);
-    const [thresholdPk, [nonce, chainId]] = await Promise.all([
+    const [threshold, [nonce, chainId]] = await Promise.all([
       p.getThresholdPublicKey(),
       p.getNonceAndChainId(this.address),
     ]);
+    if (threshold === null) {
+      throw new SigningError(
+        "pyde_getThresholdPublicKey returned null — chain has no DKG state yet. " +
+          "Fall back to plaintext `transfer` / `sendCall` until the chain bootstraps.",
+      );
+    }
+    if (threshold.scheme !== "kyber-768") {
+      // v1 boot ships a deterministic mock pubkey for path coverage. The
+      // chain admits the envelope but doesn't run decryption (no real
+      // DKG to combine shares), so the encrypted tx will sit forever.
+      // Per catalog §20 guidance: treat as "encrypted path not yet
+      // ready", surface the gap to the caller.
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[pyde-ts-sdk] threshold-pubkey scheme is "${threshold.scheme}" (not "kyber-768"); ` +
+          "encrypted tx will be admitted but not decrypted until real Kyber-768 DKG lands. " +
+          "For real MEV protection, fall back to plaintext send.",
+      );
+    }
+    const thresholdPk = threshold.publicKey;
 
     const accessList = opts?.accessList;
     // `opts.estimateAccess` is reserved for the Tier-2 catalog pass —
@@ -440,16 +523,17 @@ export class Wallet extends AbstractSigner {
         ? crypto.buildRawEncryptedTxWithHandle(params, this.key.handle)
         : crypto.buildRawEncryptedTx(params, this.key.hex);
     const tx = await p.sendRawEncryptedTransaction(wire);
-    return tx.wait();
+    return { envelopeHash: tx.hash };
   }
 
   /** Encrypted variant of `transfer` — value-only send through the
-   *  MEV-protected mempool. Same hex-SK constraint as `sendEncrypted`. */
+   *  MEV-protected mempool. Same hex-SK constraint as `sendEncrypted`,
+   *  same envelope-hash semantics (see `sendEncrypted` JSDoc). */
   async transferEncrypted(
     to: string,
     amount: bigint | number,
     opts?: { deadline?: number; provider?: Provider },
-  ): Promise<Receipt> {
+  ): Promise<{ envelopeHash: string }> {
     return this.sendEncrypted(to, "0x", {
       value: amount,
       gasLimit: 21_000,

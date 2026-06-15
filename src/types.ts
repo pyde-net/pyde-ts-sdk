@@ -369,6 +369,78 @@ export interface FeeData {
   baseFee: bigint;
 }
 
+/** Per-epoch threshold-decryption pubkey returned by
+ *  `pyde_getThresholdPublicKey`. v1 ships with a deterministic mock
+ *  (`scheme: "mock"`); real Kyber-768 swaps in via one feature flag
+ *  with no wire change. Treat `scheme !== "kyber-768"` as "encrypted
+ *  path not yet ready"; encrypted submissions sit unprocessed under
+ *  mock and clients should fall back to plaintext for real MEV
+ *  protection. */
+export interface ThresholdPublicKey {
+  /** Wave-epoch the pubkey is valid for. */
+  epoch: bigint;
+  /** Crypto scheme — `"mock"` (boot default) or `"kyber-768"` (real DKG). */
+  scheme: "mock" | "kyber-768";
+  /** `0x`-prefixed hex of the encryption pubkey. */
+  publicKey: string;
+}
+
+/** Mainnet metrics snapshot from `pyde_getMetrics`. Schema mirrors
+ *  the engine's `MainLoopMetrics` 1:1 — every mainloop subsystem
+ *  exposes its counter here. Snapshot is instant-at-request; for
+ *  time-series use the Prometheus `/metrics` HTTP exposition. */
+export interface MetricsSnapshot {
+  [counter: string]: number | string;
+}
+
+/** Node identity probe from `pyde_getNodeInfo`. `falconPubkey: null`
+ *  distinguishes full / archive nodes (no consensus signing identity)
+ *  from validators. SDKs gate "this node can sign" UX on the
+ *  non-null variant. */
+export interface NodeInfo {
+  /** libp2p peer id (hex). */
+  peerId: string;
+  /** Validator FALCON-512 pubkey, or `null` for full / archive nodes. */
+  falconPubkey: string | null;
+  /** Public listen multiaddrs. */
+  listenAddrs: string[];
+  /** Build-version string, e.g. `"pyde/0.1.0"`. */
+  agentVersion: string;
+  /** Protocol-family tag — `"pyde/1"` for the v1 stack. */
+  protocolVersion: string;
+}
+
+/** Validator record returned by `pyde_getValidator`. */
+export interface ValidatorInfo {
+  validatorAddress: string;
+  operator: string;
+  pubkey: string;
+  stake: bigint;
+  status: "active" | "unbonding" | "exited" | "jailed";
+  unbondAtWave: bigint | null;
+  jailUntilWave: bigint | null;
+  /** Last-claimed rewards-per-stake checkpoint (u128 quanta). */
+  lastClaimedRps: bigint;
+  /** Uptime, basis points (`9999` = 99.99 %). */
+  uptimeBps: number;
+}
+
+/** Result of `pyde_simulateTransaction` — dry-run with access-list tracking. */
+export interface SimulateTransactionResult {
+  /** Decoded receipt for txs that produce one (contract calls, deploys).
+   *  `null` for no-op txs (system tx types, plain transfers to EOAs). */
+  receipt: {
+    status: "Success" | "Reverted" | "OutOfGas";
+    gasUsed: bigint;
+    feePaid: bigint;
+    returnData: string;
+  } | null;
+  /** Slot keys the tx would read + the version observed at sim time. */
+  reads: { slot: string; observedVersion: { txIndex: number; attempt: number } | null }[];
+  /** Slot keys the tx would write. */
+  writes: string[];
+}
+
 // ============================================================================
 // Receipt helpers (bigint decoders for common return shapes)
 // ============================================================================
