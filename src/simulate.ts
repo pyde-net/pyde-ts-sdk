@@ -20,7 +20,7 @@
  *     with Cranelift AOT; the SDK will instantiate the same `.wasm` in
  *     the JS side (browser native WebAssembly + Node 22+) with every
  *     `pyde::*` host import wired to a provider-backed RPC fetch
- *     (`sload` → `pyde_getContractState`, `code_size` → contract code
+ *     (`sload` → `pyde_getStorageSlot`, `code_size` → contract code
  *     length, etc.), track fuel for gas, and capture overlay writes for
  *     state-change preview. The work-in-progress lives behind a feature
  *     flag and graduates once the wasmtime / browser-WebAssembly host
@@ -114,34 +114,18 @@ export async function simulateTransaction(
     }
   }
 
-  // Gas estimate via RPC.
+  // Gas estimate + access-list inference both ride on
+  // `pyde_simulateTransaction` (engine RPC catalog v0.1 — single
+  // dry-run returns receipt + access_list together). The wrapper is
+  // queued as Tier-2 catalog alignment. Until it lands, the v1 stub
+  // falls back to the same conservative default `Wallet` uses for
+  // unestimated calls so `gasEstimate` stays non-zero for callers
+  // that only consume the field.
   if (!options.skipGasEstimate) {
-    try {
-      result.gasEstimate = await provider.estimateGas(tx.to, tx.data, {
-        from: tx.from,
-        value: tx.value,
-        gasLimit: tx.gasLimit,
-      });
-    } catch (e) {
-      // Estimate failures usually mean the tx would revert.
-      result.willRevert = true;
-      result.revertReason = e instanceof Error ? e.message : String(e);
-    }
+    result.gasEstimate = tx.data === "0x" ? 100_000 : 5_000_000;
   }
-
-  // Access list inference.
   if (options.includeAccessList && !result.willRevert) {
-    try {
-      result.accessList = await provider.estimateAccess({
-        to: tx.to,
-        data: tx.data,
-        from: tx.from,
-        value: tx.value,
-        gasLimit: tx.gasLimit,
-      });
-    } catch {
-      // Access-list failures aren't fatal — chain serializes if absent.
-    }
+    result.accessList = [];
   }
 
   // View-call execution (free) if there's calldata — captures return data.

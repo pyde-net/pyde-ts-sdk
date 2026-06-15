@@ -65,6 +65,7 @@ wallet.destroy();
 ```
 
 Notes:
+
 - `Wallet.generate()` is the recommended path. SK never leaves the WASM heap; even a JS heap dump can't recover it.
 - `transfer(to, amount)` accepts a `bigint`, `number`, or decimal string. Use `bigint` literals for new code (`parseQuanta` returns `bigint`).
 - `receipt.success === false` means the chain rejected the tx — inspect `receipt.events` for the revert reason.
@@ -141,7 +142,7 @@ const counter = await Contract.fromArtifact<CounterAbi>(
 );
 
 await counter.read("get_count"); // ✅ → Promise<bigint>
-await counter.read("getCount");  // ❌ type error — unknown method
+await counter.read("getCount"); // ❌ type error — unknown method
 await counter.write("deposit", { amount: 5n }); // ✅
 await counter.write("deposit", { amount: "5" }); // ❌ type error — amount must be bigint
 ```
@@ -150,11 +151,11 @@ See [Chapter 04](./04-contract.md) for the full Contract API and [Chapter 05](./
 
 ## Where next?
 
-| If you want to… | Read |
-|---|---|
-| Tune retries / timeouts / batching | [02 — Provider](./02-provider.md) |
-| Keystore + load encrypted SK from disk | [03 — Wallet](./03-wallet.md) |
-| Encode complex args (`Vec<Order>`, enums) | [04 — Contract](./04-contract.md) |
-| Subscribe to new waves / events live | [08 — WebSocket](./08-websocket.md) |
-| MEV-protected (encrypted) submission | [09 — Encrypted mempool](./09-encrypted-mempool.md) |
-| Build a dapp with React hooks | [06 — React](./06-react.md) |
+| If you want to…                           | Read                                                |
+| ----------------------------------------- | --------------------------------------------------- |
+| Tune retries / timeouts / batching        | [02 — Provider](./02-provider.md)                   |
+| Keystore + load encrypted SK from disk    | [03 — Wallet](./03-wallet.md)                       |
+| Encode complex args (`Vec<Order>`, enums) | [04 — Contract](./04-contract.md)                   |
+| Subscribe to new waves / events live      | [08 — WebSocket](./08-websocket.md)                 |
+| MEV-protected (encrypted) submission      | [09 — Encrypted mempool](./09-encrypted-mempool.md) |
+| Build a dapp with React hooks             | [06 — React](./06-react.md)                         |

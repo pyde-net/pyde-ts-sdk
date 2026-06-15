@@ -42,9 +42,12 @@ Pyde uses **9 decimals**. The on-chain unit is **quanta** (1 PYDE = 10⁹ quanta
 
 ```ts
 import {
-  parseQuanta, formatQuanta,
-  parsePyde, formatPyde,
-  parseUnits, formatUnits,
+  parseQuanta,
+  formatQuanta,
+  parsePyde,
+  formatPyde,
+  parseUnits,
+  formatUnits,
 } from "pyde-ts-sdk";
 ```
 
@@ -55,13 +58,13 @@ Decimal-string → bigint quanta.
 **Signature:**
 
 ```ts
-function parseQuanta(value: string): bigint
+function parseQuanta(value: string): bigint;
 ```
 
 **Args:**
 
-| Name | Type | Description |
-|---|---|---|
+| Name    | Type     | Description                                 |
+| ------- | -------- | ------------------------------------------- |
 | `value` | `string` | A decimal string, e.g., `"1.5"` (1.5 PYDE). |
 
 **Returns:** `bigint` — quanta.
@@ -71,10 +74,10 @@ function parseQuanta(value: string): bigint
 **Example:**
 
 ```ts
-console.log(parseQuanta("1.5"));      // → 1500000000n
-console.log(parseQuanta("1000"));     // → 1000000000000n
+console.log(parseQuanta("1.5")); // → 1500000000n
+console.log(parseQuanta("1000")); // → 1000000000000n
 console.log(parseQuanta("0.000001")); // → 1000n
-console.log(parseQuanta("0"));        // → 0n
+console.log(parseQuanta("0")); // → 0n
 ```
 
 ---
@@ -86,7 +89,7 @@ Bigint / number / hex / decimal-string → human PYDE string.
 **Signature:**
 
 ```ts
-function formatQuanta(value: bigint | number | string): string
+function formatQuanta(value: bigint | number | string): string;
 ```
 
 **Returns:** `string` — PYDE string with up to 9 decimal places, trimmed.
@@ -95,8 +98,8 @@ function formatQuanta(value: bigint | number | string): string
 
 ```ts
 console.log(formatQuanta(1500000000n)); // → "1.5"
-console.log(formatQuanta(10n ** 9n));   // → "1.0"
-console.log(formatQuanta(0n));          // → "0.0"
+console.log(formatQuanta(10n ** 9n)); // → "1.0"
+console.log(formatQuanta(0n)); // → "0.0"
 console.log(formatQuanta("0x3b9aca00")); // hex string → "1.0"
 ```
 
@@ -107,7 +110,7 @@ console.log(formatQuanta("0x3b9aca00")); // hex string → "1.0"
 Aliases for `parseQuanta` / `formatQuanta` — surface exports both names for symmetry with the generic `parseUnits` / `formatUnits` pair.
 
 ```ts
-parsePyde("1.5") === parseQuanta("1.5");   // true
+parsePyde("1.5") === parseQuanta("1.5"); // true
 formatPyde(1500000000n) === formatQuanta(1500000000n); // true
 ```
 
@@ -120,14 +123,14 @@ Generic decimal-aware parser for custom decimal counts (e.g., a stablecoin contr
 **Signature:**
 
 ```ts
-function parseUnits(value: string, decimals: number): bigint
+function parseUnits(value: string, decimals: number): bigint;
 ```
 
 **Example:**
 
 ```ts
-console.log(parseUnits("1.5", 6));    // → 1500000n
-console.log(parseUnits("100", 18));   // → 100000000000000000000n
+console.log(parseUnits("1.5", 6)); // → 1500000n
+console.log(parseUnits("100", 18)); // → 100000000000000000000n
 ```
 
 ---
@@ -139,13 +142,13 @@ Generic decimal-aware formatter.
 **Signature:**
 
 ```ts
-function formatUnits(value: bigint | number | string, decimals: number): string
+function formatUnits(value: bigint | number | string, decimals: number): string;
 ```
 
 **Example:**
 
 ```ts
-console.log(formatUnits(1500000n, 6));  // → "1.5"
+console.log(formatUnits(1500000n, 6)); // → "1.5"
 console.log(formatUnits(10n ** 18n, 18)); // → "1.0"
 ```
 
@@ -153,11 +156,11 @@ console.log(formatUnits(10n ** 18n, 18)); // → "1.0"
 
 ### When to use which
 
-| Working with | Use |
-|---|---|
-| Native PYDE on chain | `parseQuanta` / `formatQuanta` |
-| Native PYDE in dapp UI | `parseQuanta` / `formatQuanta` |
-| Custom-decimal tokens | `parseUnits(..., tokenDecimals)` |
+| Working with                                                 | Use                              |
+| ------------------------------------------------------------ | -------------------------------- |
+| Native PYDE on chain                                         | `parseQuanta` / `formatQuanta`   |
+| Native PYDE in dapp UI                                       | `parseQuanta` / `formatQuanta`   |
+| Custom-decimal tokens                                        | `parseUnits(..., tokenDecimals)` |
 | Anywhere quanta is the natural unit (gas, fees, raw amounts) | `bigint` directly, no conversion |
 
 ---
@@ -168,9 +171,15 @@ Isomorphic — work in both Node and the browser. Internally use `Uint8Array` + 
 
 ```ts
 import {
-  isHexString, hexlify, getBytes, toBeHex,
-  concat, zeroPadValue, stripZeros,
-  dataLength, dataSlice,
+  isHexString,
+  hexlify,
+  getBytes,
+  toBeHex,
+  concat,
+  zeroPadValue,
+  stripZeros,
+  dataLength,
+  dataSlice,
 } from "pyde-ts-sdk";
 ```
 
@@ -183,26 +192,26 @@ Quack-check for a `0x`-prefixed hex string.
 **Signature:**
 
 ```ts
-function isHexString(value: unknown, length?: number): boolean
+function isHexString(value: unknown, length?: number): boolean;
 ```
 
 **Args:**
 
-| Name | Type | Description |
-|---|---|---|
-| `value` | `unknown` | Anything. |
-| `length` | `number` | Optional **byte** count (not char count). `isHexString(addr, 32)` checks for 32 bytes. |
+| Name     | Type      | Description                                                                            |
+| -------- | --------- | -------------------------------------------------------------------------------------- |
+| `value`  | `unknown` | Anything.                                                                              |
+| `length` | `number`  | Optional **byte** count (not char count). `isHexString(addr, 32)` checks for 32 bytes. |
 
 **Returns:** `boolean`.
 
 **Example:**
 
 ```ts
-console.log(isHexString("0xdeadbeef"));      // → true
-console.log(isHexString("0xdeadbeef", 4));   // → true (4 bytes)
-console.log(isHexString("not hex"));         // → false
-console.log(isHexString("0xdeadbeef", 32));  // → false (wrong length)
-console.log(isHexString(42));                // → false
+console.log(isHexString("0xdeadbeef")); // → true
+console.log(isHexString("0xdeadbeef", 4)); // → true (4 bytes)
+console.log(isHexString("not hex")); // → false
+console.log(isHexString("0xdeadbeef", 32)); // → false (wrong length)
+console.log(isHexString(42)); // → false
 ```
 
 ---
@@ -214,13 +223,13 @@ Anything → `0x`-prefixed hex string.
 **Signature:**
 
 ```ts
-function hexlify(value: string | Uint8Array | bigint | number): string
+function hexlify(value: string | Uint8Array | bigint | number): string;
 ```
 
 **Args:**
 
-| Name | Type | Description |
-|---|---|---|
+| Name    | Type    | Description                                                                                              |
+| ------- | ------- | -------------------------------------------------------------------------------------------------------- |
 | `value` | several | `Uint8Array` (encoded as hex), `bigint` / `number` (encoded as BE hex), or already-`0x`-prefixed string. |
 
 **Returns:** `string` — `0x` + hex.
@@ -229,9 +238,9 @@ function hexlify(value: string | Uint8Array | bigint | number): string
 
 ```ts
 console.log(hexlify(new Uint8Array([1, 2, 3]))); // → "0x010203"
-console.log(hexlify(42));                         // → "0x2a"
-console.log(hexlify(42n));                        // → "0x2a"
-console.log(hexlify("0xff"));                     // → "0xff"
+console.log(hexlify(42)); // → "0x2a"
+console.log(hexlify(42n)); // → "0x2a"
+console.log(hexlify("0xff")); // → "0xff"
 ```
 
 ---
@@ -243,13 +252,13 @@ Hex string or `Uint8Array` → `Uint8Array`. Inverse of `hexlify`.
 **Signature:**
 
 ```ts
-function getBytes(value: string | Uint8Array): Uint8Array
+function getBytes(value: string | Uint8Array): Uint8Array;
 ```
 
 **Example:**
 
 ```ts
-console.log(getBytes("0x010203"));        // → Uint8Array(3) [1, 2, 3]
+console.log(getBytes("0x010203")); // → Uint8Array(3) [1, 2, 3]
 console.log(getBytes(new Uint8Array([4, 5]))); // → Uint8Array(2) [4, 5]
 ```
 
@@ -262,14 +271,14 @@ Bigint / number → big-endian hex, optionally zero-padded to `width` bytes.
 **Signature:**
 
 ```ts
-function toBeHex(value: bigint | number, width?: number): string
+function toBeHex(value: bigint | number, width?: number): string;
 ```
 
 **Example:**
 
 ```ts
-console.log(toBeHex(1));          // → "0x01"
-console.log(toBeHex(1, 4));       // → "0x00000001"
+console.log(toBeHex(1)); // → "0x01"
+console.log(toBeHex(1, 4)); // → "0x00000001"
 console.log(toBeHex(0x1234n, 4)); // → "0x00001234"
 ```
 
@@ -282,7 +291,7 @@ Concatenate hex strings and/or `Uint8Array`s into a single hex string.
 **Signature:**
 
 ```ts
-function concat(values: (string | Uint8Array)[]): string
+function concat(values: (string | Uint8Array)[]): string;
 ```
 
 **Example:**
@@ -301,7 +310,7 @@ Left-pad with zeros to `length` bytes.
 **Signature:**
 
 ```ts
-function zeroPadValue(value: string | Uint8Array, length: number): string
+function zeroPadValue(value: string | Uint8Array, length: number): string;
 ```
 
 **Example:**
@@ -320,7 +329,7 @@ Strip leading zero bytes.
 **Signature:**
 
 ```ts
-function stripZeros(value: string | Uint8Array): string
+function stripZeros(value: string | Uint8Array): string;
 ```
 
 **Example:**
@@ -339,14 +348,14 @@ Byte length (hex char count / 2).
 **Signature:**
 
 ```ts
-function dataLength(value: string): number
+function dataLength(value: string): number;
 ```
 
 **Example:**
 
 ```ts
 console.log(dataLength("0xdeadbeef")); // → 4
-console.log(dataLength("0x"));         // → 0
+console.log(dataLength("0x")); // → 0
 ```
 
 ---
@@ -358,13 +367,13 @@ Slice by byte offsets — like `Uint8Array.subarray` but for hex strings.
 **Signature:**
 
 ```ts
-function dataSlice(value: string, start: number, end?: number): string
+function dataSlice(value: string, start: number, end?: number): string;
 ```
 
 **Example:**
 
 ```ts
-console.log(dataSlice("0xdeadbeef", 1));    // → "0xadbeef"
+console.log(dataSlice("0xdeadbeef", 1)); // → "0xadbeef"
 console.log(dataSlice("0xdeadbeef", 1, 3)); // → "0xadbe"
 ```
 
@@ -397,7 +406,7 @@ console.log(Address.zero());
 // → "0x0000000000000000000000000000000000000000000000000000000000000000"
 ```
 
-Useful as the `to` field for envelope-style txs (Deploy, RegisterPubkey, Stake*, Multisig, etc.).
+Useful as the `to` field for envelope-style txs (Deploy, RegisterPubkey, Stake\*, Multisig, etc.).
 
 ---
 
@@ -434,7 +443,7 @@ Address.isValid(addr: string): boolean
 
 ```ts
 console.log(Address.isValid("0x" + "ab".repeat(32))); // → true
-console.log(Address.isValid("0xabc"));                 // → false (too short)
+console.log(Address.isValid("0xabc")); // → false (too short)
 console.log(Address.isValid("0xZZ" + "ab".repeat(31))); // → false (non-hex)
 ```
 
@@ -512,22 +521,22 @@ console.log(Address.isValidPrivateKey("0x" + "00".repeat(1024))); // → false (
 
 Useful when working at the wire level.
 
-| Constant | Value | What it is |
-|---|---|---|
-| **Zero address** | `0x` + `00` × 32 | Used as `to` for envelope-style txs. |
-| **Decimals per PYDE** | `9` | 1 PYDE = 10⁹ quanta. |
-| **FALCON-512 pubkey size** | 897 bytes (1,794 hex chars) | The on-chain public key length. |
-| **FALCON-512 secret key size** | 1,281 bytes (2,562 hex chars) | The full private key. |
-| **FALCON-512 signature size** | ~666 bytes (compact-encoded) | Variable; 690 is the max. |
-| **Poseidon2 hash output** | 32 bytes | Address derivation + state root (Poseidon2 leg). |
-| **Blake3 hash output** | 32 bytes | State root (Blake3 leg) + general digests. |
-| **Kyber-768 ciphertext size** | 1,088 bytes | Encrypted-mempool envelope. |
-| **Address byte length** | 32 | All Pyde addresses. |
-| **Nonce window size** | 16 | Concurrent unconfirmed txs per sender. |
-| **Min tx gas** | 21,000 | Structural validator floor (`MIN_GAS_LIMIT`). |
-| **Max tx size** | 128 KB | Structural validator cap (`MAX_TX_SIZE`). |
-| **Max calldata size** | 64 KB | Structural validator cap (`MAX_CALLDATA`). |
-| **Max logs span per `getLogs`** | 5,000 waves | HOST_FN_ABI §15.4 cap. |
+| Constant                        | Value                         | What it is                                       |
+| ------------------------------- | ----------------------------- | ------------------------------------------------ |
+| **Zero address**                | `0x` + `00` × 32              | Used as `to` for envelope-style txs.             |
+| **Decimals per PYDE**           | `9`                           | 1 PYDE = 10⁹ quanta.                             |
+| **FALCON-512 pubkey size**      | 897 bytes (1,794 hex chars)   | The on-chain public key length.                  |
+| **FALCON-512 secret key size**  | 1,281 bytes (2,562 hex chars) | The full private key.                            |
+| **FALCON-512 signature size**   | ~666 bytes (compact-encoded)  | Variable; 690 is the max.                        |
+| **Poseidon2 hash output**       | 32 bytes                      | Address derivation + state root (Poseidon2 leg). |
+| **Blake3 hash output**          | 32 bytes                      | State root (Blake3 leg) + general digests.       |
+| **Kyber-768 ciphertext size**   | 1,088 bytes                   | Encrypted-mempool envelope.                      |
+| **Address byte length**         | 32                            | All Pyde addresses.                              |
+| **Nonce window size**           | 16                            | Concurrent unconfirmed txs per sender.           |
+| **Min tx gas**                  | 21,000                        | Structural validator floor (`MIN_GAS_LIMIT`).    |
+| **Max tx size**                 | 128 KB                        | Structural validator cap (`MAX_TX_SIZE`).        |
+| **Max calldata size**           | 64 KB                         | Structural validator cap (`MAX_CALLDATA`).       |
+| **Max logs span per `getLogs`** | 5,000 waves                   | HOST_FN_ABI §15.4 cap.                           |
 
 ### Why these matter
 
@@ -541,7 +550,7 @@ Useful when working at the wire level.
 ## Gotchas
 
 - **PYDE has 9 decimals, not 18.** Don't reuse `ethers.formatEther` — wrong decimal count.
-- **`parseQuanta("1")` is 1 *PYDE*, not 1 *quanta*.** Use `1n` directly for one quanta.
+- **`parseQuanta("1")` is 1 _PYDE_, not 1 _quanta_.** Use `1n` directly for one quanta.
 - **`Number(quanta)` loses precision above 2⁵³.** Format via `formatQuanta` instead of pre-converting to `Number`.
 - **Addresses are case-insensitive on chain** but display in lower-case by convention. `Address.equals` normalises both sides.
 - **`isHexString(x, 32)` checks 32 bytes (64 hex chars).** Some other libraries take `length` as char count — different convention.

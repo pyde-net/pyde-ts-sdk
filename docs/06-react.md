@@ -57,10 +57,7 @@ import { PydeProvider } from "pyde-ts-sdk/react";
 
 function App() {
   return (
-    <PydeProvider
-      rpcUrl="https://rpc.pyde.network"
-      wsUrl="wss://rpc.pyde.network"
-    >
+    <PydeProvider rpcUrl="https://rpc.pyde.network" wsUrl="wss://rpc.pyde.network">
       <Dapp />
     </PydeProvider>
   );
@@ -78,14 +75,15 @@ interface PydeProviderProps {
 }
 ```
 
-| Prop | Type | Required | Description |
-|---|---|---|---|
-| `children` | `ReactNode` | yes | Your app. |
-| `rpcUrl` | `string` | yes | HTTPS RPC endpoint. `Provider` is constructed under the hood. |
-| `wsUrl` | `string` | no | Optional WSS URL. If omitted, `useLiveWave` / `useEvents` fall back to polling over HTTP. |
-| `signer` | `Wallet` | no | Optional bound wallet — surfaced via `usePydeSigner()`. |
+| Prop       | Type        | Required | Description                                                                               |
+| ---------- | ----------- | -------- | ----------------------------------------------------------------------------------------- |
+| `children` | `ReactNode` | yes      | Your app.                                                                                 |
+| `rpcUrl`   | `string`    | yes      | HTTPS RPC endpoint. `Provider` is constructed under the hood.                             |
+| `wsUrl`    | `string`    | no       | Optional WSS URL. If omitted, `useLiveWave` / `useEvents` fall back to polling over HTTP. |
+| `signer`   | `Wallet`    | no       | Optional bound wallet — surfaced via `usePydeSigner()`.                                   |
 
 **Notes:**
+
 - `Provider` is reconstructed if `rpcUrl` changes between renders.
 - `WebSocketProvider` is constructed in a `useEffect` (SSR-safe).
 
@@ -98,7 +96,7 @@ Get the raw `Provider`. Use when you need a method that doesn't have a dedicated
 **Signature:**
 
 ```ts
-function usePydeProvider(): Provider
+function usePydeProvider(): Provider;
 ```
 
 **Throws** when used outside `<PydeProvider>`.
@@ -127,7 +125,7 @@ Get the `WebSocketProvider` (or `null` if `wsUrl` wasn't passed).
 **Signature:**
 
 ```ts
-function usePydeWebSocket(): WebSocketProvider | null
+function usePydeWebSocket(): WebSocketProvider | null;
 ```
 
 **Example:**
@@ -138,9 +136,9 @@ function CustomSub() {
   useEffect(() => {
     if (!ws) return;
     let unsub: () => void | undefined;
-    ws.subscribeNewHeads((header) => console.log("wave", header.waveId)).then(
-      (u) => { unsub = u; },
-    );
+    ws.subscribeNewHeads((header) => console.log("wave", header.waveId)).then((u) => {
+      unsub = u;
+    });
     return () => unsub?.();
   }, [ws]);
   return null;
@@ -156,7 +154,7 @@ Get the `Wallet` (or `null` if `signer` wasn't passed).
 **Signature:**
 
 ```ts
-function usePydeSigner(): Wallet | null
+function usePydeSigner(): Wallet | null;
 ```
 
 ---
@@ -174,12 +172,12 @@ interface AsyncState<T> {
 }
 ```
 
-| Field | Type | Description |
-|---|---|---|
-| `data` | `T \| null` | The fetched value or `null` (before initial load or on error). |
-| `error` | `Error \| null` | Caught error from the fetch. |
-| `loading` | `boolean` | `true` during in-flight fetch. |
-| `refetch` | `() => Promise<T \| null>` | Manually re-run the fetcher. Returns the new value or throws. |
+| Field     | Type                       | Description                                                    |
+| --------- | -------------------------- | -------------------------------------------------------------- |
+| `data`    | `T \| null`                | The fetched value or `null` (before initial load or on error). |
+| `error`   | `Error \| null`            | Caught error from the fetch.                                   |
+| `loading` | `boolean`                  | `true` during in-flight fetch.                                 |
+| `refetch` | `() => Promise<T \| null>` | Manually re-run the fetcher. Returns the new value or throws.  |
 
 **Standard pattern:**
 
@@ -201,13 +199,13 @@ Fetch and react-render an address's balance.
 **Signature:**
 
 ```ts
-function useBalance(address: string | undefined): AsyncState<bigint>
+function useBalance(address: string | undefined): AsyncState<bigint>;
 ```
 
 **Args:**
 
-| Name | Type | Description |
-|---|---|---|
+| Name      | Type                  | Description                                                                              |
+| --------- | --------------------- | ---------------------------------------------------------------------------------------- |
 | `address` | `string \| undefined` | Address to query. Pass `undefined` to skip the fetch (useful while a wallet is loading). |
 
 **Returns:** `AsyncState<bigint>` — balance in quanta.
@@ -234,7 +232,7 @@ Fetch an address's nonce.
 **Signature:**
 
 ```ts
-function useNonce(address: string | undefined): AsyncState<bigint>
+function useNonce(address: string | undefined): AsyncState<bigint>;
 ```
 
 **Example:**
@@ -254,7 +252,7 @@ Fetch an address's full account record.
 **Signature:**
 
 ```ts
-function useAccount(address: string | undefined): AsyncState<Account | null>
+function useAccount(address: string | undefined): AsyncState<Account | null>;
 ```
 
 **Returns:** `AsyncState<Account | null>` — `data` is the `Account` or `null` if not on chain.
@@ -283,13 +281,13 @@ Fetch a specific wave header.
 **Signature:**
 
 ```ts
-function useWave(waveId?: Wave): AsyncState<WaveHeader | null>
+function useWave(waveId?: Wave): AsyncState<WaveHeader | null>;
 ```
 
 **Args:**
 
-| Name | Type | Description |
-|---|---|---|
+| Name     | Type                | Description                                                     |
+| -------- | ------------------- | --------------------------------------------------------------- |
 | `waveId` | `bigint` (optional) | Specific wave id. Omit for "latest" — currently engine-blocked. |
 
 **Example:**
@@ -308,12 +306,13 @@ Push-subscribe to new wave commits. Re-renders every wave.
 **Signature:**
 
 ```ts
-function useLiveWave(): WaveHeader | null
+function useLiveWave(): WaveHeader | null;
 ```
 
 **Returns:** the latest `WaveHeader` (or `null` before the first commit arrives).
 
 **Backing transport:**
+
 - If `wsUrl` was passed to `<PydeProvider>`: subscribes via `WebSocketProvider.subscribeNewHeads`.
 - Otherwise: polls `provider.getWave()` every ~2 s.
 
@@ -344,7 +343,7 @@ Subscribe to live event logs. Accumulates as they arrive.
 **Signature:**
 
 ```ts
-function useEvents(filter: LogSubscriptionFilter): Log[]
+function useEvents(filter: LogSubscriptionFilter): Log[];
 ```
 
 **`LogSubscriptionFilter`:**
@@ -385,6 +384,7 @@ function TransferFeed({ token }: { token: Contract }) {
 ```
 
 **Backing transport:**
+
 - If `wsUrl` was passed: WebSocket subscription.
 - Otherwise: polls historical `getLogs`.
 
@@ -399,20 +399,22 @@ Load an ABI + bind the current provider in one hook.
 **Signature:**
 
 ```ts
-function useContract(args: {
-  abiJson: string;
-  address: string;
-}): { contract: Contract | null; ready: boolean; error: Error | null }
+function useContract(args: { abiJson: string; address: string }): {
+  contract: Contract | null;
+  ready: boolean;
+  error: Error | null;
+};
 ```
 
 **Args:**
 
-| Name | Type | Description |
-|---|---|---|
+| Name      | Type     | Description          |
+| --------- | -------- | -------------------- |
 | `abiJson` | `string` | Raw ABI JSON string. |
-| `address` | `string` | Contract address. |
+| `address` | `string` | Contract address.    |
 
 **Returns:**
+
 - `contract` — `null` until `ready === true`.
 - `ready` — `true` after ABI is parsed.
 - `error` — populated if loading failed.
@@ -468,12 +470,7 @@ function CounterUI() {
 ## Recipe — dapp skeleton
 
 ```tsx
-import {
-  PydeProvider,
-  useBalance,
-  useLiveWave,
-  usePydeSigner,
-} from "pyde-ts-sdk/react";
+import { PydeProvider, useBalance, useLiveWave, usePydeSigner } from "pyde-ts-sdk/react";
 import { Wallet, formatPyde } from "pyde-ts-sdk";
 import { useEffect, useState } from "react";
 
@@ -488,11 +485,7 @@ function App() {
   if (!signer) return <p>loading…</p>;
 
   return (
-    <PydeProvider
-      rpcUrl="https://rpc.pyde.network"
-      wsUrl="wss://rpc.pyde.network"
-      signer={signer}
-    >
+    <PydeProvider rpcUrl="https://rpc.pyde.network" wsUrl="wss://rpc.pyde.network" signer={signer}>
       <Dapp />
     </PydeProvider>
   );

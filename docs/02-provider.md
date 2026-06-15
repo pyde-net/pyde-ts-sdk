@@ -18,17 +18,15 @@ HTTP JSON-RPC client for a Pyde node. **Use this when you need to read chain sta
   - [`getNonceAndChainId(address)`](#getnonceandchainidaddress)
   - [`getAccount(address)`](#getaccountaddress)
   - [`getContractCode(address)`](#getcontractcodeaddress)
-  - [`getContractState(address, slotHash)`](#getcontractstateaddress-slothash)
+  - [`getStorageSlot(slotHash)`](#getstorageslotslothash)
+  - [`getWaveId()`](#getwaveid)
   - [`resolveName(name)`](#resolvenamename)
   - [`getWave(waveId?)`](#getwavewaveid)
   - [`getHardFinalityCert(waveId)`](#gethardfinalitycertwaveid)
   - [`getSnapshotManifest(waveId)`](#getsnapshotmanifestwaveid)
-  - [`getBaseFee()`](#getbasefee)
-  - [`getFeeData()`](#getfeedata)
-- View calls + estimation
+- View calls + simulation
   - [`call(to, data, overrides?)`](#callto-data-overrides)
-  - [`estimateGas(to, data, overrides?)`](#estimategasto-data-overrides)
-  - [`estimateAccess(params)`](#estimateaccessparams)
+  - [Gas estimation status](#gas-estimation-status)
 - Write surface
   - [`sendRawTransaction(signedTxHex)`](#sendrawtransactionsignedtxhex)
   - [`sendRawEncryptedTransaction(encTxHex)`](#sendrawencryptedtransactionenctxhex)
@@ -75,10 +73,10 @@ new Provider(rpcUrl: string, options?: ProviderOptions)
 
 **Args:**
 
-| Name | Type | Required | Description |
-|---|---|---|---|
-| `rpcUrl` | `string` | yes | HTTPS endpoint. `http://` throws unless `allowInsecureTransport: true`. |
-| `options` | `ProviderOptions` | no | Timeouts, retries, custom headers. |
+| Name      | Type              | Required | Description                                                             |
+| --------- | ----------------- | -------- | ----------------------------------------------------------------------- |
+| `rpcUrl`  | `string`          | yes      | HTTPS endpoint. `http://` throws unless `allowInsecureTransport: true`. |
+| `options` | `ProviderOptions` | no       | Timeouts, retries, custom headers.                                      |
 
 **Returns:** `Provider` instance.
 
@@ -114,12 +112,12 @@ interface ProviderOptions {
 }
 ```
 
-| Field | Type | Default | What it does |
-|---|---|---|---|
-| `timeout` | `number` (ms) | `30_000` | Per-request timeout. The fetch is aborted when this elapses; the call rejects with `TimeoutError`. |
-| `retries` | `number` | `0` | Number of retries on **transport** errors (`fetch` threw, 5xx, `ECONNRESET`). Exponential backoff between attempts. Does **not** retry on `RpcError` — those mean the chain answered. |
-| `headers` | `Record<string, string>` | `{}` | Custom HTTP headers merged into every request. Useful for API keys, trace IDs, etc. |
-| `allowInsecureTransport` | `boolean` | `false` | Required to use `http://`. Production should never set this. |
+| Field                    | Type                     | Default  | What it does                                                                                                                                                                          |
+| ------------------------ | ------------------------ | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `timeout`                | `number` (ms)            | `30_000` | Per-request timeout. The fetch is aborted when this elapses; the call rejects with `TimeoutError`.                                                                                    |
+| `retries`                | `number`                 | `0`      | Number of retries on **transport** errors (`fetch` threw, 5xx, `ECONNRESET`). Exponential backoff between attempts. Does **not** retry on `RpcError` — those mean the chain answered. |
+| `headers`                | `Record<string, string>` | `{}`     | Custom HTTP headers merged into every request. Useful for API keys, trace IDs, etc.                                                                                                   |
+| `allowInsecureTransport` | `boolean`                | `false`  | Required to use `http://`. Production should never set this.                                                                                                                          |
 
 **Example — auth header + tight timeout:**
 
@@ -155,8 +153,8 @@ provider.getBalance(address: string): Promise<bigint>
 
 **Args:**
 
-| Name | Type | Description |
-|---|---|---|
+| Name      | Type     | Description                            |
+| --------- | -------- | -------------------------------------- |
 | `address` | `string` | `0x`-prefixed 64 hex chars (32 bytes). |
 
 **Returns:** `Promise<bigint>` — balance in **quanta** (1 PYDE = 10⁹ quanta). Use `formatQuanta` to render as a PYDE string.
@@ -164,7 +162,9 @@ provider.getBalance(address: string): Promise<bigint>
 **Example:**
 
 ```ts
-const balance = await provider.getBalance("0xf07856fdf4796baa6d477ddfe926774d367b25c20e8c7d9d337b63034c9e0cfa");
+const balance = await provider.getBalance(
+  "0xf07856fdf4796baa6d477ddfe926774d367b25c20e8c7d9d337b63034c9e0cfa",
+);
 console.log("balance:", balance, "quanta");
 console.log("balance:", formatQuanta(balance), "PYDE");
 ```
@@ -177,6 +177,7 @@ balance: 10.0 PYDE
 ```
 
 **Errors:**
+
 - `RpcError` — chain returned an error (e.g., `pyde_getBalance` not implemented).
 - `InvalidArgumentError` — malformed address.
 - `TimeoutError` — request exceeded `options.timeout`.
@@ -187,7 +188,7 @@ balance: 10.0 PYDE
 
 Get the next available nonce slot in the 16-slot sliding window.
 
-**Spec:** Chapter 17.4 · RPC methods `pyde_getNonce` → falls back to `pyde_getTransactionCount`
+**Spec:** Engine RPC catalog v0.1 §4 · RPC method `pyde_getTransactionCount`
 
 **Signature:**
 
@@ -197,8 +198,8 @@ provider.getNonce(address: string): Promise<bigint>
 
 **Args:**
 
-| Name | Type | Description |
-|---|---|---|
+| Name      | Type     | Description                    |
+| --------- | -------- | ------------------------------ |
 | `address` | `string` | `0x`-prefixed 32-byte address. |
 
 **Returns:** `Promise<bigint>` — next available nonce. `bigint` because chain nonces are u64; `number` would silently truncate above 2⁵³.
@@ -217,6 +218,7 @@ nonce: 42n
 ```
 
 **Notes:**
+
 - 16-slot window means up to 16 unconfirmed txs can be in flight (Chapter 11 §11.4).
 - Returns `0n` for fresh accounts.
 
@@ -250,6 +252,7 @@ chain: 31337
 ```
 
 **Notes:**
+
 - Chain ID is **genesis-immutable** — the SDK caches it after the first call.
 - To clear the cache: construct a new `Provider`.
 
@@ -267,8 +270,8 @@ provider.getNonceAndChainId(address: string): Promise<[bigint, number]>
 
 **Args:**
 
-| Name | Type | Description |
-|---|---|---|
+| Name      | Type     | Description                    |
+| --------- | -------- | ------------------------------ |
 | `address` | `string` | `0x`-prefixed 32-byte address. |
 
 **Returns:** `Promise<[bigint, number]>` — `[nonce, chainId]` tuple.
@@ -302,11 +305,12 @@ provider.getAccount(address: string): Promise<Account | null>
 
 **Args:**
 
-| Name | Type | Description |
-|---|---|---|
+| Name      | Type     | Description                    |
+| --------- | -------- | ------------------------------ |
 | `address` | `string` | `0x`-prefixed 32-byte address. |
 
 **Returns:** `Promise<Account | null>`:
+
 - `null` — no account record on chain (never been touched).
 - `Account` — populated record.
 
@@ -314,15 +318,15 @@ provider.getAccount(address: string): Promise<Account | null>
 
 ```ts
 interface Account {
-  address: string;        // 0x + 64 hex
-  nonce: bigint;          // u64
-  balance: bigint;        // u128 quanta
-  codeHash: string;       // 0x + 64 hex; "0x" + 64*"0" for EOAs
-  storageRoot: string;    // 0x + 64 hex
+  address: string; // 0x + 64 hex
+  nonce: bigint; // u64
+  balance: bigint; // u128 quanta
+  codeHash: string; // 0x + 64 hex; "0x" + 64*"0" for EOAs
+  storageRoot: string; // 0x + 64 hex
   accountType: AccountType; // EOA | Contract | System
-  authKeys: string;       // hex
-  gasTank: bigint;        // u128 quanta — paymaster pool
-  keyNonce: number;       // for key rotation events
+  authKeys: string; // hex
+  gasTank: bigint; // u128 quanta — paymaster pool
+  keyNonce: number; // for key rotation events
 }
 ```
 
@@ -348,6 +352,7 @@ nonce: 0n
 ```
 
 **Notes:**
+
 - `null` vs zero-balance EOA are distinguished — see the M-4 fix in [docs/13-migration.md](./13-migration.md).
 
 ---
@@ -366,8 +371,8 @@ provider.getContractCode(address: string): Promise<string>
 
 **Args:**
 
-| Name | Type | Description |
-|---|---|---|
+| Name      | Type     | Description       |
+| --------- | -------- | ----------------- |
 | `address` | `string` | Contract address. |
 
 **Returns:** `Promise<string>` — `0x`-prefixed hex of the WASM module bytes, or `"0x"` (empty) for EOAs.
@@ -391,35 +396,70 @@ WASM size: 27121 bytes
 
 ---
 
-## `getContractState(address, slotHash)`
+## `getStorageSlot(slotHash)`
 
-Get a single contract storage slot's value.
+Get the value at a single global storage slot key. Returns `null` if the slot was never written.
 
-**Spec:** Chapter 17.4 · RPC method `pyde_getContractState`
+**Spec:** Engine RPC catalog v0.1 §13 · RPC method `pyde_getStorageSlot`
 
 **Signature:**
 
 ```ts
-provider.getContractState(address: string, slotHash: string): Promise<string>
+provider.getStorageSlot(slotHash: string): Promise<string | null>
 ```
 
 **Args:**
 
-| Name | Type | Description |
-|---|---|---|
-| `address` | `string` | Contract address. |
-| `slotHash` | `string` | `0x`-prefixed 32-byte Poseidon2 slot key. |
+| Name       | Type     | Description                                                                               |
+| ---------- | -------- | ----------------------------------------------------------------------------------------- |
+| `slotHash` | `string` | `0x`-prefixed 32-byte **global** key. Slots are global in v1 — no per-contract iteration. |
 
-**Returns:** `Promise<string>` — `0x`-prefixed hex of the slot's bytes.
+**Returns:** `Promise<string \| null>` — slot value hex, or `null` if the slot was never written.
 
-**Example:**
+**Note:** The caller computes the full key. v1 has no JMT prefix-iteration primitive, so there's no `pyde_getContractState`.
+
+**Canonical derivation** (HOST_FN_ABI_SPEC §7.1):
+
+```text
+slot = Poseidon2(self_address || field_bytes [|| key_bytes])
+```
+
+- `self_address` — 32-byte contract address.
+- `field_bytes` — arbitrary bytes the contract author picked (e.g., `b"balances"`), **not** a numeric slot index. Contracts emit them verbatim from the storage field's declared name.
+- `key_bytes` — optional, used for mapping-style fields like `balances[user_address]`.
+
+Raw and typed-storage host-fn paths share the same preimage, so tools that resolve a slot from a schema read the same slot the contract writes.
+
+`poseidon2Hash(dataHex)` takes a `0x`-prefixed hex string for the full preimage and returns the 32-byte slot key as `0x` + 64 hex.
+
+**Example — read a scalar field `count`:**
 
 ```ts
-const slot = await provider.getContractState(
-  "0xcontract...",
-  "0x" + "00".repeat(32), // slot 0 (first declared state field)
-);
-console.log("slot 0:", slot);
+import { poseidon2Hash, hexlify, concat } from "pyde-ts-sdk";
+
+const contract = "0xcontract...";
+
+// preimage = self_address || field_bytes ("count" UTF-8)
+const fieldHex = hexlify(new TextEncoder().encode("count"));
+const preimage = concat([contract, fieldHex]);
+
+const slotKey = poseidon2Hash(preimage);
+const value = await provider.getStorageSlot(slotKey);
+console.log("count slot:", value);
+```
+
+**Example — read a mapping entry `balances[user]`:**
+
+```ts
+const userAddr = "0xuser...";
+
+// preimage = self_address || field_bytes ("balances") || key_bytes (user addr)
+const fieldHex = hexlify(new TextEncoder().encode("balances"));
+const preimage = concat([contract, fieldHex, userAddr]);
+
+const slotKey = poseidon2Hash(preimage);
+const balance = await provider.getStorageSlot(slotKey);
+console.log("balance hex:", balance);
 ```
 
 **Expected output:**
@@ -442,11 +482,12 @@ provider.resolveName(name: string): Promise<string | null>
 
 **Args:**
 
-| Name | Type | Description |
-|---|---|---|
+| Name   | Type     | Description                              |
+| ------ | -------- | ---------------------------------------- |
 | `name` | `string` | A registered name, e.g., `"alice.pyde"`. |
 
 **Returns:** `Promise<string | null>`:
+
 - `string` — the 32-byte address (hex).
 - `null` — name not registered.
 
@@ -479,8 +520,8 @@ provider.getWave(waveId?: Wave): Promise<WaveHeader | null>
 
 **Args:**
 
-| Name | Type | Description |
-|---|---|---|
+| Name     | Type                | Description                                                               |
+| -------- | ------------------- | ------------------------------------------------------------------------- |
 | `waveId` | `bigint` (optional) | Specific wave id. Omit for "latest committed" — currently engine-blocked. |
 
 **Returns:** `Promise<WaveHeader | null>` — header or `null` if the wave isn't on chain (e.g., asked for a future wave).
@@ -491,9 +532,9 @@ provider.getWave(waveId?: Wave): Promise<WaveHeader | null>
 interface WaveHeader {
   waveId: bigint;
   timestamp: string;
-  anchor: string;          // 0x + 64 hex; canonical anchor hash
-  stateRoot?: string;      // 0x + 64 hex
-  eventsRoot?: string;     // 0x + 64 hex
+  anchor: string; // 0x + 64 hex; canonical anchor hash
+  stateRoot?: string; // 0x + 64 hex
+  eventsRoot?: string; // 0x + 64 hex
   txCount?: number;
 }
 ```
@@ -518,6 +559,7 @@ txCount: 0
 ```
 
 **Gotchas:**
+
 - The no-arg `getWave()` path needs `pyde_getWaveNumber` / `pyde_blockNumber`; neither is exposed on devnet today. Always pass an explicit `waveId` in the meantime.
 - The wave header wire shape varies — see [internals → wave header tolerance](./14-internals.md#wave-header-tolerance).
 
@@ -537,9 +579,9 @@ provider.getHardFinalityCert(waveId: number): Promise<HardFinalityCert | null>
 
 **Args:**
 
-| Name | Type | Description |
-|---|---|---|
-| `waveId` | `number` | Wave id. |
+| Name     | Type     | Description |
+| -------- | -------- | ----------- |
+| `waveId` | `number` | Wave id.    |
 
 **Returns:** `Promise<HardFinalityCert | null>` — certificate or `null` if the wave hasn't reached hard finality.
 
@@ -572,8 +614,8 @@ provider.getSnapshotManifest(waveId: number): Promise<SnapshotManifest | null>
 
 **Args:**
 
-| Name | Type | Description |
-|---|---|---|
+| Name     | Type     | Description       |
+| -------- | -------- | ----------------- |
 | `waveId` | `number` | Snapshot wave id. |
 
 **Returns:** `Promise<SnapshotManifest | null>`:
@@ -598,71 +640,34 @@ if (manifest) {
 
 ---
 
-## `getBaseFee()`
+## `getWaveId()`
 
-Get the current base fee per gas.
+Return the current head wave id. Pyde's analogue of EVM `block.number`.
 
-**Spec:** Chapter 10 · RPC methods `pyde_getBaseFee` → falls back to `pyde_gasPrice`
+**Spec:** Engine RPC catalog v0.1 §2 · RPC method `pyde_waveId`
 
 **Signature:**
 
 ```ts
-provider.getBaseFee(): Promise<bigint>
+provider.getWaveId(): Promise<Wave>
 ```
 
-**Returns:** `Promise<bigint>` — base fee in quanta per gas.
+**Returns:** `Promise<bigint>` — current committed head.
 
 **Example:**
 
 ```ts
-const baseFee = await provider.getBaseFee();
-console.log("base fee:", baseFee, "quanta/gas");
+const head = await provider.getWaveId();
+console.log("head:", head);
 ```
 
 **Expected output:**
 
 ```
-base fee: 1n quanta/gas
+head: 12345n
 ```
 
-**Notes:**
-- v1 has **no priority tip**. Gas price equals the base fee.
-
----
-
-## `getFeeData()`
-
-Convenience wrapper exposing the fee market.
-
-**Signature:**
-
-```ts
-provider.getFeeData(): Promise<FeeData>
-```
-
-**Returns:** `Promise<FeeData>`:
-
-```ts
-interface FeeData {
-  baseFee: bigint;
-  gasPrice: bigint;            // === baseFee in v1
-  maxFeePerGas: bigint | null; // === baseFee in v1
-  maxPriorityFeePerGas: bigint; // 0n in v1 (no tips)
-}
-```
-
-**Example:**
-
-```ts
-const fee = await provider.getFeeData();
-console.log(fee);
-```
-
-**Expected output:**
-
-```
-{ baseFee: 1n, gasPrice: 1n, maxFeePerGas: 1n, maxPriorityFeePerGas: 0n }
-```
+Used internally by `getWave()` when no wave id is passed.
 
 ---
 
@@ -680,11 +685,11 @@ provider.call(to: string, data: string, overrides?: CallOverrides): Promise<stri
 
 **Args:**
 
-| Name | Type | Description |
-|---|---|---|
-| `to` | `string` | Contract address. |
-| `data` | `string` | Borsh-encoded `CallPayload {function, calldata}` bytes (hex). Usually built via `Contract.encodeCall`. |
-| `overrides` | `CallOverrides` (optional) | `from`, `value`, `gasLimit` overrides for the simulation context. |
+| Name        | Type                       | Description                                                                                            |
+| ----------- | -------------------------- | ------------------------------------------------------------------------------------------------------ |
+| `to`        | `string`                   | Contract address.                                                                                      |
+| `data`      | `string`                   | Borsh-encoded `CallPayload {function, calldata}` bytes (hex). Usually built via `Contract.encodeCall`. |
+| `overrides` | `CallOverrides` (optional) | `from`, `value`, `gasLimit` overrides for the simulation context.                                      |
 
 **`CallOverrides`:**
 
@@ -718,97 +723,23 @@ ret hex: 0x2a00000000000000
 (That's borsh-encoded `u64 = 42` — 8 LE bytes.)
 
 **Errors:**
+
 - `CallExceptionError` — call reverted. `.revertReason` carries the chain's message.
 - `RpcError` — chain returned a JSON-RPC error.
 
 ---
 
-## `estimateGas(to, data, overrides?)`
+## Gas estimation status
 
-Estimate gas required for a call. Used by `Wallet.transfer` / `sendCall` for auto-estimation.
+The v1 engine has **no dedicated `pyde_estimateGas` or `pyde_estimateAccess`** RPC methods. Both responsibilities ride on a single `pyde_simulateTransaction` dry-run that returns receipt + access-list together. The SDK doesn't wrap that surface yet — wiring it is queued as **Tier-2 catalog alignment**.
 
-**Spec:** Chapter 17.4 · RPC method `pyde_estimateGas`
+In the meantime:
 
-**Signature:**
+- `Wallet.transfer` and `Wallet.sendCall` use **fixed conservative defaults**: 100,000 gas for plain transfers (`data === "0x"`), 5,000,000 gas for calldata-bearing calls. Override at the call site (`{ gasLimit: ... }`) when you have a tighter bound.
+- `Contract.estimateGas(...)` returns the same 5,000,000 default. The arg encoding is still validated so type errors surface at call time; the chain just isn't consulted.
+- Access lists must be supplied manually via `opts.accessList` if you want parallel-schedulable txs. Without them, the chain serializes (costing throughput, not correctness).
 
-```ts
-provider.estimateGas(to: string, data: string, overrides?: CallOverrides): Promise<number>
-```
-
-**Returns:** `Promise<number>` — gas estimate.
-
-**Example:**
-
-```ts
-const gas = await provider.estimateGas(
-  "0xcontract...",
-  counter.encodeCall("increment"),
-);
-console.log("estimated:", gas);
-```
-
-**Expected output:**
-
-```
-estimated: 45000
-```
-
-**Notes:**
-- Not yet exposed on devnet — `Wallet.transfer` falls back to 100k / 5M defaults when this throws `method not found`.
-
----
-
-## `estimateAccess(params)`
-
-Simulate a call and return the inferred access list (slots read / written).
-
-**Spec:** Chapter 17.4 · RPC method `pyde_estimateAccess`
-
-**Signature:**
-
-```ts
-provider.estimateAccess(params: {
-  to: string;
-  data: string;
-  from?: string;
-  value?: bigint | number | string;
-  gasLimit?: number;
-}): Promise<AccessEntry[]>
-```
-
-**Returns:** `Promise<AccessEntry[]>`:
-
-```ts
-interface AccessEntry {
-  address: string;       // contract address
-  storageKeys: string[]; // 32-byte slot keys (hex)
-  accessType: "Read" | "Write";
-}
-```
-
-**Example:**
-
-```ts
-const accessList = await provider.estimateAccess({
-  to: "0xcontract...",
-  data: counter.encodeCall("increment"),
-});
-console.log("access entries:", accessList.length);
-for (const entry of accessList) {
-  console.log(entry.accessType, entry.storageKeys.length, "slots");
-}
-```
-
-**Expected output:**
-
-```
-access entries: 1
-Write 1 slots
-```
-
-**Notes:**
-- Used by wallets to attach access lists to outgoing txs so the chain's parallel scheduler can place them without blocking.
-- **Off by default for encrypted submissions** — leaks the touched slot keys.
+When Tier-2 lands, the same call sites pick up real chain estimates with no API change.
 
 ---
 
@@ -826,15 +757,15 @@ provider.sendRawTransaction(signedTxHex: string): Promise<TransactionResponse>
 
 **Args:**
 
-| Name | Type | Description |
-|---|---|---|
+| Name          | Type     | Description                             |
+| ------------- | -------- | --------------------------------------- |
 | `signedTxHex` | `string` | Output of `wallet.signTransaction(tx)`. |
 
 **Returns:** `Promise<TransactionResponse>`:
 
 ```ts
 interface TransactionResponse {
-  hash: string;                                  // tx hash
+  hash: string; // tx hash
   wait: (timeoutMs?: number) => Promise<Receipt>; // convenience receipt poll
 }
 ```
@@ -890,6 +821,7 @@ provider.getThresholdPublicKey(): Promise<string>
 **Returns:** `Promise<string>` — `0x`-prefixed hex of the Kyber-768 public key.
 
 **Notes:**
+
 - The key **rotates per epoch**. SDK refetches on every encrypted submission rather than caching.
 - Used internally by `wallet.sendEncrypted`; rarely called directly.
 
@@ -906,6 +838,7 @@ provider.getTransaction(txHash: string): Promise<TransactionInfo | null>
 ```
 
 **Returns:** `Promise<TransactionInfo | null>`:
+
 - `null` — tx not on chain.
 - Object with `txHash`, `waveId`, `txIndex`, `from`, `to`, `value`, `data`, `nonce`, `gasLimit`, `chainId`, etc.
 
@@ -932,6 +865,7 @@ provider.getTransactionReceipt(txHash: string): Promise<Receipt | null>
 ```
 
 **Returns:** `Promise<Receipt | null>`:
+
 - `null` — tx not yet committed (or never will be).
 - `Receipt` — populated receipt.
 
@@ -941,8 +875,8 @@ provider.getTransactionReceipt(txHash: string): Promise<Receipt | null>
 interface Receipt {
   txHash: string;
   success: boolean;
-  gasUsed: string;       // 0x-prefixed hex
-  effectiveGas: string;  // 0x0 when chain doesn't ship it
+  gasUsed: string; // 0x-prefixed hex
+  effectiveGas: string; // 0x0 when chain doesn't ship it
   feePaid: string;
   feeBurned: string;
   feeValidator: string;
@@ -984,10 +918,10 @@ provider.waitForReceipt(txHash: string, timeoutMs?: number): Promise<Receipt>
 
 **Args:**
 
-| Name | Type | Default | Description |
-|---|---|---|---|
-| `txHash` | `string` | required | Tx hash from `sendRawTransaction`. |
-| `timeoutMs` | `number` | `10_000` | Stop polling after this many ms. |
+| Name        | Type     | Default  | Description                        |
+| ----------- | -------- | -------- | ---------------------------------- |
+| `txHash`    | `string` | required | Tx hash from `sendRawTransaction`. |
+| `timeoutMs` | `number` | `10_000` | Stop polling after this many ms.   |
 
 **Returns:** `Promise<Receipt>` — receipt once available.
 
@@ -1015,6 +949,7 @@ provider.sendAndWait(signedTxHex: string, timeoutMs?: number): Promise<Receipt>
 ```
 
 **Throws:**
+
 - `CallExceptionError` when `receipt.success === false` (with `gasUsed` + decoded `reason`).
 - `TimeoutError` when no receipt by `timeoutMs`.
 - `RpcError` when `sendRawTransaction` fails.
@@ -1044,12 +979,12 @@ provider.getLogs(filter: LogFilter): Promise<GetLogsResponse>
 
 ```ts
 interface LogFilter {
-  fromWave: Wave;                    // bigint
-  toWave: Wave;                      // bigint
-  topics?: (string[] | null)[];      // up to 4 positional slots
+  fromWave: Wave; // bigint
+  toWave: Wave; // bigint
+  topics?: (string[] | null)[]; // up to 4 positional slots
   contract?: string;
   cursor?: EventCursor;
-  limit?: number;                    // default 100
+  limit?: number; // default 100
 }
 ```
 
@@ -1085,6 +1020,7 @@ more pages — resume from { waveId: 998n, txIndex: 0, eventIndex: 3 }
 ```
 
 **Constraints:**
+
 - `toWave - fromWave ≤ 5_000` (HOST_FN_ABI §15.4).
 - Larger queries fail; page via `cursor`.
 
@@ -1126,6 +1062,7 @@ nonce: 0
 ```
 
 **Notes:**
+
 - One HTTP round-trip → much lower latency than N sequential calls.
 - Results are returned in request order regardless of how the chain processes them.
 
@@ -1133,15 +1070,16 @@ nonce: 0
 
 ## Retry semantics
 
-| Layer | What retries | When | Backoff |
-|---|---|---|---|
-| `options.retries` | transport errors (5xx, ECONNRESET, abort) | `fetch` throws | exponential, capped |
-| `callWithFallback` (internal) | per-fallback-method-name list | `method not found` | none — try next |
-| `WebSocketProvider` reconnect | socket dropped | `close` event | exponential, capped at `reconnectMaxDelayMs` |
-| `Wallet.transfer` gas estimation | once | `estimateGas` fails | hardcoded fallback (100k / 5M) |
-| `waitForReceipt` | every ~500 ms until `timeoutMs` | receipt not yet available | linear |
+| Layer                            | What retries                              | When                      | Backoff                                      |
+| -------------------------------- | ----------------------------------------- | ------------------------- | -------------------------------------------- |
+| `options.retries`                | transport errors (5xx, ECONNRESET, abort) | `fetch` throws            | exponential, capped                          |
+| `callWithFallback` (internal)    | per-fallback-method-name list             | `method not found`        | none — try next                              |
+| `WebSocketProvider` reconnect    | socket dropped                            | `close` event             | exponential, capped at `reconnectMaxDelayMs` |
+| `Wallet.transfer` gas estimation | once                                      | `estimateGas` fails       | hardcoded fallback (100k / 5M)               |
+| `waitForReceipt`                 | every ~500 ms until `timeoutMs`           | receipt not yet available | linear                                       |
 
 **Never retries on:**
+
 - `RpcError` — chain answered with an explicit error.
 - `CallExceptionError` — chain answered with revert.
 
@@ -1149,13 +1087,13 @@ nonce: 0
 
 ## Errors
 
-| Class | When | Recovery |
-|---|---|---|
-| `InvalidArgumentError` | `http://` URL without `allowInsecureTransport: true`; malformed address. | Fix the input. |
-| `ConnectionError` | Transport failed. | Retry with backoff. |
-| `TimeoutError` | Request exceeded `options.timeout`. | Retry / extend timeout. |
-| `RpcError` | Chain returned `{error: {code, message}}`. `.code` carries the JSON-RPC error code. | Inspect `.rpcError.code`. |
-| `CallExceptionError` | `pyde_call` reverted. `.revertReason` populated. | Show the user the reason. |
+| Class                  | When                                                                                | Recovery                  |
+| ---------------------- | ----------------------------------------------------------------------------------- | ------------------------- |
+| `InvalidArgumentError` | `http://` URL without `allowInsecureTransport: true`; malformed address.            | Fix the input.            |
+| `ConnectionError`      | Transport failed.                                                                   | Retry with backoff.       |
+| `TimeoutError`         | Request exceeded `options.timeout`.                                                 | Retry / extend timeout.   |
+| `RpcError`             | Chain returned `{error: {code, message}}`. `.code` carries the JSON-RPC error code. | Inspect `.rpcError.code`. |
+| `CallExceptionError`   | `pyde_call` reverted. `.revertReason` populated.                                    | Show the user the reason. |
 
 See [Chapter 10 — Errors](./10-errors.md) for the full hierarchy + type guards.
 
@@ -1164,7 +1102,7 @@ See [Chapter 10 — Errors](./10-errors.md) for the full hierarchy + type guards
 ## Gotchas
 
 - **bigint everywhere on the wire.** `getNonce`, `getBalance`, `getWave`, `latestWaveId`, log cursor fields are all `bigint`. JSON-RPC ships hex strings; the SDK parses them losslessly. Don't `Number(nonce)` unless you know it's small.
-- **`getWave()` no-arg path doesn't work today.** Engine doesn't expose `pyde_getWaveNumber` or `pyde_blockNumber` — pass a concrete `waveId`.
+- **`getWave()` no-arg path now resolves the head via `pyde_waveId`** (use `getWaveId()` directly if you only need the number). Older docs referenced `pyde_getWaveNumber` / `pyde_blockNumber` — those never existed in the v1 catalog.
 - **`getLogs` wave span is capped at 5,000.** Larger queries return an RPC error; page via `cursor`.
 - **`http://` URLs throw.** Devnet local dev: pass `allowInsecureTransport: true`. Anywhere else: use `https://`.
 - **Chain-id is cached.** First `getChainId()` hits the network; subsequent reads from the cache. Rebuild the Provider for a fresh fetch.

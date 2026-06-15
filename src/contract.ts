@@ -418,11 +418,16 @@ export class Contract<TAbi extends AbiShape = DefaultAbi> {
     return (this as Contract).read(method, args);
   }
 
-  /** Estimate gas for a contract call using the ABI. */
+  /** Conservative gas estimate for a contract call. v1 engine has no
+   *  dedicated `pyde_estimateGas`; this returns a fixed 5,000,000
+   *  default suitable for non-trivial calls. Override at the call
+   *  site (`write({ gasLimit: ... })`) when you have a tighter bound. */
   async estimateGas<M extends FnName<TAbi>>(method: M, args?: FnArgs<TAbi, M>): Promise<number>;
   async estimateGas(method: string, args: Record<string, any> = {}): Promise<number> {
-    const calldata = this.encodeCall(method, args);
-    return this.provider.estimateGas(this.address, calldata);
+    // Encode to validate the call shape before returning; the chain
+    // doesn't actually run anything in the v1 stub.
+    void this.encodeCall(method, args);
+    return 5_000_000;
   }
 
   // ========================================================================

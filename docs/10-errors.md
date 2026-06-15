@@ -81,13 +81,14 @@ Transaction reverted (on chain).
 
 ```ts
 class CallExceptionError extends PydeError {
-  readonly gasUsed: string;       // 0x-prefixed quanta
-  readonly data: string;          // raw return data hex
+  readonly gasUsed: string; // 0x-prefixed quanta
+  readonly data: string; // raw return data hex
   readonly reason: string | null; // decoded if contract used `pyde::revert("msg")`
 }
 ```
 
 **Thrown by:**
+
 - `Provider.call` on a reverted view call.
 - `Provider.sendAndWait` when the receipt's `success === false`.
 - Any path that polls a receipt and finds a revert.
@@ -115,6 +116,7 @@ gas used: 21000
 ```
 
 **Notes:**
+
 - `reason` is `null` when the contract reverts without a message.
 - `data` is the raw return-data hex — useful for custom decoding.
 
@@ -129,6 +131,7 @@ class ConnectionError extends PydeError {}
 ```
 
 **Causes:**
+
 - `fetch` threw (network unreachable, DNS failure).
 - WebSocket socket dropped past `reconnectMaxAttempts`.
 - `ECONNRESET`, `ECONNREFUSED`.
@@ -160,6 +163,7 @@ class TimeoutError extends PydeError {}
 ```
 
 **Causes:**
+
 - `ProviderOptions.timeout` elapsed during fetch.
 - `waitForReceipt(hash, timeoutMs)` timeout passed without the tx being mined.
 - WebSocket `rpcTimeoutMs` exceeded.
@@ -196,6 +200,7 @@ class InvalidArgumentError extends PydeError {
 ```
 
 **Common triggers:**
+
 - `Provider("http://…")` without `allowInsecureTransport: true`.
 - `getBalance("not-an-address")`.
 - `transfer("0x…", -5n)`.
@@ -231,6 +236,7 @@ class InsufficientFundsError extends PydeError {}
 ```
 
 **Surfaces:**
+
 - Pre-flight (when the SDK can detect it from `getBalance`).
 - Post-RPC (when the chain rejects).
 
@@ -298,6 +304,7 @@ class SigningError extends PydeError {}
 ```
 
 **Triggers:**
+
 - Invalid SK hex.
 - Malformed `TxFields`.
 - Keystore tamper detected (AEAD decrypt failed).
@@ -336,6 +343,7 @@ class WalletDestroyedError extends SigningError {}
 The message includes a clear "generate a new Wallet to sign" hint.
 
 **Catch via:**
+
 - `instanceof WalletDestroyedError`
 - `e.code === "SIGNING_ERROR"` (matches all SigningErrors)
 
@@ -371,14 +379,14 @@ Catch-all type guard.
 **Signature:**
 
 ```ts
-function isError(e: unknown, code: ErrorCode): boolean
+function isError(e: unknown, code: ErrorCode): boolean;
 ```
 
 **Args:**
 
-| Name | Type | Description |
-|---|---|---|
-| `e` | `unknown` | Caught value. |
+| Name   | Type        | Description                    |
+| ------ | ----------- | ------------------------------ |
+| `e`    | `unknown`   | Caught value.                  |
 | `code` | `ErrorCode` | One of the eight string codes. |
 
 **Returns:** `boolean` — `true` iff `e instanceof PydeError && e.code === code`.
@@ -412,7 +420,7 @@ Narrowed guard for `CallExceptionError`. TS narrows the type inside the block.
 **Signature:**
 
 ```ts
-function isCallException(e: unknown): e is CallExceptionError
+function isCallException(e: unknown): e is CallExceptionError;
 ```
 
 **Example:**
@@ -445,28 +453,28 @@ type ErrorCode =
   | "UNKNOWN_ERROR";
 ```
 
-| Code | Class |
-|---|---|
-| `"CALL_EXCEPTION"` | `CallExceptionError` |
-| `"CONNECTION_ERROR"` | `ConnectionError` |
-| `"TIMEOUT"` | `TimeoutError` |
-| `"INVALID_ARGUMENT"` | `InvalidArgumentError` |
-| `"INSUFFICIENT_FUNDS"` | `InsufficientFundsError` |
-| `"RPC_ERROR"` | `RpcError` |
-| `"SIGNING_ERROR"` | `SigningError`, `WalletDestroyedError` |
-| `"UNKNOWN_ERROR"` | Reserved; not currently emitted. |
+| Code                   | Class                                  |
+| ---------------------- | -------------------------------------- |
+| `"CALL_EXCEPTION"`     | `CallExceptionError`                   |
+| `"CONNECTION_ERROR"`   | `ConnectionError`                      |
+| `"TIMEOUT"`            | `TimeoutError`                         |
+| `"INVALID_ARGUMENT"`   | `InvalidArgumentError`                 |
+| `"INSUFFICIENT_FUNDS"` | `InsufficientFundsError`               |
+| `"RPC_ERROR"`          | `RpcError`                             |
+| `"SIGNING_ERROR"`      | `SigningError`, `WalletDestroyedError` |
+| `"UNKNOWN_ERROR"`      | Reserved; not currently emitted.       |
 
 ---
 
 ## Retry semantics
 
-| Layer | Retries? | When | Backoff |
-|---|---|---|---|
-| `Provider.options.retries` | configurable | Transport errors (5xx, ECONNRESET, abort). | exponential, capped |
-| `Provider.callWithFallback` (internal) | per fallback list | `method not found` → try next method name. | none |
-| `WebSocketProvider` reconnect | per `reconnectMaxAttempts` | Socket dropped. | exponential, capped at `reconnectMaxDelayMs` |
-| `Wallet.transfer` gas estimation | once | `estimateGas` fails → fall back to 100k / 5M defaults. | none |
-| `waitForReceipt` polling | every ~500 ms until `timeoutMs` | Receipt not yet available. | linear |
+| Layer                                  | Retries?                        | When                                                   | Backoff                                      |
+| -------------------------------------- | ------------------------------- | ------------------------------------------------------ | -------------------------------------------- |
+| `Provider.options.retries`             | configurable                    | Transport errors (5xx, ECONNRESET, abort).             | exponential, capped                          |
+| `Provider.callWithFallback` (internal) | per fallback list               | `method not found` → try next method name.             | none                                         |
+| `WebSocketProvider` reconnect          | per `reconnectMaxAttempts`      | Socket dropped.                                        | exponential, capped at `reconnectMaxDelayMs` |
+| `Wallet.transfer` gas estimation       | once                            | `estimateGas` fails → fall back to 100k / 5M defaults. | none                                         |
+| `waitForReceipt` polling               | every ~500 ms until `timeoutMs` | Receipt not yet available.                             | linear                                       |
 
 **The SDK never retries on `RpcError` or `CallExceptionError`** — the chain answered, the answer is "no", the caller decides what to do.
 
@@ -480,6 +488,7 @@ The internal `scrubError` helper cleans up exception messages so long hex runs d
 - Any `0x`-prefixed 64+ char run → `0x[REDACTED]`.
 
 **Protects:**
+
 - 897-byte FALCON public keys (1,794 hex chars).
 - 1,281-byte FALCON SK (2,562 hex chars).
 - Tx wire bytes that may contain encrypted payloads.

@@ -54,12 +54,12 @@ The chain still sees `from`, `gas`, `nonce`, `chainId` in cleartext (replay prot
 
 ## When to use it
 
-| Use encrypted | Use plain |
-|---|---|
-| DEX swaps, AMM trades | Read-only / view calls (no submission anyway) |
-| NFT mints with bounded supply | Routine transfers between trusted parties |
-| MEV-sensitive contract interactions | Internal infra (treasury sweeps from a multisig) |
-| Anything you'd front-run if you saw it | Validator staking / reward claims |
+| Use encrypted                          | Use plain                                        |
+| -------------------------------------- | ------------------------------------------------ |
+| DEX swaps, AMM trades                  | Read-only / view calls (no submission anyway)    |
+| NFT mints with bounded supply          | Routine transfers between trusted parties        |
+| MEV-sensitive contract interactions    | Internal infra (treasury sweeps from a multisig) |
+| Anything you'd front-run if you saw it | Validator staking / reward claims                |
 
 The encrypted path is **~10–20 % more expensive in v1** (additional ciphertext gas + the threshold-decryption surcharge). For low-MEV-risk txs, plain submission is fine.
 
@@ -88,20 +88,21 @@ wallet.sendEncrypted(
 
 **Args:**
 
-| Name | Type | Description |
-|---|---|---|
-| `to` | `string` | Target address. |
-| `data` | `string` | Hex calldata. Build via `Contract.encodeCall(...)`. |
-| `opts.gasLimit` | `number` | Pin gas. Default `100_000_000` (encrypted txs have higher ceilings). |
-| `opts.value` | bigint / number / string | Quanta. |
-| `opts.deadline` | `bigint` | Wave id past which the tx auto-cancels. |
-| `opts.accessList` | `AccessEntry[]` | Manual access list. **⚠ leaks slot keys.** |
-| `opts.estimateAccess` | `boolean` | Run `provider.estimateAccess`. **⚠ leaks slot keys.** Off by default. |
-| `opts.provider` | `Provider` | Override the bound provider. |
+| Name                  | Type                     | Description                                                                                                                                                                                                                                      |
+| --------------------- | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `to`                  | `string`                 | Target address.                                                                                                                                                                                                                                  |
+| `data`                | `string`                 | Hex calldata. Build via `Contract.encodeCall(...)`.                                                                                                                                                                                              |
+| `opts.gasLimit`       | `number`                 | Pin gas. Default `100_000_000` (encrypted txs have higher ceilings).                                                                                                                                                                             |
+| `opts.value`          | bigint / number / string | Quanta.                                                                                                                                                                                                                                          |
+| `opts.deadline`       | `bigint`                 | Wave id past which the tx auto-cancels.                                                                                                                                                                                                          |
+| `opts.accessList`     | `AccessEntry[]`          | Manual access list. **⚠ leaks slot keys.**                                                                                                                                                                                                       |
+| `opts.estimateAccess` | `boolean`                | Reserved for Tier-2 catalog alignment (currently a no-op — engine has no dedicated `pyde_estimateAccess` in v1). When wired it will route through `pyde_simulateTransaction`; setting `true` would leak slot keys, so the default stays `false`. |
+| `opts.provider`       | `Provider`               | Override the bound provider.                                                                                                                                                                                                                     |
 
 **Returns:** `Promise<Receipt>` — receipt after the tx is committed + decrypted on chain.
 
 **Throws:**
+
 - `WalletDestroyedError` — `destroy()` called.
 - `SigningError` — handle-backed wallet (encrypted send is hex-only for now).
 - `RpcError` — chain rejected.
@@ -149,11 +150,9 @@ wallet.transferEncrypted(
 **Example:**
 
 ```ts
-const receipt = await wallet.transferEncrypted(
-  "0xrecipient...",
-  parseQuanta("1"),
-  { deadline: 999_999n },
-);
+const receipt = await wallet.transferEncrypted("0xrecipient...", parseQuanta("1"), {
+  deadline: 999_999n,
+});
 ```
 
 ---
@@ -221,6 +220,7 @@ await wallet.sendEncrypted(...);
 Handle-backed wallets (`Wallet.generate()`) work everywhere else but not encrypted submission yet — that needs `buildRawEncryptedTxWithHandle` in `pyde-crypto-wasm`, on the engine-side gap list.
 
 **Workarounds:**
+
 - Generate hex → use immediately → `destroy()` after the tx.
 - Maintain a separate hex-backed wallet for encrypted ops and a handle-backed wallet for the rest.
 
@@ -240,12 +240,12 @@ Useful when the tx's purpose is time-sensitive (an arbitrage that's only profita
 
 ## Errors
 
-| Class | When |
-|---|---|
-| `WalletDestroyedError` | `destroy()` called before send. |
-| `SigningError` | Hex SK invalid / WASM signer failed / handle-backed wallet. |
-| `RpcError` | Chain rejected the encrypted submission (e.g., committee key mismatch). |
-| `TimeoutError` | Receipt polling timed out. The tx may still commit later — re-check with `provider.getTransactionReceipt`. |
+| Class                  | When                                                                                                       |
+| ---------------------- | ---------------------------------------------------------------------------------------------------------- |
+| `WalletDestroyedError` | `destroy()` called before send.                                                                            |
+| `SigningError`         | Hex SK invalid / WASM signer failed / handle-backed wallet.                                                |
+| `RpcError`             | Chain rejected the encrypted submission (e.g., committee key mismatch).                                    |
+| `TimeoutError`         | Receipt polling timed out. The tx may still commit later — re-check with `provider.getTransactionReceipt`. |
 
 ---
 

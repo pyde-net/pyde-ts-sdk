@@ -63,13 +63,12 @@ function rountrip<T>(c: Contract, retType: string, value: T): T {
 // --------------------------------------------------------------------------
 // fast-check arbitraries.
 // --------------------------------------------------------------------------
-const arbBigIntInRange = (min: bigint, max: bigint) =>
-  fc.bigInt({ min, max });
+const arbBigIntInRange = (min: bigint, max: bigint) => fc.bigInt({ min, max });
 
 // Address / FixedBytes:32 — `0x` + 64 hex chars.
-const arbAddress = fc.uint8Array({ minLength: 32, maxLength: 32 }).map(
-  (b) => "0x" + Array.from(b, (x) => x.toString(16).padStart(2, "0")).join(""),
-);
+const arbAddress = fc
+  .uint8Array({ minLength: 32, maxLength: 32 })
+  .map((b) => "0x" + Array.from(b, (x) => x.toString(16).padStart(2, "0")).join(""));
 
 const arbFixedBytes = (n: number) =>
   fc

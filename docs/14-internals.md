@@ -34,15 +34,15 @@ The SDK's contract codec is a **1:1 mirror** of the borsh-rs canonical spec. The
 
 ### Scalars (with exact wire bytes)
 
-| Type | Bytes | Encoding | Example value | Wire bytes |
-|---|---|---|---|---|
-| `u8`, `i8` | 1 | Direct byte | `u8 = 42` | `2a` |
-| `u16`, `i16` | 2 | Little-endian | `u16 = 0x1234` | `34 12` |
-| `u32`, `i32` | 4 | Little-endian | `u32 = 0xdeadbeef` | `ef be ad de` |
-| `u64`, `i64` | 8 | Little-endian | `u64 = 42` | `2a 00 00 00 00 00 00 00` |
-| `u128`, `i128` | 16 | Little-endian | `u128 = 1 << 100` | (1 at byte 12) |
-| `u256`, `i256` | 32 | Little-endian (Pyde ext.) | `u256 = 1 << 200` | (1 at byte 25) |
-| `bool` | 1 | `0x00` (false) / `0x01` (true) | `true` | `01` |
+| Type           | Bytes | Encoding                       | Example value      | Wire bytes                |
+| -------------- | ----- | ------------------------------ | ------------------ | ------------------------- |
+| `u8`, `i8`     | 1     | Direct byte                    | `u8 = 42`          | `2a`                      |
+| `u16`, `i16`   | 2     | Little-endian                  | `u16 = 0x1234`     | `34 12`                   |
+| `u32`, `i32`   | 4     | Little-endian                  | `u32 = 0xdeadbeef` | `ef be ad de`             |
+| `u64`, `i64`   | 8     | Little-endian                  | `u64 = 42`         | `2a 00 00 00 00 00 00 00` |
+| `u128`, `i128` | 16    | Little-endian                  | `u128 = 1 << 100`  | (1 at byte 12)            |
+| `u256`, `i256` | 32    | Little-endian (Pyde ext.)      | `u256 = 1 << 200`  | (1 at byte 25)            |
+| `bool`         | 1     | `0x00` (false) / `0x01` (true) | `true`             | `01`                      |
 
 For signed types, the encoder masks to the type's bit width so two's-complement negatives round-trip correctly:
 
@@ -54,38 +54,38 @@ i16 = -1  →  0xff 0xff
 
 ### Strings, Bytes, Vec
 
-| Type | Format | Example | Wire bytes |
-|---|---|---|---|
-| `String` | 4-byte LE u32 length + UTF-8 bytes (no padding, no null terminator) | `"hi"` | `02 00 00 00 68 69` |
-| `Vec<u8>` / `Bytes` | 4-byte LE u32 length + raw bytes | `[0xde, 0xad, 0xbe, 0xef]` | `04 00 00 00 de ad be ef` |
-| `Vec<T>` | 4-byte LE u32 count + T-encoded items | `Vec<u64> = [1, 2, 3]` | `03 00 00 00 01 00 00 00 00 00 00 00 02 00 00 00 00 00 00 00 03 00 00 00 00 00 00 00` |
+| Type                | Format                                                              | Example                    | Wire bytes                                                                            |
+| ------------------- | ------------------------------------------------------------------- | -------------------------- | ------------------------------------------------------------------------------------- |
+| `String`            | 4-byte LE u32 length + UTF-8 bytes (no padding, no null terminator) | `"hi"`                     | `02 00 00 00 68 69`                                                                   |
+| `Vec<u8>` / `Bytes` | 4-byte LE u32 length + raw bytes                                    | `[0xde, 0xad, 0xbe, 0xef]` | `04 00 00 00 de ad be ef`                                                             |
+| `Vec<T>`            | 4-byte LE u32 count + T-encoded items                               | `Vec<u64> = [1, 2, 3]`     | `03 00 00 00 01 00 00 00 00 00 00 00 02 00 00 00 00 00 00 00 03 00 00 00 00 00 00 00` |
 
 **Empty Vec is 4 bytes, not 0:** `Vec<u8>::default()` → `00 00 00 00` (length 0).
 
 ### Option, Tuple, Array
 
-| Type | Format | Example | Wire bytes |
-|---|---|---|---|
-| `Option<T>` | 1-byte tag (`00` = None, `01` = Some) + T-encoded value if Some | `Option<u32> = None` | `00` |
-| `Option<T>` (Some) | `01` + value bytes | `Option<u32> = Some(42)` | `01 2a 00 00 00` |
-| `(T1, T2, ...)` tuple | Items concatenated. No header, no length, no separator. | `(u8, u8) = (1, 2)` | `01 02` |
-| `[T; N]` fixed array | N items concatenated. No length prefix. | `[u8; 4] = [1, 2, 3, 4]` | `01 02 03 04` |
+| Type                  | Format                                                          | Example                  | Wire bytes       |
+| --------------------- | --------------------------------------------------------------- | ------------------------ | ---------------- |
+| `Option<T>`           | 1-byte tag (`00` = None, `01` = Some) + T-encoded value if Some | `Option<u32> = None`     | `00`             |
+| `Option<T>` (Some)    | `01` + value bytes                                              | `Option<u32> = Some(42)` | `01 2a 00 00 00` |
+| `(T1, T2, ...)` tuple | Items concatenated. No header, no length, no separator.         | `(u8, u8) = (1, 2)`      | `01 02`          |
+| `[T; N]` fixed array  | N items concatenated. No length prefix.                         | `[u8; 4] = [1, 2, 3, 4]` | `01 02 03 04`    |
 
 ### Struct + Enum
 
-| Type | Format | Example | Wire bytes |
-|---|---|---|---|
-| Struct | Fields concatenated in **declaration order**. No header. | `struct Order { id: u64, paid: bool }` with `id=42, paid=true` | `2a 00 00 00 00 00 00 00 01` |
-| Enum (unit variants) | 1-byte variant index | `enum Status { Pending=0, Active=1, Cancelled=2 }`, `Active` | `01` |
+| Type                 | Format                                                   | Example                                                        | Wire bytes                   |
+| -------------------- | -------------------------------------------------------- | -------------------------------------------------------------- | ---------------------------- |
+| Struct               | Fields concatenated in **declaration order**. No header. | `struct Order { id: u64, paid: bool }` with `id=42, paid=true` | `2a 00 00 00 00 00 00 00 01` |
+| Enum (unit variants) | 1-byte variant index                                     | `enum Status { Pending=0, Active=1, Cancelled=2 }`, `Active`   | `01`                         |
 
 **v1 supports unit-variant enums only.** Data-carrying variants are planned for v1.1.
 
 ### Fixed-byte arrays
 
-| Type | Format | Notes |
-|---|---|---|
-| `Address`, `Hash`, `Hash32` | 32 raw bytes | Encoder takes a `0x`-prefixed hex string and writes the 32 bytes verbatim. |
-| `FixedBytes:N` (where N ≠ 32) | N raw bytes | Same as `[u8; N]`. |
+| Type                          | Format       | Notes                                                                      |
+| ----------------------------- | ------------ | -------------------------------------------------------------------------- |
+| `Address`, `Hash`, `Hash32`   | 32 raw bytes | Encoder takes a `0x`-prefixed hex string and writes the 32 bytes verbatim. |
+| `FixedBytes:N` (where N ≠ 32) | N raw bytes  | Same as `[u8; N]`.                                                         |
 
 ```
 Address "0x" + "ab" × 32  →  ab ab ab ab ... ab  (32 bytes)
@@ -215,17 +215,17 @@ The `otigen build` artifact uses a discriminated-union type shape:
 
 The SDK's `normaliseAbiFunction` / `normaliseAbiType` flatten this to the encoder's expected shape:
 
-| Engine wire | Normalised |
-|---|---|
-| `"U64"` | `"u64"` |
-| `"Bool"` | `"bool"` |
-| `"String"`, `"Bytes"`, `"Address"` | unchanged |
-| `{ "Custom": "Order" }` | `"Order"` (resolved via struct/enum registry) |
-| `{ "Vec": "U64" }` | `"Vec<u64>"` |
-| `{ "FixedBytes": 32 }` | `"Address"` (alias) |
-| `{ "FixedBytes": N }` for N ≠ 32 | `"FixedBytes:N"` |
-| `{ "Option": "U32" }` | `"Option<u32>"` |
-| `null` (returns) | `"()"` |
+| Engine wire                        | Normalised                                    |
+| ---------------------------------- | --------------------------------------------- |
+| `"U64"`                            | `"u64"`                                       |
+| `"Bool"`                           | `"bool"`                                      |
+| `"String"`, `"Bytes"`, `"Address"` | unchanged                                     |
+| `{ "Custom": "Order" }`            | `"Order"` (resolved via struct/enum registry) |
+| `{ "Vec": "U64" }`                 | `"Vec<u64>"`                                  |
+| `{ "FixedBytes": 32 }`             | `"Address"` (alias)                           |
+| `{ "FixedBytes": N }` for N ≠ 32   | `"FixedBytes:N"`                              |
+| `{ "Option": "U32" }`              | `"Option<u32>"`                               |
+| `null` (returns)                   | `"()"`                                        |
 
 `types[]` is split into `structs[]` + `enums[]` maps the encoder/decoder consults at call time.
 
@@ -233,12 +233,12 @@ The SDK's `normaliseAbiFunction` / `normaliseAbiType` flatten this to the encode
 
 The engine packs function attributes into a 16-bit mask:
 
-| Bit | Meaning |
-|---|---|
-| 0 (`0x01`) | `view` |
-| 1 (`0x02`) | `payable` |
+| Bit        | Meaning                 |
+| ---------- | ----------------------- |
+| 0 (`0x01`) | `view`                  |
+| 1 (`0x02`) | `payable`               |
 | 7 (`0x80`) | (reserved / "external") |
-| other | (reserved) |
+| other      | (reserved)              |
 
 The normalizer extracts `view = (bits & 1) !== 0`, `payable = (bits & 2) !== 0`.
 
@@ -283,11 +283,7 @@ The chain emits `status` as a string (`"success" | "reverted" | "out_of_gas"`); 
 ```ts
 const status = typeof o.status === "string" ? o.status : null;
 const success =
-  typeof o.success === "boolean"
-    ? o.success
-    : status !== null
-      ? status === "success"
-      : false;
+  typeof o.success === "boolean" ? o.success : status !== null ? status === "success" : false;
 ```
 
 It also falls back to `"0x0"` / `[]` for optional fields (`effective_gas`, `fee_burned`, `fee_validator`, `logs`) when the chain doesn't ship them — devnet receipts are sparse.
@@ -337,18 +333,18 @@ Three reasons:
 
 ## Files involved
 
-| Path | Role |
-|---|---|
-| `src/contract.ts` | Borsh codec, `Contract<TAbi>`, ABI normalisation |
-| `src/provider.ts` | HTTP JSON-RPC client + wire-shape adapters |
-| `src/ws-provider.ts` | WSS subscriptions + reconnect / cursor resume |
-| `src/wallet.ts` | Handle vs hex SK, sign / transfer / keystore |
-| `src/wallet-adapter.ts` | Dapp ↔ wallet adapter interface |
-| `src/crypto.ts` | Thin TS wrapper around `pyde-crypto-wasm` |
-| `src/codegen.ts` + `src/cli-tsgen.ts` | `pyde-tsgen` codegen module + CLI |
-| `src/react.ts` | React hooks + `<PydeProvider>` |
-| `src/errors.ts` | Error hierarchy + `isError` |
-| `src/simulate.ts` | Tier 1 RPC-backed simulation; Tier 2 local wasmtime in v1.1 |
+| Path                                  | Role                                                        |
+| ------------------------------------- | ----------------------------------------------------------- |
+| `src/contract.ts`                     | Borsh codec, `Contract<TAbi>`, ABI normalisation            |
+| `src/provider.ts`                     | HTTP JSON-RPC client + wire-shape adapters                  |
+| `src/ws-provider.ts`                  | WSS subscriptions + reconnect / cursor resume               |
+| `src/wallet.ts`                       | Handle vs hex SK, sign / transfer / keystore                |
+| `src/wallet-adapter.ts`               | Dapp ↔ wallet adapter interface                             |
+| `src/crypto.ts`                       | Thin TS wrapper around `pyde-crypto-wasm`                   |
+| `src/codegen.ts` + `src/cli-tsgen.ts` | `pyde-tsgen` codegen module + CLI                           |
+| `src/react.ts`                        | React hooks + `<PydeProvider>`                              |
+| `src/errors.ts`                       | Error hierarchy + `isError`                                 |
+| `src/simulate.ts`                     | Tier 1 RPC-backed simulation; Tier 2 local wasmtime in v1.1 |
 
 ---
 
@@ -356,14 +352,14 @@ Three reasons:
 
 Tied to the latest Pyde Book (`book.pyde.network`):
 
-| SDK behavior | Spec |
-|---|---|
-| Borsh wire format | Pyde Book Chapter 11, `HOST_FN_ABI_SPEC.md §14` |
-| `CallPayload` shape | `pyde_engine_types::CallPayload` |
-| Function attribute bits | `HOST_FN_ABI_SPEC.md §3.5` |
-| Wave-header dual-hash state root | `hash_strategy_and_validation` memo |
-| Threshold encryption flow | Pyde Book Chapter 8.5 + Chapter 9 |
-| Event encoding (Borsh-default) | `HOST_FN_ABI_SPEC.md §14` |
-| Address = full Poseidon2 (no truncation) | Pyde Book Chapter 6 |
-| u64 nonce + 16-slot sliding window | Pyde Book Chapter 11 |
-| Keystore (Argon2id + ChaCha20-Poly1305) | Pyde Book Chapter 17 |
+| SDK behavior                             | Spec                                            |
+| ---------------------------------------- | ----------------------------------------------- |
+| Borsh wire format                        | Pyde Book Chapter 11, `HOST_FN_ABI_SPEC.md §14` |
+| `CallPayload` shape                      | `pyde_engine_types::CallPayload`                |
+| Function attribute bits                  | `HOST_FN_ABI_SPEC.md §3.5`                      |
+| Wave-header dual-hash state root         | `hash_strategy_and_validation` memo             |
+| Threshold encryption flow                | Pyde Book Chapter 8.5 + Chapter 9               |
+| Event encoding (Borsh-default)           | `HOST_FN_ABI_SPEC.md §14`                       |
+| Address = full Poseidon2 (no truncation) | Pyde Book Chapter 6                             |
+| u64 nonce + 16-slot sliding window       | Pyde Book Chapter 11                            |
+| Keystore (Argon2id + ChaCha20-Poly1305)  | Pyde Book Chapter 17                            |

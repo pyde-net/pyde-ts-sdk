@@ -10,7 +10,34 @@ Upgrade guidance between SDK versions. The SDK is pre-1.0; APIs may still shift 
 
 The first publish will be `0.1.0-beta.1` against `pyde-engine` ≥ v0.2 and `pyde-crypto-wasm` matching.
 
-## Unreleased — borsh codec + `CallPayload` (current `main`)
+## Unreleased — Tier-1 engine RPC catalog alignment (current `main`)
+
+**Breaking** at the RPC method-name layer (the public SDK surface follows below).
+
+The engine published its RPC catalog v0.1; the SDK was speaking ~7 method names that don't exist in the engine. This pass renames the wrong ones and trims surfaces with no engine equivalent. The public TS API moves only where the chain forces it.
+
+| Old SDK                                                                         | New SDK                                                  | RPC method                 | Notes                                                                                                                                                                                                                                                                                           |
+| ------------------------------------------------------------------------------- | -------------------------------------------------------- | -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `provider.getNonce` (`pyde_getNonce` → fallback `pyde_getTransactionCount`)     | `provider.getNonce` (canonical only)                     | `pyde_getTransactionCount` | Drops the dead first-attempt.                                                                                                                                                                                                                                                                   |
+| `provider.getContractState(addr, slot)`                                         | `provider.getStorageSlot(slot)`                          | `pyde_getStorageSlot`      | Slots are **global** 32-byte keys in v1; caller computes the full key per `HOST_FN_ABI_SPEC §7.1`: `Poseidon2(self_address ‖ field_bytes ‖ key_bytes?)` where `field_bytes` is the author-chosen field-name bytes (e.g. `b"balances"`), not a numeric index. v1 has no per-contract prefix iteration.                                                                                                                                   |
+| `provider.latestWaveId()` (internal, `pyde_getWaveNumber` / `pyde_blockNumber`) | `provider.getWaveId()` (public)                          | `pyde_waveId`              | The catalog names this directly. `getWave()` no-arg now resolves through it.                                                                                                                                                                                                                    |
+| `provider.getTransaction(hash)` (`pyde_getTransactionByHash`)                   | `provider.getTransaction(hash)`                          | `pyde_getTx`               | Method-name rename. Wire shape stays tolerated (the archival serde-derived form has byte arrays + JSON numbers — the parser accepts both).                                                                                                                                                      |
+| `provider.getBaseFee()` + `provider.getFeeData()`                               | **removed**                                              | —                          | No `pyde_getBaseFee` / `pyde_gasPrice` in v1. Re-introduce when the engine adds a fee-market endpoint.                                                                                                                                                                                          |
+| `provider.estimateGas(to, data, ...)` + `provider.estimateAccess(params)`       | **removed from Provider surface**                        | —                          | No dedicated `pyde_estimateGas` / `pyde_estimateAccess` in v1. Both responsibilities ride a single `pyde_simulateTransaction` dry-run that the SDK doesn't wrap yet (Tier-2). Until then: `Wallet.transfer` / `sendCall` / `Contract.estimateGas` return fixed 100k / 5M conservative defaults. |
+| `provider.getSnapshotManifest(waveId)`                                          | `provider.getSnapshotManifest()`                         | `pyde_getSnapshotManifest` | Engine takes no params — it returns the manifest at the state store's `last_flushed_wave`.                                                                                                                                                                                                      |
+| `provider.getHardFinalityCert(waveId)`                                          | `provider.getHardFinalityCert(waveId: number \| bigint)` | `pyde_getHardFinalityCert` | Accepts `bigint` too — engine wants a **bare u64 number** (not hex).                                                                                                                                                                                                                            |
+
+Wire-shape fixes (no API change):
+
+- **`getLogs`**: SDK was sending `contract: "0x..."` (singular); engine catalog expects `contracts: ["0x...", ...]` (plural array, within-array OR). The SDK now wraps the single `LogFilter.contract` field into a 1-element array on the wire.
+- **`pyde_subscribe`**: SDK was sending `[{method: "logs", filter}]` (object envelope); engine expects positional `["logs", filter]`. `subscribeNewHeads` / `subscribeAccountChanges` now throw a clear "logs only in v1" `RpcError` locally instead of round-tripping to `INVALID_PARAMS`.
+
+What this doesn't do:
+
+- The encrypted-mempool path (`pyde_sendRawEncryptedTransaction`, `pyde_getThresholdPublicKey`) stays unchanged — engine roadmap, not currently wired.
+- 11 catalog-only methods (`pyde_simulateTransaction`, `pyde_getEvents`, `pyde_getValidator`, `pyde_getOperatorValidators`, `pyde_getNodeInfo`, `pyde_getMetrics`, `pyde_getReceipt` archival, `pyde_getTx` full shape, `pyde_getSnapshot` bundle) are deferred to Tier-2.
+
+## Unreleased — borsh codec + `CallPayload`
 
 **Breaking.** Contract calldata wire format changed.
 
@@ -18,19 +45,20 @@ The first publish will be `0.1.0-beta.1` against `pyde-engine` ≥ v0.2 and `pyd
 - `Contract.encodeCall` now emits the borsh-encoded **`CallPayload {function, calldata}`** struct the chain expects — not a 4-byte selector + args. The chain dispatches by function name, not selector.
 - `Contract.encodeCallArgs` is a new helper that returns just the borsh-encoded args (no `CallPayload` wrapper). Useful for byte-level comparison against a borsh-rs encoder.
 
-| Type | Old encoding | New (borsh) |
-|---|---|---|
-| `u8` | 8 LE bytes | 1 byte |
-| `u16` `u32` | 8 LE bytes | 2 / 4 LE bytes |
-| `u64` | 8 LE bytes | 8 LE bytes (unchanged) |
-| `bool` | 8 LE bytes | 1 byte |
-| `String` | 8-byte len + UTF-8 + pad | 4-byte LE len + UTF-8 |
-| `Vec<T>` | 24-byte header + items | 4-byte LE count + items |
-| `Struct` | 8-byte byte_len + fields | fields concatenated, no header |
-| `Enum` | 8-byte discriminant | 1-byte variant index |
-| `Address` `[u8; 32]` | 32 raw bytes | 32 raw bytes (unchanged) |
+| Type                 | Old encoding             | New (borsh)                    |
+| -------------------- | ------------------------ | ------------------------------ |
+| `u8`                 | 8 LE bytes               | 1 byte                         |
+| `u16` `u32`          | 8 LE bytes               | 2 / 4 LE bytes                 |
+| `u64`                | 8 LE bytes               | 8 LE bytes (unchanged)         |
+| `bool`               | 8 LE bytes               | 1 byte                         |
+| `String`             | 8-byte len + UTF-8 + pad | 4-byte LE len + UTF-8          |
+| `Vec<T>`             | 24-byte header + items   | 4-byte LE count + items        |
+| `Struct`             | 8-byte byte_len + fields | fields concatenated, no header |
+| `Enum`               | 8-byte discriminant      | 1-byte variant index           |
+| `Address` `[u8; 32]` | 32 raw bytes             | 32 raw bytes (unchanged)       |
 
 **Action required:**
+
 - If you were sending wire bytes you constructed manually, regenerate via `Contract.encodeCall`.
 - If you were storing pre-computed calldata blobs in a DB, invalidate + re-encode.
 - If you were comparing wire bytes against a borsh-rs encoder, the SDK now produces identical bytes.
@@ -52,6 +80,7 @@ Live-verified against `otigen/examples/borsh-coverage` — struct + enum + Vec l
 **Why:** JS Numbers lose precision above `2^53`. u64 fields on chain routinely exceed that range over a long-running validator's lifetime; silent truncation would corrupt downstream computation.
 
 **Action required:**
+
 - Replace numeric literals (`0`, `42`) with bigint literals (`0n`, `42n`) at call sites accepting wave / nonce.
 - Update local persistence (JSON, DB) — `JSON.stringify` throws on bigint by default; use `replacer` to stringify.
 - Wallet-builder code that constructs `TxFields` manually: set `nonce` as `bigint`.

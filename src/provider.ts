@@ -102,15 +102,13 @@ export class Provider {
   }
 
   /** Return the account's low-end nonce (next available slot in the
-   *  16-slot sliding window per Chapter 11). Spec: chapter 17.4.
+   *  16-slot sliding window per Chapter 11). Spec: chapter 17.4
+   *  `pyde_getTransactionCount`.
    *
    *  Returns a bigint — nonce is u64 on chain, and the SDK refuses to
    *  silently truncate above 2^53. */
   async getNonce(address: string): Promise<bigint> {
-    const result = await this.callWithFallback(
-      ["pyde_getNonce", "pyde_getTransactionCount"],
-      [address],
-    );
+    const result = await this.call_("pyde_getTransactionCount", [address]);
     return parseBigIntLoose(result, "getNonce");
   }
 
@@ -157,13 +155,19 @@ export class Provider {
     return asString(await this.call_("pyde_getContractCode", [address]), "pyde_getContractCode");
   }
 
-  /** Return the value of a single contract state slot.
-   *  Spec: chapter 17.4 `pyde_getContractState`. */
-  async getContractState(address: string, slotHash: string): Promise<string> {
-    return asString(
-      await this.call_("pyde_getContractState", [address, slotHash]),
-      "pyde_getContractState",
-    );
+  /** Return the value of a single contract state slot. Slots are
+   *  **global** 32-byte keys in v1 — callers compute the full key
+   *  per HOST_FN_ABI_SPEC §7.1:
+   *
+   *      slot = Poseidon2(self_address || field_bytes [|| key_bytes])
+   *
+   *  `field_bytes` is the author-chosen field name (e.g. `b"balances"`),
+   *  not a numeric slot index. `key_bytes` is appended for mapping-
+   *  style fields. Engine RPC catalog v0.1 §13 / `pyde_getStorageSlot`.
+   *  Returns `null` when the slot was never written. */
+  async getStorageSlot(slotHash: string): Promise<string | null> {
+    const result = await this.call_("pyde_getStorageSlot", [{ slot: slotHash }]);
+    return result == null ? null : asString(result, "pyde_getStorageSlot");
   }
 
   // ========================================================================
@@ -182,36 +186,40 @@ export class Provider {
   // ========================================================================
 
   /** Return the header for a wave (omit `waveId` for the latest committed
-   *  wave). Spec: chapter 17.4 `pyde_getWave`.
-   *
-   *  Backward-compat: the engine currently requires the `wave_id`
-   *  param. When omitted the SDK resolves "latest" via a synthetic
-   *  block-number query first and then fetches that wave. */
+   *  wave). Spec: chapter 17.4 `pyde_getWave`. */
   async getWave(waveId?: Wave): Promise<WaveHeader | null> {
     let target = waveId;
     if (target === undefined) {
       target = await this.latestWaveId();
     }
-    // Engine expects a numeric param (`u64`) not a hex string. We've
-    // already validated `target` is in safe-integer range via
+    // Engine expects a **bare u64 number** for this method (not hex).
+    // We've already validated `target` is in safe-integer range via
     // parseBigIntLoose / latestWaveId; Number() is precision-safe here.
     const result = await this.call_("pyde_getWave", [Number(target)]);
     return result ? fromWireWaveHeader(result) : null;
   }
 
-  /** Internal: resolve the current head wave id via either
-   *  `pyde_blockNumber` (pre-pivot name still wired by the engine) or a
-   *  receipt-style indirection. Used by `getWave()` when no wave id is
-   *  passed explicitly. */
+  /** Return the current head wave id.
+   *  Spec: chapter 17.4 `pyde_waveId` — Pyde's analogue of EVM
+   *  `block.number`, see HOST_FN_ABI §7.3. */
+  async getWaveId(): Promise<Wave> {
+    const result = await this.call_("pyde_waveId", []);
+    return parseBigIntLoose(result, "pyde_waveId");
+  }
+
+  /** Internal alias — used by `getWave()` when no wave id is passed. */
   private async latestWaveId(): Promise<Wave> {
-    const result = await this.callWithFallback(["pyde_getWaveNumber", "pyde_blockNumber"], []);
-    return parseBigIntLoose(result, "latestWaveId");
+    return this.getWaveId();
   }
 
   /** Return the threshold-signed hard finality certificate for a wave.
    *  Spec: Chapter 6 + chapter 17.4 `pyde_getHardFinalityCert`. */
-  async getHardFinalityCert(waveId: number): Promise<HardFinalityCert | null> {
-    const result = await this.call_("pyde_getHardFinalityCert", [waveId]);
+  async getHardFinalityCert(waveId: number | bigint): Promise<HardFinalityCert | null> {
+    // Engine expects a **bare u64 number** for this method (not hex),
+    // same as `pyde_getWave`. Number() is safe for any value within
+    // u64's safe-integer range; bigints above 2^53 are rejected at
+    // call-site (the chain itself doesn't reach those values yet).
+    const result = await this.call_("pyde_getHardFinalityCert", [Number(waveId)]);
     return result ? fromWireHardFinalityCert(result) : null;
   }
 
@@ -219,37 +227,16 @@ export class Provider {
   // State sync
   // ========================================================================
 
-  /** Return the snapshot manifest for a wave (light-client state sync).
-   *  Spec: STATE_SYNC.md + chapter 17.4 `pyde_getSnapshotManifest`. */
-  async getSnapshotManifest(waveId: number): Promise<SnapshotManifest | null> {
-    const result = await this.call_("pyde_getSnapshotManifest", [waveId]);
+  /** Return the snapshot manifest at the state store's last flushed
+   *  wave. Spec: STATE_SYNC.md + chapter 17.4 `pyde_getSnapshotManifest`.
+   *  Takes no params — the engine picks the latest available manifest. */
+  async getSnapshotManifest(): Promise<SnapshotManifest | null> {
+    const result = await this.call_("pyde_getSnapshotManifest", []);
     return result ? fromWireSnapshotManifest(result) : null;
   }
 
   // ========================================================================
-  // Fee data
-  // ========================================================================
-
-  /** Return the current base fee (gas-price = base in v1; no priority tip).
-   *  Spec: Chapter 10 + chapter 17.4 `pyde_getBaseFee`.
-   *
-   *  Backward-compat: pre-pivot chain builds expose this as
-   *  `pyde_gasPrice`. Falls back automatically. */
-  async getBaseFee(): Promise<bigint> {
-    const result = await this.callWithFallback(["pyde_getBaseFee", "pyde_gasPrice"], []);
-    return BigInt(asString(result, "getBaseFee"));
-  }
-
-  /** Convenience wrapper that surfaces the same value under two names
-   *  (gasPrice + baseFee). Pyde has no priority tips in v1, so they are
-   *  always equal. Spec: Chapter 10. */
-  async getFeeData(): Promise<FeeData> {
-    const base = await this.getBaseFee();
-    return { gasPrice: base, baseFee: base };
-  }
-
-  // ========================================================================
-  // View calls + gas / access estimation
+  // View calls + simulation
   // ========================================================================
 
   /** Off-chain view-function call. Free; no tx, no consensus. Spec:
@@ -259,36 +246,14 @@ export class Provider {
     return asString(await this.call_("pyde_call", [params]), "pyde_call");
   }
 
-  /** Estimate gas for a call. Spec: chapter 17.4 `pyde_estimateGas`. */
-  async estimateGas(to: string, data: string, overrides?: CallOverrides): Promise<number> {
-    const params = this.buildCallParams(to, data, overrides);
-    const result = await this.call_("pyde_estimateGas", [params]);
-    return parseUint(asString(result, "pyde_estimateGas"), "pyde_estimateGas");
-  }
-
-  /**
-   * Simulate the call and return the access list (slots the call would
-   * read / write). Used by wallets to attach an access list to the
-   * outgoing tx so the chain's parallel scheduler can place it without
-   * blocking. Spec: chapter 17.4 `pyde_estimateAccess`.
-   */
-  async estimateAccess(params: {
-    to: string;
-    data: string;
-    from?: string;
-    value?: bigint | number | string;
-    gasLimit?: number;
-  }): Promise<AccessEntry[]> {
-    const wire: Record<string, unknown> = {
-      from: params.from ?? ZERO_ADDR,
-      to: params.to,
-      data: params.data,
-    };
-    if (params.value !== undefined) wire.value = bigIntToHex(params.value);
-    if (params.gasLimit !== undefined) wire.gas = "0x" + params.gasLimit.toString(16);
-    const result = await this.call_("pyde_estimateAccess", [wire]);
-    return parseAccessList(result);
-  }
+  // NOTE: dedicated `pyde_estimateGas` / `pyde_estimateAccess` RPC
+  // methods do NOT exist in v1. The engine surfaces both via the
+  // unified `pyde_simulateTransaction` dry-run (returns receipt + gas
+  // + access_list together) — adding that wrapper is queued as a
+  // Tier-2 catalog-alignment item. Until then, `Wallet.transfer` /
+  // `sendCall` fall back to fixed gas defaults (100k for plain
+  // transfers, 5M for contract calls) and access lists must be
+  // attached manually.
 
   // ========================================================================
   // Transaction submission
@@ -331,9 +296,12 @@ export class Provider {
   // ========================================================================
 
   /** Look up a committed transaction by hash. Returns null if absent.
-   *  Spec: chapter 17.4 `pyde_getTransactionByHash`. */
+   *  Spec: chapter 17.4 `pyde_getTx` (archival query — raw serde-derived
+   *  shape with byte arrays + JSON numbers, not the hex-string form
+   *  used by `pyde_getTransactionReceipt`). The SDK adapter accepts
+   *  both wire forms tolerantly. */
   async getTransaction(txHash: string): Promise<TransactionInfo | null> {
-    const result = await this.call_("pyde_getTransactionByHash", [txHash]);
+    const result = await this.call_("pyde_getTx", [txHash]);
     return result ? fromWireTransactionInfo(result) : null;
   }
 
@@ -399,7 +367,7 @@ export class Provider {
    * ```ts
    * const [balance, nonce, chainId] = await provider.batch([
    *   { method: "pyde_getBalance", params: [addr] },
-   *   { method: "pyde_getNonce",   params: [addr] },
+   *   { method: "pyde_getTransactionCount", params: [addr] },
    *   { method: "pyde_chainId",    params: [] },
    * ]);
    * ```
@@ -803,11 +771,7 @@ function fromWireReceipt(w: unknown): Receipt {
   // "0x0" / [] so callers see a stable shape.
   const status = typeof o.status === "string" ? o.status : null;
   const success =
-    typeof o.success === "boolean"
-      ? o.success
-      : status !== null
-        ? status === "success"
-        : false;
+    typeof o.success === "boolean" ? o.success : status !== null ? status === "success" : false;
   const asStringOr = (v: unknown, fallback: string): string =>
     typeof v === "string" ? v : fallback;
   const rawLogs = (o.logs ?? o.events ?? []) as unknown[];
@@ -900,11 +864,14 @@ function toWireLogFilter(f: LogFilter): Record<string, unknown> {
   }
   // u64 wave bounds — engine accepts hex strings. JSON.stringify
   // would throw on a raw bigint, so encode here.
+  // `contracts` is the **plural array** the engine expects (within-array
+  // OR). The SDK keeps a single-`contract` LogFilter field for ergonomic
+  // call sites and wraps it into a 1-element array on the wire.
   const wire: Record<string, unknown> = {
     from_wave: "0x" + f.fromWave.toString(16),
     to_wave: "0x" + f.toWave.toString(16),
     topics,
-    contract: f.contract ?? null,
+    contracts: f.contract != null ? [f.contract] : null,
     limit: f.limit ?? 100,
   };
   if (f.cursor) wire.cursor = toWireCursor(f.cursor);

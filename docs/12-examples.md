@@ -36,10 +36,7 @@ wallet.destroy();
 ```ts
 import { Wallet } from "pyde-ts-sdk";
 
-const wallet = await Wallet.fromKeystoreFile(
-  "/keys/alice.json",
-  process.env.WALLET_PASSPHRASE!,
-);
+const wallet = await Wallet.fromKeystoreFile("/keys/alice.json", process.env.WALLET_PASSPHRASE!);
 
 // Use the wallet
 await wallet.transfer(/* … */);
@@ -150,7 +147,7 @@ const transfers = await token.queryFilter(
 for (const ev of transfers) {
   console.log(
     `wave=${ev.log.waveId} tx=${ev.log.txIndex} ` +
-    `from=${ev.args.from} to=${ev.args.to} amount=${ev.args.amount}`,
+      `from=${ev.args.from} to=${ev.args.to} amount=${ev.args.amount}`,
   );
 }
 ```
@@ -203,13 +200,10 @@ while (cursor < head_id) {
 }
 
 // 2) Live tail.
-await ws.subscribeLogs(
-  { contract: addr, topics: [[transferTopic]] },
-  async (log) => {
-    const ev = token.parseLog(log);
-    if (ev) await index(ev);
-  },
-);
+await ws.subscribeLogs({ contract: addr, topics: [[transferTopic]] }, async (log) => {
+  const ev = token.parseLog(log);
+  if (ev) await index(ev);
+});
 
 async function index(ev: import("pyde-ts-sdk").EventLog) {
   // upsert into your DB, keyed by (waveId, txIndex, eventIndex)
@@ -235,11 +229,7 @@ function App() {
   if (!signer) return <p>loading…</p>;
 
   return (
-    <PydeProvider
-      rpcUrl="https://rpc.pyde.network"
-      wsUrl="wss://rpc.pyde.network"
-      signer={signer}
-    >
+    <PydeProvider rpcUrl="https://rpc.pyde.network" wsUrl="wss://rpc.pyde.network" signer={signer}>
       <Dapp />
     </PydeProvider>
   );
@@ -290,11 +280,9 @@ const wallet = Wallet.generateUnsafe(); // hex SK required
 wallet.connect(provider);
 await wallet.registerPubkey();
 
-const receipt = await wallet.transferEncrypted(
-  "0xrecipient...",
-  parseQuanta("1"),
-  { deadline: 999_999n },
-);
+const receipt = await wallet.transferEncrypted("0xrecipient...", parseQuanta("1"), {
+  deadline: 999_999n,
+});
 ```
 
 See [Chapter 09](./09-encrypted-mempool.md).
@@ -326,8 +314,8 @@ import type { CounterAbi } from "./types/counter";
 
 const counter = await Contract.fromArtifact<CounterAbi>(abi, addr, provider);
 
-await counter.read("get_count");            // ✅ → Promise<bigint>
-await counter.read("getCount");             // ❌ type error
+await counter.read("get_count"); // ✅ → Promise<bigint>
+await counter.read("getCount"); // ❌ type error
 await counter.write("deposit", { arg0: 5n }); // ✅
 ```
 

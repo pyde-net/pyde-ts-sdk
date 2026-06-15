@@ -406,8 +406,19 @@ export class WebSocketProvider {
   }
 
   private async serverSubscribe(sub: LocalSub): Promise<void> {
+    // Engine RPC catalog v0.1 only supports `"logs"` over `pyde_subscribe`.
+    // `newHeads` / `accountChanges` would surface as `INVALID_PARAMS`
+    // server-side; reject locally with a clearer message so callers
+    // don't conflate "engine missing the subscription" with "subscribe
+    // call malformed".
+    if (sub.kind !== "logs") {
+      throw new RpcError(
+        `pyde_subscribe v1 only supports event_type="logs"; ` +
+          `${sub.kind} is on the engine roadmap (not yet wired).`,
+      );
+    }
     const params = this.subscribeParams(sub);
-    const result = await this.rpc("pyde_subscribe", [params]);
+    const result = await this.rpc("pyde_subscribe", params);
     if (typeof result !== "string") {
       throw new RpcError(
         `pyde_subscribe returned non-string subscription id: ${JSON.stringify(result)}`,
@@ -416,39 +427,39 @@ export class WebSocketProvider {
     sub.serverSubId = result;
   }
 
-  private subscribeParams(sub: LocalSub): Record<string, unknown> {
-    switch (sub.kind) {
-      case "newHeads":
-        return { method: "newHeads" };
-      case "accountChanges":
-        return { method: "accountChanges", address: sub.address };
-      case "logs": {
-        const topics: (string[] | null)[] = [null, null, null, null];
-        if (sub.filter.topics) {
-          for (let i = 0; i < Math.min(4, sub.filter.topics.length); i++) {
-            topics[i] = sub.filter.topics[i] ?? null;
-          }
-        }
-        const out: Record<string, unknown> = {
-          method: "logs",
-          filter: {
-            topics,
-            contract: sub.filter.contract ?? null,
-          },
-        };
-        // Resume from the last delivered cursor on reconnect; otherwise the
-        // initial caller-supplied `from`, if any. Spec: §15.5.
-        const from = sub.lastCursor;
-        if (from) {
-          (out.filter as Record<string, unknown>).from = {
-            wave_id: from.waveId,
-            tx_index: from.txIndex,
-            event_index: from.eventIndex,
-          };
-        }
-        return out;
+  /** Build the positional `pyde_subscribe` params array:
+   *    [event_type: "logs", filter: { from_wave?, to_wave?, contracts?,
+   *                                   topics?, cursor? }]
+   *  Spec: engine RPC catalog v0.1 §25. */
+  private subscribeParams(sub: LocalSub): unknown[] {
+    if (sub.kind !== "logs") {
+      // Unreachable — `serverSubscribe` short-circuits non-logs subs.
+      throw new RpcError(`unreachable: subscribeParams(${sub.kind})`);
+    }
+    const topics: (string[] | null)[] = [null, null, null, null];
+    if (sub.filter.topics) {
+      for (let i = 0; i < Math.min(4, sub.filter.topics.length); i++) {
+        topics[i] = sub.filter.topics[i] ?? null;
       }
     }
+    const filter: Record<string, unknown> = {
+      // `contracts` is the plural array shape the engine expects
+      // (within-array OR). SDK's single-contract filter wraps into
+      // a 1-element array on the wire.
+      contracts: sub.filter.contract != null ? [sub.filter.contract] : null,
+      topics,
+    };
+    // Resume from the last delivered cursor on reconnect; otherwise the
+    // initial caller-supplied `from`, if any. Spec: §15.5.
+    const from = sub.lastCursor;
+    if (from) {
+      filter.cursor = {
+        wave_id: from.waveId,
+        tx_index: from.txIndex,
+        event_index: from.eventIndex,
+      };
+    }
+    return ["logs", filter];
   }
 
   private async unsubscribe(sub: LocalSub): Promise<void> {

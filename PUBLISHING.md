@@ -67,6 +67,7 @@ For the final 0.1.0 (stable), drop `--tag beta` so it lands on `latest`.
 ## Post-publish
 
 1. Tag the release:
+
    ```bash
    git tag v0.1.0-beta.1
    git push origin v0.1.0-beta.1

@@ -98,11 +98,11 @@ Contract.fromArtifact<TAbi extends AbiShape = DefaultAbi>(
 
 **Args:**
 
-| Name | Type | Description |
-|---|---|---|
-| `artifactPath` | `string` | Filesystem path to the `abi.json` (or full artifact). |
-| `address` | `string` | Deployed contract address. |
-| `provider` | `Provider` | Bound provider. |
+| Name           | Type       | Description                                           |
+| -------------- | ---------- | ----------------------------------------------------- |
+| `artifactPath` | `string`   | Filesystem path to the `abi.json` (or full artifact). |
+| `address`      | `string`   | Deployed contract address.                            |
+| `provider`     | `Provider` | Bound provider.                                       |
 
 **Generic:**
 
@@ -177,8 +177,8 @@ contract.connect(wallet: Wallet): Contract<TAbi>
 const counter = await Contract.fromArtifact(abi, addr, provider);
 const writable = counter.connect(wallet);
 
-await counter.read("get_count");        // anyone can read
-await writable.write("increment", {});  // signer required
+await counter.read("get_count"); // anyone can read
+await writable.write("increment", {}); // signer required
 ```
 
 ---
@@ -204,10 +204,10 @@ contract.read<M extends ViewName<TAbi>>(
 
 **Args:**
 
-| Name | Type | Description |
-|---|---|---|
-| `method` | function name | ABI-declared function. With `TAbi` bound: type-narrowed to view-only methods. |
-| `args` | named-arg object | Each key is a param name; value matches the ABI type. |
+| Name     | Type             | Description                                                                   |
+| -------- | ---------------- | ----------------------------------------------------------------------------- |
+| `method` | function name    | ABI-declared function. With `TAbi` bound: type-narrowed to view-only methods. |
+| `args`   | named-arg object | Each key is a param name; value matches the ABI type.                         |
 
 **Returns:** decoded return value (per ABI declaration).
 
@@ -280,7 +280,7 @@ Useful for previewing a state-changing call's return value.
 
 ## `contract.estimateGas(method, args?)`
 
-Pre-flight gas estimate via `provider.estimateGas`.
+Pre-flight gas estimate. v1 engine has no `pyde_estimateGas`, so this returns a fixed 5,000,000 default; the arg encoding is still validated. Tier-2 catalog alignment will wire this through `pyde_simulateTransaction` for real chain estimates.
 
 **Signature:**
 
@@ -316,18 +316,14 @@ contract.write(
 
 ```ts
 interface ContractReceipt extends Receipt {
-  decodeReturnData(): any | null;  // decodes per ABI return type
+  decodeReturnData(): any | null; // decodes per ABI return type
 }
 ```
 
 **Example:**
 
 ```ts
-const receipt = await counter.connect(wallet).write(
-  "deposit",
-  { amount: 500n },
-  { value: 500n },
-);
+const receipt = await counter.connect(wallet).write("deposit", { amount: 500n }, { value: 500n });
 
 if (!receipt.success) {
   throw new Error("reverted");
@@ -338,6 +334,7 @@ console.log("returned:", decoded);
 ```
 
 **Payability check:**
+
 - If the ABI marks `payable: false` and you pass non-zero `value`, the SDK **throws before submission**.
 
 **Example — payable check:**
@@ -366,10 +363,7 @@ contract.populateTransaction(
 **Example:**
 
 ```ts
-const tx = await counter.connect(wallet).populateTransaction(
-  "deposit",
-  { amount: 500n },
-);
+const tx = await counter.connect(wallet).populateTransaction("deposit", { amount: 500n });
 console.log("to:", tx.to);
 console.log("data length:", (tx.data.length - 2) / 2, "bytes");
 console.log("nonce:", tx.nonce);
@@ -411,9 +405,9 @@ contract.queryFilter<E extends EventName<TAbi>>(
 
 ```ts
 interface EventLog<TArgs = Record<string, any>> {
-  name: string;          // event name
-  args: TArgs;           // decoded named fields
-  log: Log;              // raw log (waveId, txIndex, eventIndex, etc.)
+  name: string; // event name
+  args: TArgs; // decoded named fields
+  log: Log; // raw log (waveId, txIndex, eventIndex, etc.)
 }
 ```
 
@@ -424,9 +418,9 @@ const transfers = await token.queryFilter("Transfer", 1000n, 2000n);
 for (const ev of transfers) {
   console.log(
     `wave=${ev.log.waveId} ` +
-    `from=${ev.args.from} ` +
-    `to=${ev.args.to} ` +
-    `amount=${ev.args.amount}`,
+      `from=${ev.args.from} ` +
+      `to=${ev.args.to} ` +
+      `amount=${ev.args.amount}`,
   );
 }
 ```
@@ -521,7 +515,7 @@ import type { CounterAbi } from "./types/counter";
 const counter = await Contract.fromArtifact<CounterAbi>(abi, addr, provider);
 
 // ✅ method narrowed
-await counter.read("get_count");         // → Promise<bigint>
+await counter.read("get_count"); // → Promise<bigint>
 
 // ❌ TS2345 — not a method on CounterAbi
 await counter.read("getCount");
@@ -582,46 +576,46 @@ The SDK's codec is a 1:1 mirror of the borsh-rs wire format. Every type below ha
 
 ### Scalars
 
-| ABI type | Wire format | JS type | Range |
-|---|---|---|---|
-| `u8` | 1 byte | `bigint` | 0..255 |
-| `u16` | 2 LE bytes | `bigint` | 0..65,535 |
-| `u32` | 4 LE bytes | `bigint` | 0..4,294,967,295 |
-| `u64` | 8 LE bytes | `bigint` | 0..2⁶⁴-1 |
-| `u128` | 16 LE bytes | `bigint` | 0..2¹²⁸-1 |
-| `u256` | 32 LE bytes (Pyde ext.) | `bigint` | 0..2²⁵⁶-1 |
-| `i8` | 1 byte, two's complement | `bigint` | -128..127 |
-| `i16` | 2 LE bytes | `bigint` | -32,768..32,767 |
-| `i32` | 4 LE bytes | `bigint` | -2³¹..2³¹-1 |
-| `i64` | 8 LE bytes | `bigint` | -2⁶³..2⁶³-1 |
-| `i128` | 16 LE bytes | `bigint` | -2¹²⁷..2¹²⁷-1 |
-| `i256` | 32 LE bytes (Pyde ext.) | `bigint` | -2²⁵⁵..2²⁵⁵-1 |
-| `bool` | 1 byte (`00` / `01`) | `boolean` | — |
+| ABI type | Wire format              | JS type   | Range            |
+| -------- | ------------------------ | --------- | ---------------- |
+| `u8`     | 1 byte                   | `bigint`  | 0..255           |
+| `u16`    | 2 LE bytes               | `bigint`  | 0..65,535        |
+| `u32`    | 4 LE bytes               | `bigint`  | 0..4,294,967,295 |
+| `u64`    | 8 LE bytes               | `bigint`  | 0..2⁶⁴-1         |
+| `u128`   | 16 LE bytes              | `bigint`  | 0..2¹²⁸-1        |
+| `u256`   | 32 LE bytes (Pyde ext.)  | `bigint`  | 0..2²⁵⁶-1        |
+| `i8`     | 1 byte, two's complement | `bigint`  | -128..127        |
+| `i16`    | 2 LE bytes               | `bigint`  | -32,768..32,767  |
+| `i32`    | 4 LE bytes               | `bigint`  | -2³¹..2³¹-1      |
+| `i64`    | 8 LE bytes               | `bigint`  | -2⁶³..2⁶³-1      |
+| `i128`   | 16 LE bytes              | `bigint`  | -2¹²⁷..2¹²⁷-1    |
+| `i256`   | 32 LE bytes (Pyde ext.)  | `bigint`  | -2²⁵⁵..2²⁵⁵-1    |
+| `bool`   | 1 byte (`00` / `01`)     | `boolean` | —                |
 
 ### Bytes + addresses
 
-| ABI type | Wire format | JS type |
-|---|---|---|
-| `Address`, `Hash`, `Hash32` | 32 raw bytes | `string` — `0x` + 64 hex |
-| `FixedBytes:N` (N ≠ 32) | N raw bytes | `string` — `0x` + 2N hex |
-| `String` | 4-byte LE len + UTF-8 bytes | `string` |
-| `Bytes`, `Vec<u8>` | 4-byte LE len + raw bytes | `Uint8Array` (or hex on encode) |
+| ABI type                    | Wire format                 | JS type                         |
+| --------------------------- | --------------------------- | ------------------------------- |
+| `Address`, `Hash`, `Hash32` | 32 raw bytes                | `string` — `0x` + 64 hex        |
+| `FixedBytes:N` (N ≠ 32)     | N raw bytes                 | `string` — `0x` + 2N hex        |
+| `String`                    | 4-byte LE len + UTF-8 bytes | `string`                        |
+| `Bytes`, `Vec<u8>`          | 4-byte LE len + raw bytes   | `Uint8Array` (or hex on encode) |
 
 ### Containers
 
-| ABI type | Wire format | JS type |
-|---|---|---|
-| `Vec<T>` | 4-byte LE count + items | `T[]` |
-| `Option<T>` | 1-byte tag (0=None, 1=Some) + value if Some | `T \| null` |
-| `(T1, T2, ...)` tuple | items concatenated, no header | `[T1, T2, ...]` |
-| `[T; N]` fixed array | N items concatenated, no header | `T[]` (length N) |
+| ABI type              | Wire format                                 | JS type          |
+| --------------------- | ------------------------------------------- | ---------------- |
+| `Vec<T>`              | 4-byte LE count + items                     | `T[]`            |
+| `Option<T>`           | 1-byte tag (0=None, 1=Some) + value if Some | `T \| null`      |
+| `(T1, T2, ...)` tuple | items concatenated, no header               | `[T1, T2, ...]`  |
+| `[T; N]` fixed array  | N items concatenated, no header             | `T[]` (length N) |
 
 ### User-declared types
 
-| ABI type | Wire format | JS type |
-|---|---|---|
-| struct (declared in ABI) | fields concatenated in declaration order | `{ field: T, ... }` |
-| enum (unit variants only) | 1-byte variant index | `"VariantName"` or `number` |
+| ABI type                  | Wire format                              | JS type                     |
+| ------------------------- | ---------------------------------------- | --------------------------- |
+| struct (declared in ABI)  | fields concatenated in declaration order | `{ field: T, ... }`         |
+| enum (unit variants only) | 1-byte variant index                     | `"VariantName"` or `number` |
 
 ### Multi-arg encoding
 
@@ -639,9 +633,19 @@ When you have a raw hex return value and the type, decode without instantiating 
 
 ```ts
 import {
-  decodeU64, decodeI64, decodeU128, decodeI128, decodeU256, decodeI256,
-  decodeBool, decodeAddress, decodeString, decodeBytes,
-  decodeVecU64, decodeVecBool, decodeVecAddress,
+  decodeU64,
+  decodeI64,
+  decodeU128,
+  decodeI128,
+  decodeU256,
+  decodeI256,
+  decodeBool,
+  decodeAddress,
+  decodeString,
+  decodeBytes,
+  decodeVecU64,
+  decodeVecBool,
+  decodeVecAddress,
 } from "pyde-ts-sdk";
 ```
 
@@ -703,14 +707,14 @@ Most authors use the `otigen deploy` CLI instead.
 
 ## Errors
 
-| Error | When |
-|---|---|
-| `Error("Unknown function 'X'")` | `read` / `write` called with a method not in the ABI. |
-| `Error("missing required param 'X'")` | An arg was `undefined`. |
-| `Error("expected ... got ...")` | Type mismatch in `encodeValue` (e.g. string passed where `bigint` expected). |
-| `Error("X() is not payable")` | `write` with non-zero `value` on a non-payable function. |
-| `RpcError` (from `Provider.call`) | Chain returned `decode CallPayload from data` → file a bug; the SDK and chain disagree on wire format. |
-| `CallExceptionError` | `pyde_call` reverted; `revertReason` populated. |
+| Error                                 | When                                                                                                   |
+| ------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| `Error("Unknown function 'X'")`       | `read` / `write` called with a method not in the ABI.                                                  |
+| `Error("missing required param 'X'")` | An arg was `undefined`.                                                                                |
+| `Error("expected ... got ...")`       | Type mismatch in `encodeValue` (e.g. string passed where `bigint` expected).                           |
+| `Error("X() is not payable")`         | `write` with non-zero `value` on a non-payable function.                                               |
+| `RpcError` (from `Provider.call`)     | Chain returned `decode CallPayload from data` → file a bug; the SDK and chain disagree on wire format. |
+| `CallExceptionError`                  | `pyde_call` reverted; `revertReason` populated.                                                        |
 
 See [Chapter 10 — Errors](./10-errors.md).
 

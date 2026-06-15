@@ -36,9 +36,12 @@ describe("simulate — Tier 1 stub gates against accidental 'local' regression",
     expect(result.source).toBe("rpc");
   });
 
-  it("returns a gas estimate when the provider exposes one", async () => {
+  it("returns the conservative gas default (engine has no estimateGas yet)", async () => {
     const result = await simulateTransaction(tx, { provider: stubProvider() });
-    expect(result.gasEstimate).toBe(42_000);
+    // tx.data === "0x" → 100k plain-transfer floor; calldata-bearing
+    // calls would return 5M. Once Tier-2 wires `pyde_simulateTransaction`
+    // this falls back to the real chain estimate.
+    expect(result.gasEstimate).toBe(100_000);
     expect(result.willRevert).toBe(false);
   });
 

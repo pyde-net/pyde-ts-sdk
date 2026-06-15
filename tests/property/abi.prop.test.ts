@@ -95,14 +95,10 @@ describe("ABI normalisation — equivalent forms produce identical wire bytes", 
 
   it("attrs.bits=1 maps to view=true / payable=false (matches explicit booleans)", () => {
     const aBits = {
-      functions: [
-        { name: "f", params: [], returns: "U64", attrs: { bits: 1 } },
-      ],
+      functions: [{ name: "f", params: [], returns: "U64", attrs: { bits: 1 } }],
     };
     const aBool = {
-      functions: [
-        { name: "f", params: [], returns: "U64", view: true, payable: false },
-      ],
+      functions: [{ name: "f", params: [], returns: "U64", view: true, payable: false }],
     };
     const cBits = Contract.fromJson(JSON.stringify(aBits), ZERO, null as never);
     const cBool = Contract.fromJson(JSON.stringify(aBool), ZERO, null as never);
@@ -112,14 +108,10 @@ describe("ABI normalisation — equivalent forms produce identical wire bytes", 
 
   it("attrs.bits=2 (payable, not view) parses identically", () => {
     const aBits = {
-      functions: [
-        { name: "f", params: [], returns: "()", attrs: { bits: 2 } },
-      ],
+      functions: [{ name: "f", params: [], returns: "()", attrs: { bits: 2 } }],
     };
     const aBool = {
-      functions: [
-        { name: "f", params: [], returns: "()", view: false, payable: true },
-      ],
+      functions: [{ name: "f", params: [], returns: "()", view: false, payable: true }],
     };
     const cBits = Contract.fromJson(JSON.stringify(aBits), ZERO, null as never);
     const cBool = Contract.fromJson(JSON.stringify(aBool), ZERO, null as never);
@@ -241,9 +233,7 @@ describe("ABI normalisation — equivalent forms produce identical wire bytes", 
     const cFlat = Contract.fromJson(JSON.stringify(aFlat), ZERO, null as never);
 
     for (const name of ["Pending", "Active"] as const) {
-      expect(cTypes.encodeCallArgs("f", { v: name })).toBe(
-        cFlat.encodeCallArgs("f", { v: name }),
-      );
+      expect(cTypes.encodeCallArgs("f", { v: name })).toBe(cFlat.encodeCallArgs("f", { v: name }));
     }
   });
 
@@ -260,8 +250,9 @@ describe("ABI normalisation — equivalent forms produce identical wire bytes", 
       ],
     };
     const c = Contract.fromJson(JSON.stringify(aWithSel), ZERO, null as never);
-    const fn = (c as unknown as { functions: Map<string, { selectorBytes?: Uint8Array }> })
-      .functions.get("f");
+    const fn = (
+      c as unknown as { functions: Map<string, { selectorBytes?: Uint8Array }> }
+    ).functions.get("f");
     expect(fn?.selectorBytes).toEqual(new Uint8Array([0xde, 0xad, 0xbe, 0xef]));
   });
 
@@ -277,8 +268,9 @@ describe("ABI normalisation — equivalent forms produce identical wire bytes", 
       ],
     };
     const c = Contract.fromJson(JSON.stringify(a), ZERO, null as never);
-    const fn = (c as unknown as { functions: Map<string, { selector?: string }> })
-      .functions.get("f");
+    const fn = (c as unknown as { functions: Map<string, { selector?: string }> }).functions.get(
+      "f",
+    );
     expect(fn?.selector).toMatch(/^0x[0-9a-f]{8}$/);
   });
 });

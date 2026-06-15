@@ -22,9 +22,7 @@ Still gated on engine work — surfaces exist, but the chain hasn't shipped the 
 
 - `pyde_subscribe` / `pyde_unsubscribe` — WS subscriptions
 - `pyde_sendRawEncryptedTransaction` + `pyde_getThresholdPublicKey` — encrypted (MEV-protected) submission
-- `pyde_estimateGas` — gas estimation (auto-estimate falls back to a hardcoded default)
-- `pyde_getBaseFee` / `pyde_gasPrice` — fee market
-- `pyde_getWaveNumber` — latest-wave lookup
+- **Tier-2 catalog alignment** — wrap `pyde_simulateTransaction` so `Wallet.transfer` / `sendCall` / `Contract.estimateGas` pick up real chain estimates instead of fixed 100k / 5M defaults, and access lists can be inferred. Same `pyde_simulateTransaction` returns the receipt + access list together. (Today the SDK uses hardcoded defaults and the chain serializes against missing access lists.)
 
 Still gated on tooling — code path is built, no funded test:
 
@@ -42,92 +40,131 @@ Requires Node ≥ 20 (Node 22 recommended). The browser bundle is ESM via `dist/
 
 ## TOC
 
-| Chapter | Topic |
-|---|---|
-| [01 — Quickstart](./01-quickstart.md) | Read a balance · Send a transfer · Deploy + call a contract |
-| [02 — Provider](./02-provider.md) | HTTP RPC client: every method, options, retries, errors |
-| [03 — Wallet](./03-wallet.md) | Handle vs hex SK, keystore, sign, gas auto-estimate |
-| [04 — Contract](./04-contract.md) | `Contract.read` / `write` / `queryFilter` + `Contract<TAbi>` |
-| [05 — Codegen (`pyde-tsgen`)](./05-codegen.md) | ABI → TS bindings, type-safe `<Name>Abi` shape |
-| [06 — React hooks](./06-react.md) | `useBalance` / `useWave` / `useEvents` / `PydeProvider` |
-| [07 — Wallet adapters](./07-wallet-adapters.md) | `WalletAdapter` interface, `InMemory` + `Browser` + custom |
-| [08 — WebSocket](./08-websocket.md) | `WebSocketProvider` — subscriptions, cursor resume, terminalError |
-| [09 — Encrypted mempool](./09-encrypted-mempool.md) | MEV-protected submission, threshold encryption flow |
-| [10 — Errors](./10-errors.md) | Error hierarchy, `isError`, `scrubError`, retry semantics |
-| [11 — Utility surface](./11-units-hex-address.md) | `parsePyde` / `hexlify` / `Address` |
-| [12 — Examples / recipes](./12-examples.md) | Read · Send · Index · Deploy · React dapp · Encrypted |
-| [13 — Migration](./13-migration.md) | Upgrade notes between SDK versions |
-| [14 — Internals](./14-internals.md) | Borsh wire format · `CallPayload` · ABI normalisation |
+| Chapter                                             | Topic                                                             |
+| --------------------------------------------------- | ----------------------------------------------------------------- |
+| [01 — Quickstart](./01-quickstart.md)               | Read a balance · Send a transfer · Deploy + call a contract       |
+| [02 — Provider](./02-provider.md)                   | HTTP RPC client: every method, options, retries, errors           |
+| [03 — Wallet](./03-wallet.md)                       | Handle vs hex SK, keystore, sign, gas auto-estimate               |
+| [04 — Contract](./04-contract.md)                   | `Contract.read` / `write` / `queryFilter` + `Contract<TAbi>`      |
+| [05 — Codegen (`pyde-tsgen`)](./05-codegen.md)      | ABI → TS bindings, type-safe `<Name>Abi` shape                    |
+| [06 — React hooks](./06-react.md)                   | `useBalance` / `useWave` / `useEvents` / `PydeProvider`           |
+| [07 — Wallet adapters](./07-wallet-adapters.md)     | `WalletAdapter` interface, `InMemory` + `Browser` + custom        |
+| [08 — WebSocket](./08-websocket.md)                 | `WebSocketProvider` — subscriptions, cursor resume, terminalError |
+| [09 — Encrypted mempool](./09-encrypted-mempool.md) | MEV-protected submission, threshold encryption flow               |
+| [10 — Errors](./10-errors.md)                       | Error hierarchy, `isError`, `scrubError`, retry semantics         |
+| [11 — Utility surface](./11-units-hex-address.md)   | `parsePyde` / `hexlify` / `Address`                               |
+| [12 — Examples / recipes](./12-examples.md)         | Read · Send · Index · Deploy · React dapp · Encrypted             |
+| [13 — Migration](./13-migration.md)                 | Upgrade notes between SDK versions                                |
+| [14 — Internals](./14-internals.md)                 | Borsh wire format · `CallPayload` · ABI normalisation             |
 
 ## At a glance — the public surface
 
 Provider + WebSocket:
+
 ```ts
 import { Provider, WebSocketProvider } from "pyde-ts-sdk";
 ```
 
 Signing:
+
 ```ts
 import { Wallet, AbstractSigner } from "pyde-ts-sdk";
 ```
 
 Adapters:
+
 ```ts
-import {
-  InMemoryWalletAdapter,
-  BrowserWalletAdapter,
-  type WalletAdapter,
-} from "pyde-ts-sdk";
+import { InMemoryWalletAdapter, BrowserWalletAdapter, type WalletAdapter } from "pyde-ts-sdk";
 ```
 
 Contracts:
+
 ```ts
 import { Contract, Interface, DeployData, type ContractReceipt, type EventLog } from "pyde-ts-sdk";
 ```
 
 Crypto primitives (used by the higher-level APIs above; rarely needed directly):
+
 ```ts
 import {
-  generateKeypair, generateKeypairHandle, dropKeypair,
-  signMessage, signMessageWithHandle,
-  hashTransaction, poseidon2Hash, computeSelector,
-  thresholdEncrypt, buildRawEncryptedTx,
+  generateKeypair,
+  generateKeypairHandle,
+  dropKeypair,
+  signMessage,
+  signMessageWithHandle,
+  hashTransaction,
+  poseidon2Hash,
+  computeSelector,
+  thresholdEncrypt,
+  buildRawEncryptedTx,
 } from "pyde-ts-sdk";
 ```
 
 Simulation (Tier 1 — RPC-backed; local wasmtime ships in v1.1):
+
 ```ts
 import { simulateTransaction, previewTransaction, applySimulation } from "pyde-ts-sdk";
 ```
 
 Units / hex / address helpers:
+
 ```ts
 import {
-  parsePyde, formatPyde, parseQuanta, formatQuanta, parseUnits, formatUnits,
-  isHexString, hexlify, getBytes, toBeHex, concat, zeroPadValue, stripZeros,
+  parsePyde,
+  formatPyde,
+  parseQuanta,
+  formatQuanta,
+  parseUnits,
+  formatUnits,
+  isHexString,
+  hexlify,
+  getBytes,
+  toBeHex,
+  concat,
+  zeroPadValue,
+  stripZeros,
   Address,
 } from "pyde-ts-sdk";
 ```
 
 Errors:
+
 ```ts
 import {
-  PydeError, CallExceptionError, ConnectionError, TimeoutError,
-  InvalidArgumentError, InsufficientFundsError, RpcError, SigningError,
-  isError, isCallException,
+  PydeError,
+  CallExceptionError,
+  ConnectionError,
+  TimeoutError,
+  InvalidArgumentError,
+  InsufficientFundsError,
+  RpcError,
+  SigningError,
+  isError,
+  isCallException,
   type ErrorCode,
 } from "pyde-ts-sdk";
 ```
 
 React (subpath export):
+
 ```ts
 import {
-  PydeProvider, useBalance, useNonce, useAccount, useWave, useLiveWave,
-  useEvents, useContract, usePydeProvider, usePydeWebSocket, usePydeSigner,
+  PydeProvider,
+  useBalance,
+  useNonce,
+  useAccount,
+  useWave,
+  useLiveWave,
+  useEvents,
+  useContract,
+  usePydeProvider,
+  usePydeWebSocket,
+  usePydeSigner,
 } from "pyde-ts-sdk/react";
 ```
 
 Codegen (subpath export, programmatic) or CLI:
+
 ```ts
 import { generateTypes } from "pyde-ts-sdk/codegen";
 // or:
@@ -136,15 +173,15 @@ import { generateTypes } from "pyde-ts-sdk/codegen";
 
 ## Spec references
 
-| Topic | Spec source |
-|---|---|
-| RPC surface | Pyde Book Chapter 17.4 |
-| Transaction wire | Pyde Book Chapter 11 |
-| Wave header / state root hybrid | Pyde Book Chapter 6 + `hash_strategy_and_validation` |
-| Encrypted mempool | Pyde Book Chapter 8.5 + Chapter 9 |
-| Host fn ABI | `HOST_FN_ABI_SPEC.md` |
-| Event encoding (Borsh) | `HOST_FN_ABI_SPEC.md §14` |
-| Keystore (Argon2id + ChaCha20-Poly1305) | Pyde Book Chapter 17 |
+| Topic                                   | Spec source                                          |
+| --------------------------------------- | ---------------------------------------------------- |
+| RPC surface                             | Pyde Book Chapter 17.4                               |
+| Transaction wire                        | Pyde Book Chapter 11                                 |
+| Wave header / state root hybrid         | Pyde Book Chapter 6 + `hash_strategy_and_validation` |
+| Encrypted mempool                       | Pyde Book Chapter 8.5 + Chapter 9                    |
+| Host fn ABI                             | `HOST_FN_ABI_SPEC.md`                                |
+| Event encoding (Borsh)                  | `HOST_FN_ABI_SPEC.md §14`                            |
+| Keystore (Argon2id + ChaCha20-Poly1305) | Pyde Book Chapter 17                                 |
 
 ## Conventions
 

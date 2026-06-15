@@ -36,15 +36,15 @@ npx pyde-tsgen <input.abi.json> <output.d.ts> [--name <ContractName>]
 
 **Args:**
 
-| Positional | Required | Description |
-|---|---|---|
-| `<input.abi.json>` | yes | Path to the ABI JSON. Either the bundle's standalone `abi.json` or the full artifact. |
-| `<output.d.ts>` | yes | Output declaration file. Parent dirs are created as needed. |
+| Positional         | Required | Description                                                                           |
+| ------------------ | -------- | ------------------------------------------------------------------------------------- |
+| `<input.abi.json>` | yes      | Path to the ABI JSON. Either the bundle's standalone `abi.json` or the full artifact. |
+| `<output.d.ts>`    | yes      | Output declaration file. Parent dirs are created as needed.                           |
 
 **Options:**
 
-| Flag | Default | Description |
-|---|---|---|
+| Flag                    | Default                                       | Description                                                                                     |
+| ----------------------- | --------------------------------------------- | ----------------------------------------------------------------------------------------------- |
 | `--name <ContractName>` | `artifact.name`, falling back to `"Contract"` | Prefix for emitted interface names (`<Name>Abi`, `<Name>Contract`, `<Name>TransferEvent`, ...). |
 
 **Example:**
@@ -78,14 +78,14 @@ writeFileSync("./types/foo.d.ts", ts);
 **Signature:**
 
 ```ts
-function generateTypes(abiJson: string, contractName?: string): string
+function generateTypes(abiJson: string, contractName?: string): string;
 ```
 
 **Args:**
 
-| Name | Type | Description |
-|---|---|---|
-| `abiJson` | `string` | Raw JSON content. |
+| Name           | Type     | Description                                                          |
+| -------------- | -------- | -------------------------------------------------------------------- |
+| `abiJson`      | `string` | Raw JSON content.                                                    |
 | `contractName` | `string` | Optional name prefix. Falls back to `artifact.name` or `"Contract"`. |
 
 **Returns:** `string` — full TypeScript declaration file content.
@@ -128,11 +128,11 @@ The emitted `.d.ts`:
  *  `read` / `write` / `queryFilter` / `parseLog` narrowing. */
 export interface CounterAbi {
   functions: {
-    "get_count": { args: {}; returns: bigint; view: true; payable: false };
-    "deposit":   { args: { arg0: bigint }; returns: void; view: false; payable: true };
+    get_count: { args: {}; returns: bigint; view: true; payable: false };
+    deposit: { args: { arg0: bigint }; returns: void; view: false; payable: true };
   };
   events: {
-    "Increment": { args: { by: bigint } };
+    Increment: { args: { by: bigint } };
   };
 }
 
@@ -153,10 +153,10 @@ export interface CounterIncrementEvent {
 
 **Two intentional interfaces:**
 
-| Interface | Use |
-|---|---|
-| **`<Name>Abi`** | Pass to `Contract.fromArtifact<NameAbi>(...)`. The SDK uses it to narrow `read` / `write` / `queryFilter` / `parseLog` to the exact method + event surface. **Recommended.** |
-| **`<Name>Contract`** | Legacy cast-style binding. Kept for callers who prefer `contract as unknown as CounterContract`. |
+| Interface            | Use                                                                                                                                                                          |
+| -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **`<Name>Abi`**      | Pass to `Contract.fromArtifact<NameAbi>(...)`. The SDK uses it to narrow `read` / `write` / `queryFilter` / `parseLog` to the exact method + event surface. **Recommended.** |
+| **`<Name>Contract`** | Legacy cast-style binding. Kept for callers who prefer `contract as unknown as CounterContract`.                                                                             |
 
 ---
 
@@ -190,18 +190,18 @@ await counter.write("deposit", { arg0: "5" });
 
 ## Type mapping reference
 
-| ABI scalar | TS type |
-|---|---|
-| `u8` `u16` `u32` `i8` `i16` `i32` | `number` |
-| `u64` `i64` `u128` `i128` `u256` `i256` | `bigint` |
-| `bool` | `boolean` |
-| `string` | `string` |
-| `address`, `hash`, `hash32` | `string` (hex) |
-| `bytes` | `Uint8Array` |
-| `()`, `unit`, `void` | `void` |
-| `Vec<T>` | `T[]` |
-| `Custom: "Name"` (struct / enum) | `unknown` (fallback) |
-| anything unrecognised | `unknown` |
+| ABI scalar                              | TS type              |
+| --------------------------------------- | -------------------- |
+| `u8` `u16` `u32` `i8` `i16` `i32`       | `number`             |
+| `u64` `i64` `u128` `i128` `u256` `i256` | `bigint`             |
+| `bool`                                  | `boolean`            |
+| `string`                                | `string`             |
+| `address`, `hash`, `hash32`             | `string` (hex)       |
+| `bytes`                                 | `Uint8Array`         |
+| `()`, `unit`, `void`                    | `void`               |
+| `Vec<T>`                                | `T[]`                |
+| `Custom: "Name"` (struct / enum)        | `unknown` (fallback) |
+| anything unrecognised                   | `unknown`            |
 
 For nested custom types in args, the emitter falls back to `unknown`. The caller can intersect with their own type or use the runtime `Contract` (which resolves struct types against the ABI's `types[]` registry).
 
@@ -241,12 +241,12 @@ done
 
 ## Limitations
 
-| Limitation | Notes |
-|---|---|
+| Limitation                                                | Notes                                                                                                                                 |
+| --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
 | Custom struct returns emit `unknown` in `<Name>Contract`. | The **runtime** `Contract.read("returns_custom_struct")` decodes correctly today; only the TypeScript type at the call site is loose. |
-| Tuples emit `unknown`. | No nested type extraction yet. |
-| Data-carrying enum variants not supported. | Only unit variants today. |
-| No source maps. | The generated `.d.ts` doesn't reference the source ABI. Re-run codegen on contract upgrade. |
+| Tuples emit `unknown`.                                    | No nested type extraction yet.                                                                                                        |
+| Data-carrying enum variants not supported.                | Only unit variants today.                                                                                                             |
+| No source maps.                                           | The generated `.d.ts` doesn't reference the source ABI. Re-run codegen on contract upgrade.                                           |
 
 These are **codegen-side gaps, not runtime gaps**.
 

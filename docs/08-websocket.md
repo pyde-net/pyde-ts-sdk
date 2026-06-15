@@ -54,10 +54,10 @@ new WebSocketProvider(wsUrl: string, options?: WebSocketProviderOptions)
 
 **Args:**
 
-| Name | Type | Required | Description |
-|---|---|---|---|
-| `wsUrl` | `string` | yes | `wss://` endpoint. `ws://` throws unless `allowInsecureTransport: true`. |
-| `options` | `WebSocketProviderOptions` | no | See below. |
+| Name      | Type                       | Required | Description                                                              |
+| --------- | -------------------------- | -------- | ------------------------------------------------------------------------ |
+| `wsUrl`   | `string`                   | yes      | `wss://` endpoint. `ws://` throws unless `allowInsecureTransport: true`. |
+| `options` | `WebSocketProviderOptions` | no       | See below.                                                               |
 
 **Throws:** `InvalidArgumentError` for `ws://` URL without `allowInsecureTransport`.
 
@@ -77,15 +77,15 @@ interface WebSocketProviderOptions {
 }
 ```
 
-| Field | Type | Default | What it does |
-|---|---|---|---|
-| `webSocketConstructor` | `WebSocketCtor` | `globalThis.WebSocket` | Custom WS class. Use `ws` (the npm package) on Node < 22 without `--experimental-websocket`. |
-| `httpRpcUrl` | `string` | wsUrl with `ws[s]://` → `http[s]://` | HTTP RPC URL used for non-subscription queries piggybacking on this provider. Path / query / fragment preserved. |
-| `reconnectInitialDelayMs` | `number` | `1_000` | Exponential backoff base. |
-| `reconnectMaxDelayMs` | `number` | `30_000` | Cap on the delay between reconnect attempts. |
-| `reconnectMaxAttempts` | `number` | `0` (infinite) | After this many failures, fires `terminalError`. |
-| `rpcTimeoutMs` | `number` | `30_000` | Per-call timeout for `subscribe` / `unsubscribe` RPCs. |
-| `allowInsecureTransport` | `boolean` | `false` | Required for `ws://`. |
+| Field                     | Type            | Default                              | What it does                                                                                                     |
+| ------------------------- | --------------- | ------------------------------------ | ---------------------------------------------------------------------------------------------------------------- |
+| `webSocketConstructor`    | `WebSocketCtor` | `globalThis.WebSocket`               | Custom WS class. Use `ws` (the npm package) on Node < 22 without `--experimental-websocket`.                     |
+| `httpRpcUrl`              | `string`        | wsUrl with `ws[s]://` → `http[s]://` | HTTP RPC URL used for non-subscription queries piggybacking on this provider. Path / query / fragment preserved. |
+| `reconnectInitialDelayMs` | `number`        | `1_000`                              | Exponential backoff base.                                                                                        |
+| `reconnectMaxDelayMs`     | `number`        | `30_000`                             | Cap on the delay between reconnect attempts.                                                                     |
+| `reconnectMaxAttempts`    | `number`        | `0` (infinite)                       | After this many failures, fires `terminalError`.                                                                 |
+| `rpcTimeoutMs`            | `number`        | `30_000`                             | Per-call timeout for `subscribe` / `unsubscribe` RPCs.                                                           |
+| `allowInsecureTransport`  | `boolean`       | `false`                              | Required for `ws://`.                                                                                            |
 
 **Example — production with bounded retries:**
 
@@ -166,9 +166,9 @@ ws.subscribeAccountChanges(
 
 **Args:**
 
-| Name | Type | Description |
-|---|---|---|
-| `address` | `string` | 32-byte hex address to watch. |
+| Name       | Type     | Description                               |
+| ---------- | -------- | ----------------------------------------- |
+| `address`  | `string` | 32-byte hex address to watch.             |
 | `listener` | function | Called with the updated `Account` record. |
 
 **Returns:** `Promise<Unsubscribe>`.
@@ -176,12 +176,9 @@ ws.subscribeAccountChanges(
 **Example:**
 
 ```ts
-const unsub = await ws.subscribeAccountChanges(
-  "0xaddress...",
-  (account) => {
-    console.log("balance now:", account.balance);
-  },
-);
+const unsub = await ws.subscribeAccountChanges("0xaddress...", (account) => {
+  console.log("balance now:", account.balance);
+});
 ```
 
 ---
@@ -203,17 +200,17 @@ ws.subscribeLogs(
 
 ```ts
 interface LogSubscriptionFilter {
-  topics?: (string[] | null)[];  // 4 positional slots, null = any
+  topics?: (string[] | null)[]; // 4 positional slots, null = any
   contract?: string;
-  from?: EventCursor;            // resume from last delivered cursor
+  from?: EventCursor; // resume from last delivered cursor
 }
 ```
 
-| Field | Type | Description |
-|---|---|---|
-| `topics` | `(string[] \| null)[]` | Up to 4 positional topic slots. `null` at position i = wildcard at position i. |
-| `contract` | `string` | Optional address restriction. |
-| `from` | `EventCursor` | Resume from this `{waveId, txIndex, eventIndex}` cursor for at-least-once delivery after a reconnect. Omit to receive only events committed after subscription time. |
+| Field      | Type                   | Description                                                                                                                                                          |
+| ---------- | ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `topics`   | `(string[] \| null)[]` | Up to 4 positional topic slots. `null` at position i = wildcard at position i.                                                                                       |
+| `contract` | `string`               | Optional address restriction.                                                                                                                                        |
+| `from`     | `EventCursor`          | Resume from this `{waveId, txIndex, eventIndex}` cursor for at-least-once delivery after a reconnect. Omit to receive only events committed after subscription time. |
 
 **Returns:** `Promise<Unsubscribe>`.
 
@@ -245,13 +242,15 @@ const unsub = await ws.subscribeLogs(
 await ws.subscribeLogs(
   {
     topics: [
-      [transferTopic],          // topic[0] = exact match
-      [aliceTopic, bobTopic],   // topic[1] = either
-      null,                     // topic[2] = any
-      null,                     // topic[3] = any
+      [transferTopic], // topic[0] = exact match
+      [aliceTopic, bobTopic], // topic[1] = either
+      null, // topic[2] = any
+      null, // topic[3] = any
     ],
   },
-  (log) => { /* … */ },
+  (log) => {
+    /* … */
+  },
 );
 ```
 
@@ -267,15 +266,12 @@ await ws.subscribeLogs(
 
 ```ts
 const seen = new Set<string>();
-await ws.subscribeLogs(
-  { topics: [[transferTopic]] },
-  (log) => {
-    const key = `${log.waveId}-${log.txIndex}-${log.eventIndex}`;
-    if (seen.has(key)) return;
-    seen.add(key);
-    process(log);
-  },
-);
+await ws.subscribeLogs({ topics: [[transferTopic]] }, (log) => {
+  const key = `${log.waveId}-${log.txIndex}-${log.eventIndex}`;
+  if (seen.has(key)) return;
+  seen.add(key);
+  process(log);
+});
 ```
 
 ---
@@ -290,14 +286,14 @@ delay = min(initialDelay * 2^attempt, maxDelay)
 
 With defaults (`initialDelay = 1000`, `maxDelay = 30000`):
 
-| Attempt | Delay |
-|---|---|
-| 1 | 1 s |
-| 2 | 2 s |
-| 3 | 4 s |
-| 4 | 8 s |
-| 5 | 16 s |
-| 6+ | 30 s (capped) |
+| Attempt | Delay         |
+| ------- | ------------- |
+| 1       | 1 s           |
+| 2       | 2 s           |
+| 3       | 4 s           |
+| 4       | 8 s           |
+| 5       | 16 s          |
+| 6+      | 30 s (capped) |
 
 On a successful re-subscribe of **every** active subscription, the attempt counter resets to 0.
 
@@ -325,6 +321,7 @@ ws.on("terminalError", (err) => {
 ```
 
 After `terminalError`:
+
 1. The provider stops reconnecting.
 2. `ws.lastError` is populated.
 3. Subsequent `subscribe*` calls reject with `ConnectionError`.
@@ -358,6 +355,7 @@ ws.destroy(): void
 ```
 
 **What it does:**
+
 - Closes the socket.
 - Removes all active subscriptions.
 - Clears reconnect timers.
@@ -378,12 +376,12 @@ In React, `<PydeProvider>` calls `destroy()` on unmount automatically.
 
 ## Errors
 
-| Class | When |
-|---|---|
-| `InvalidArgumentError` | `ws://` URL without `allowInsecureTransport: true`. |
-| `ConnectionError` | Socket dropped + retries exhausted (fires `terminalError` + sets `lastError`). |
-| `TimeoutError` | RPC call exceeded `rpcTimeoutMs`. |
-| `RpcError` | Chain returned a JSON-RPC error during subscribe (e.g., `method not found` — engine-side gap). |
+| Class                  | When                                                                                           |
+| ---------------------- | ---------------------------------------------------------------------------------------------- |
+| `InvalidArgumentError` | `ws://` URL without `allowInsecureTransport: true`.                                            |
+| `ConnectionError`      | Socket dropped + retries exhausted (fires `terminalError` + sets `lastError`).                 |
+| `TimeoutError`         | RPC call exceeded `rpcTimeoutMs`.                                                              |
+| `RpcError`             | Chain returned a JSON-RPC error during subscribe (e.g., `method not found` — engine-side gap). |
 
 ---
 

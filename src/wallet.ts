@@ -255,10 +255,11 @@ export class Wallet extends AbstractSigner {
     return p.sendAndWait(wire);
   }
 
-  /** Build, sign, send a native PYDE transfer. Gas limit is estimated
-   *  via `provider.estimateGas` and multiplied by `gasMultiplier`
-   *  (default 1.2) to absorb chain-state drift between the estimate
-   *  and the commit. Callers can override with `opts.gasLimit`. */
+  /** Build, sign, send a native PYDE transfer. v1 engine has no
+   *  `pyde_estimateGas`; gas defaults to 100,000 (`data === "0x"`) or
+   *  5,000,000 (calldata-bearing) — Tier-2 will route this through
+   *  `pyde_simulateTransaction` with a `gasMultiplier` safety margin.
+   *  Override with `opts.gasLimit` for tighter bounds today. */
   async transfer(
     to: string,
     amount: bigint | number,
@@ -291,24 +292,18 @@ export class Wallet extends AbstractSigner {
   }
 
   private async estimateGasFor(
-    p: Provider,
-    to: string,
+    _p: Provider,
+    _to: string,
     data: string,
-    value: bigint | number | string,
-    multiplier?: number,
+    _value: bigint | number | string,
+    _multiplier?: number,
   ): Promise<number> {
-    try {
-      const est = await p.estimateGas(to, data, {
-        from: this.address,
-        ...(BigInt(value) > 0n ? { value } : {}),
-      });
-      return Math.ceil(est * (multiplier ?? 1.2));
-    } catch {
-      // estimateGas may fail (chain doesn't expose it yet, or call
-      // would revert). Fall back to a conservative default — 100k for
-      // simple transfers, 5M for contract calls with calldata.
-      return data === "0x" ? 100_000 : 5_000_000;
-    }
+    // v1 engine has no dedicated `pyde_estimateGas`; gas inference is
+    // queued behind a `pyde_simulateTransaction` wrapper (Tier-2
+    // catalog alignment). Until then fall back to the same fixed
+    // defaults the previous estimate-then-fallback path used: 100k
+    // for plain transfers, 5M for calldata-bearing calls.
+    return data === "0x" ? 100_000 : 5_000_000;
   }
 
   /** Build, sign, send a contract call. Auto-fetches an access list via
@@ -329,20 +324,12 @@ export class Wallet extends AbstractSigner {
       opts?.gasLimit ?? (await this.estimateGasFor(p, to, data, value, opts?.gasMultiplier));
     const [nonce, chainId] = await p.getNonceAndChainId(this.address);
 
-    let accessList: AccessEntry[] | undefined;
-    try {
-      const accessParams: Parameters<typeof p.estimateAccess>[0] = {
-        to,
-        data,
-        from: this.address,
-      };
-      if (BigInt(value) > 0n) accessParams.value = value;
-      accessList = await p.estimateAccess(accessParams);
-    } catch {
-      // estimateAccess is a hint; tx still executes without it (the
-      // chain serializes against access-list-violating txs, costing
-      // throughput but not correctness). Fail open.
-    }
+    // v1 engine has no dedicated `pyde_estimateAccess`. The chain
+    // serializes txs without a declared access list (costing parallel
+    // throughput but not correctness). Tier-2 wires this through the
+    // `pyde_simulateTransaction` dry-run which returns the access list
+    // alongside the gas estimate.
+    const accessList: AccessEntry[] | undefined = undefined;
 
     const tx: TxFields = {
       from: this.address,
@@ -426,19 +413,13 @@ export class Wallet extends AbstractSigner {
       p.getNonceAndChainId(this.address),
     ]);
 
-    let accessList = opts?.accessList;
-    if (!accessList && opts?.estimateAccess) {
-      try {
-        accessList = await p.estimateAccess({
-          to,
-          data,
-          from: this.address,
-          ...(opts.value !== undefined ? { value: opts.value } : {}),
-        });
-      } catch {
-        // Hint only — chain works without.
-      }
-    }
+    const accessList = opts?.accessList;
+    // `opts.estimateAccess` is reserved for the Tier-2 catalog pass —
+    // engine has no dedicated `pyde_estimateAccess` today. Until then
+    // callers either supply `opts.accessList` themselves or skip it;
+    // setting `estimateAccess: true` is a no-op (was previously a
+    // privacy-leak path against the encrypted mempool, see chapter 9).
+    void opts?.estimateAccess;
 
     const params: import("./crypto").EncryptedTxParams = {
       thresholdPk,

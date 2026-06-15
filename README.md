@@ -56,7 +56,7 @@ await provider.getBalance(addr); // → bigint (quanta)
 await provider.getNonce(addr); // → number
 await provider.getAccount(addr); // → Account record (Chapter 11 §11.1)
 await provider.getContractCode(addr); // → WASM bytes hex
-await provider.getContractState(addr, slot); // → slot value hex
+await provider.getStorageSlot(slot); // → slot value hex (or null)
 await provider.resolveName("alice.pyde"); // → 32-byte address or null
 
 // Wave + finality
@@ -65,12 +65,11 @@ await provider.getWave(1234); // → specific wave
 await provider.getHardFinalityCert(1234); // → threshold-signed cert
 await provider.getSnapshotManifest(1234); // → light-client manifest
 
-// View calls + gas / access
+// View calls
 await provider.call(to, data); // → return-data hex (free)
-await provider.estimateGas(to, data); // → number
-await provider.estimateAccess({ to, data }); // → AccessEntry[]
-await provider.getBaseFee(); // → bigint (quanta/gas)
-await provider.getFeeData(); // → { gasPrice, baseFee }
+await provider.getWaveId(); // → bigint (current head)
+// gas / access-list estimation: queued for Tier-2 (pyde_simulateTransaction wrapper).
+// Today: Wallet.transfer / sendCall use fixed 100k / 5M defaults; pin `gasLimit` for tighter bounds.
 
 // Tx lookup + receipts
 await provider.getTransaction(txHash); // → TransactionInfo or null
@@ -333,7 +332,7 @@ The full book lives at [book.pyde.network](https://book.pyde.network).
 
 The pre-pivot SDK targeted a different consensus + execution layer. Most APIs survive in shape; specific changes:
 
-- **`pyde_getTransactionCount` → `pyde_getNonce`**, `pyde_getCode` → `pyde_getContractCode`, `pyde_gasPrice` → `pyde_getBaseFee`, `pyde_createAccessList` → `pyde_estimateAccess`, `pyde_blockNumber` / `pyde_getBlockByNumber` → `pyde_getWave`. The SDK exposes only the new names.
+- The SDK speaks the engine RPC catalog v0.1 verbatim: `pyde_chainId`, `pyde_waveId`, `pyde_getBalance`, `pyde_getTransactionCount`, `pyde_getAccount`, `pyde_getContractCode`, `pyde_getStorageSlot`, `pyde_resolveName`, `pyde_call`, `pyde_sendRawTransaction`, `pyde_getTransactionReceipt`, `pyde_getTx`, `pyde_getWave`, `pyde_getHardFinalityCert`, `pyde_getSnapshotManifest`, `pyde_getLogs`, `pyde_subscribe` / `pyde_unsubscribe` (logs only in v1). Gas / access-list estimation, encrypted-mempool submission, validator / node / metrics endpoints, and archival `pyde_getReceipt` / full `pyde_getSnapshot` ride a Tier-2 follow-up.
 - **`BlockHeader` → `WaveHeader`** (`slot` → `waveId`, adds `anchor`). Wave, not block.
 - **`Log` carries `(waveId, txIndex, eventIndex)`** cursor coords for at-least-once delivery.
 - **`LogFilter.fromBlock / toBlock` → `fromWave / toWave`**, plus `cursor` and `limit` for HOST_FN_ABI §15.4 cursor pagination.

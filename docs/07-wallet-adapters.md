@@ -42,18 +42,18 @@ interface WalletAdapter {
 type WalletAdapterEvent = "connect" | "disconnect" | "addressChange";
 ```
 
-| Member | Type | Description |
-|---|---|---|
-| `address` | `string \| null` | The connected address, or `null` before `connect()`. |
-| `publicKey` | `string \| null` | Hex pub key, or `null`. |
-| `connected` | `boolean` | True iff `address !== null`. |
-| `connect()` | `Promise<string>` | Initiates connection (may prompt UI). Resolves with the address. |
-| `disconnect()` | `Promise<void>` | Tear down the connection. |
-| `signMessage(hex)` | `Promise<string>` | Sign arbitrary bytes. Returns FALCON-512 signature hex. |
-| `signTransaction(tx)` | `Promise<string>` | Sign a tx. Returns wire-encoded signed tx hex. |
-| `sendTransaction(tx, provider)` | `Promise<Receipt>` | Convenience — sign + submit + wait. |
-| `on(event, listener)` | `void` | Subscribe to lifecycle events. |
-| `off(event, listener)` | `void` | Unsubscribe. |
+| Member                          | Type               | Description                                                      |
+| ------------------------------- | ------------------ | ---------------------------------------------------------------- |
+| `address`                       | `string \| null`   | The connected address, or `null` before `connect()`.             |
+| `publicKey`                     | `string \| null`   | Hex pub key, or `null`.                                          |
+| `connected`                     | `boolean`          | True iff `address !== null`.                                     |
+| `connect()`                     | `Promise<string>`  | Initiates connection (may prompt UI). Resolves with the address. |
+| `disconnect()`                  | `Promise<void>`    | Tear down the connection.                                        |
+| `signMessage(hex)`              | `Promise<string>`  | Sign arbitrary bytes. Returns FALCON-512 signature hex.          |
+| `signTransaction(tx)`           | `Promise<string>`  | Sign a tx. Returns wire-encoded signed tx hex.                   |
+| `sendTransaction(tx, provider)` | `Promise<Receipt>` | Convenience — sign + submit + wait.                              |
+| `on(event, listener)`           | `void`             | Subscribe to lifecycle events.                                   |
+| `off(event, listener)`          | `void`             | Unsubscribe.                                                     |
 
 Dapp code:
 
@@ -105,6 +105,7 @@ ok: true
 ```
 
 **Notes:**
+
 - `disconnect()` doesn't call `wallet.destroy()` — the caller controls the wallet's lifecycle.
 - `addressChange` event never fires (the wallet is fixed).
 
@@ -130,8 +131,8 @@ new BrowserWalletAdapter(options?: { namespace?: string })
 
 **Args:**
 
-| Name | Type | Default | Description |
-|---|---|---|---|
+| Name        | Type     | Default  | Description                    |
+| ----------- | -------- | -------- | ------------------------------ |
 | `namespace` | `string` | `"pyde"` | Which `window.*` slot to read. |
 
 **Example:**
@@ -156,6 +157,7 @@ const receipt = await adapter.sendTransaction(tx, provider);
 ```
 
 **Throws:**
+
 - `Error("no injected pyde provider")` when `window.pyde` (or the namespaced equivalent) is missing.
 - `SigningError` on user rejection or any signer failure.
 
@@ -292,11 +294,11 @@ adapter.on("addressChange", () => {
 
 **Event semantics:**
 
-| Event | When | Receiver should |
-|---|---|---|
-| `connect` | After `connect()` resolves. | Re-fetch balance / nonce / account. |
-| `disconnect` | After `disconnect()` resolves OR the wallet drops the session. | Clear cached state, show "connect" UI. |
-| `addressChange` | User switches accounts in the wallet. | **Don't assume the prior address still owns funds.** Re-fetch everything. |
+| Event           | When                                                           | Receiver should                                                           |
+| --------------- | -------------------------------------------------------------- | ------------------------------------------------------------------------- |
+| `connect`       | After `connect()` resolves.                                    | Re-fetch balance / nonce / account.                                       |
+| `disconnect`    | After `disconnect()` resolves OR the wallet drops the session. | Clear cached state, show "connect" UI.                                    |
+| `addressChange` | User switches accounts in the wallet.                          | **Don't assume the prior address still owns funds.** Re-fetch everything. |
 
 ---
 
@@ -306,5 +308,5 @@ adapter.on("addressChange", () => {
 - **`connect()` may prompt the user.** Treat it as a user-facing action; don't call it from a `useEffect` without intent.
 - **`addressChange` fires when the user switches accounts in the wallet.** Re-fetch balance / nonce / account; do not assume the prior address still owns funds.
 - **`InMemoryWalletAdapter` exposes the inner `Wallet`.** Treat it accordingly — it's strictly for trusted process contexts.
-- **`BrowserWalletAdapter`'s sender-prefix check is a partial defense.** A malicious wallet could still substitute a different *signer* (same `from`, different SK) and fool downstream verification until pyde-crypto-wasm ships the full decoder.
+- **`BrowserWalletAdapter`'s sender-prefix check is a partial defense.** A malicious wallet could still substitute a different _signer_ (same `from`, different SK) and fool downstream verification until pyde-crypto-wasm ships the full decoder.
 - **No injected wallet exists yet.** `BrowserWalletAdapter` is ready; the ecosystem hasn't shipped a Pyde browser extension. Until then, use `InMemoryWalletAdapter` for testing.
