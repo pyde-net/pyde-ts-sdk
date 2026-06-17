@@ -1,19 +1,9 @@
 /**
  * Provider — read-side live tests against a spawned devnet.
  *
- * Engine-blocked surfaces (`describe.skip` until the engine ships):
- *   - pyde_getBaseFee / pyde_gasPrice — neither exposed.
- *   - pyde_getWaveNumber / pyde_blockNumber — no way to resolve the
- *     head wave id, so `getWave()` no-arg can't bind.
- *
- * Engine-supported now (un-skipped on this branch):
- *   - getNonce → pyde_getTransactionCount fallback works.
- *   - getAccount → wire-shape matches after the M-4 adapter.
- *   - getWave(specificId) → numeric param + tolerant wire-shape
- *     adapter (hex-or-bytes for anchor/state_root) lands here.
- *   - getLogs → SDK accepts both `entries` (engine) and `events`
- *     (older spec drafts) for the result envelope.
- *   - batch → composes the supported sub-methods.
+ * Covers: getNonce, getAccount, getWave (no-arg + by id), getLogs,
+ * batch, getBaseFee, getFeeData. All RPC methods needed are wired
+ * in the current otigen build.
  */
 
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
@@ -91,7 +81,7 @@ describe("Provider — live RPC (chain-implemented surfaces)", () => {
   });
 });
 
-describe.skip("Provider — live RPC (waiting on engine to implement)", () => {
+describe("Provider — fee + head RPC", () => {
   it("getBaseFee returns a non-zero bigint", async () => {
     const baseFee = await devnet.provider.getBaseFee();
     expect(typeof baseFee).toBe("bigint");
@@ -103,7 +93,7 @@ describe.skip("Provider — live RPC (waiting on engine to implement)", () => {
     expect(fd.baseFee).toBe(fd.gasPrice);
   });
 
-  it("getWave() — no-arg latest — needs pyde_getWaveNumber", async () => {
+  it("getWave() — no-arg resolves to the latest committed wave", async () => {
     const head = await devnet.provider.getWave();
     expect(head).not.toBeNull();
   });

@@ -38,7 +38,7 @@ import type {
   TransactionInfo,
   TransactionResponse,
   CallOverrides,
-  AccessEntry,
+  FeeData,
   ThresholdPublicKey,
   MetricsSnapshot,
   NodeInfo,
@@ -216,6 +216,28 @@ export class Provider {
     return this.getWaveId();
   }
 
+  /** Current network base fee per gas unit.
+   *  Spec: Chapter 10 — EIP-1559 style, `pyde_getBaseFee`. */
+  async getBaseFee(): Promise<bigint> {
+    const result = await this.call_("pyde_getBaseFee", []);
+    return parseBigIntLoose(result, "pyde_getBaseFee");
+  }
+
+  /** Current network fee data — base fee + suggested tip. v1 has no
+   *  priority fees, so `gasPrice === baseFee`. Spec: Chapter 10 —
+   *  `pyde_getFeeData`. */
+  async getFeeData(): Promise<FeeData> {
+    const result = (await this.call_("pyde_getFeeData", [])) as
+      | { base_fee?: unknown; suggested_tip?: unknown }
+      | null;
+    if (!result || typeof result !== "object") {
+      throw new RpcError(`pyde_getFeeData: empty response`);
+    }
+    const baseFee = parseBigIntLoose(result.base_fee, "pyde_getFeeData.base_fee");
+    const tip = parseBigIntLoose(result.suggested_tip ?? 0, "pyde_getFeeData.suggested_tip");
+    return { baseFee, gasPrice: baseFee + tip };
+  }
+
   /** Return the threshold-signed hard finality certificate for a wave.
    *  Spec: Chapter 6 + chapter 17.4 `pyde_getHardFinalityCert`. */
   async getHardFinalityCert(waveId: number | bigint): Promise<HardFinalityCert | null> {
@@ -295,10 +317,14 @@ export class Provider {
       );
     }
     const o = result as Record<string, unknown>;
-    const scheme = asString(o.scheme, "ThresholdPublicKey.scheme");
+    // Engine may suffix the scheme with a parameter-set tag (e.g.
+    // "kyber-768-goldilocks" for the Goldilocks-prime accelerated
+    // build). Pass it through verbatim — `Wallet.sendEncrypted`
+    // checks `scheme.startsWith("kyber-768")` to decide whether real
+    // DKG is live.
     return {
       epoch: parseBigIntLoose(o.epoch, "ThresholdPublicKey.epoch"),
-      scheme: scheme === "kyber-768" ? "kyber-768" : "mock",
+      scheme: asString(o.scheme, "ThresholdPublicKey.scheme"),
       publicKey: asString(o.public_key ?? o.publicKey, "ThresholdPublicKey.publicKey"),
     };
   }
@@ -339,7 +365,7 @@ export class Provider {
    *  both wire forms tolerantly. */
   async getTransaction(txHash: string): Promise<TransactionInfo | null> {
     const result = await this.call_("pyde_getTx", [txHash]);
-    return result ? fromWireTransactionInfo(result) : null;
+    return result ? fromWireTransactionInfo(result, txHash) : null;
   }
 
   /** Fetch a receipt. Returns null if the tx hasn't committed yet (and
@@ -582,12 +608,10 @@ export class Provider {
   }
 
   private buildTxResponse(hash: string): TransactionResponse {
-    const provider = this;
     return {
       hash,
-      wait(timeoutMs = 10_000): Promise<Receipt> {
-        return provider.waitForReceipt(hash, timeoutMs);
-      },
+      wait: (timeoutMs = 10_000): Promise<Receipt> =>
+        this.waitForReceipt(hash, timeoutMs),
     };
   }
 
@@ -640,32 +664,53 @@ export class Provider {
   }
 
   private async fetchJson(body: unknown): Promise<unknown> {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), this.options.timeout);
-    let resp: Response;
-    try {
-      resp = await fetch(this.rpcUrl, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...this.options.headers,
-        },
-        body: JSON.stringify(body),
-        signal: controller.signal,
-      });
-    } catch (e) {
-      throw new ConnectionError(e instanceof Error ? e.message : String(e));
-    } finally {
-      clearTimeout(timer);
+    // Native HTTP 429 (Too Many Requests) handling — independent of
+    // `options.retries`. Bursty workloads (test suites, indexer
+    // bootstraps) routinely trip rate limiters; the SDK transparently
+    // honours `Retry-After` and retries up to 3 times before
+    // surfacing the error. Capped backoff so callers don't stall
+    // indefinitely. Spec: RFC 6585 §4 + RFC 7231 §7.1.3.
+    const MAX_429_RETRIES = 3;
+    const MAX_BACKOFF_MS = 2_000;
+    for (let attempt = 0; attempt <= MAX_429_RETRIES; attempt++) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), this.options.timeout);
+      let resp: Response;
+      try {
+        resp = await fetch(this.rpcUrl, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...this.options.headers,
+          },
+          body: JSON.stringify(body),
+          signal: controller.signal,
+        });
+      } catch (e) {
+        throw new ConnectionError(e instanceof Error ? e.message : String(e));
+      } finally {
+        clearTimeout(timer);
+      }
+      if (resp.status === 429 && attempt < MAX_429_RETRIES) {
+        const retryAfter = resp.headers.get("retry-after");
+        const waitMs =
+          retryAfter && /^\d+$/.test(retryAfter)
+            ? Math.min(parseInt(retryAfter, 10) * 1000, MAX_BACKOFF_MS)
+            : Math.min(200 * Math.pow(2, attempt), MAX_BACKOFF_MS);
+        await sleep(waitMs);
+        continue;
+      }
+      if (!resp.ok) {
+        throw new RpcError(`HTTP ${resp.status}: ${resp.statusText}`);
+      }
+      try {
+        return await resp.json();
+      } catch {
+        throw new RpcError("invalid JSON response");
+      }
     }
-    if (!resp.ok) {
-      throw new RpcError(`HTTP ${resp.status}: ${resp.statusText}`);
-    }
-    try {
-      return await resp.json();
-    } catch {
-      throw new RpcError("invalid JSON response");
-    }
+    // Loop exits via return or throw; this is unreachable.
+    throw new RpcError("fetchJson exhausted retries without resolving");
   }
 }
 
@@ -707,22 +752,68 @@ function asString(value: unknown, ctx: string): string {
   return value;
 }
 
+/** Tolerant hex parser — accepts either a `"0x..."` string or a raw
+ *  JSON byte array `[240, 120, ...]` (the archival serde wire form
+ *  per catalog notes on `pyde_getReceipt` / `pyde_getTx`). Returns a
+ *  canonical `0x`-prefixed lowercase hex string. */
+function asHex(value: unknown, ctx: string): string {
+  if (typeof value === "string") return value;
+  if (Array.isArray(value) && value.every((v) => typeof v === "number")) {
+    return (
+      "0x" +
+      (value as number[])
+        .map((b) => (b & 0xff).toString(16).padStart(2, "0"))
+        .join("")
+    );
+  }
+  throw new RpcError(`${ctx} returned non-hex: ${JSON.stringify(value)}`);
+}
+
+/** Parse the engine's `tx_type` field. Archival serde ships
+ *  PascalCase enum variants (`"Standard"`, `"Deploy"`, ...);
+ *  hex-string convention ships a numeric `0x..` discriminant; bare
+ *  JSON numbers (e.g. `0`) also occur. Map all three to the SDK's
+ *  `TxType` numeric discriminant. */
+function parseTxTypeWire(value: unknown): number {
+  if (typeof value === "number") return value;
+  if (typeof value === "string") {
+    // hex-string form ("0x00", "0x0d", ...)
+    if (value.startsWith("0x") || /^[0-9]+$/.test(value)) {
+      return parseUint(value, "Tx.txType");
+    }
+    // Enum-variant form — engine builds report PascalCase
+    // ("Standard"), snake_case ("standard"), or kebab-case
+    // ("register-pubkey"). Normalize to a lowercase-no-separators
+    // lookup key.
+    const map: Record<string, number> = {
+      standard: 0,
+      deploy: 1,
+      stakedeposit: 3,
+      stakewithdraw: 4,
+      slash: 5,
+      claimreward: 6,
+      claimairdrop: 7,
+      sweepairdrop: 8,
+      multisigtx: 9,
+      rotatemultisig: 10,
+      emergencypause: 11,
+      emergencyresume: 12,
+      registerpubkey: 13,
+    };
+    const key = value.toLowerCase().replace(/[_-]/g, "");
+    const n = map[key];
+    if (n === undefined) {
+      throw new RpcError(`Tx.txType returned unknown enum variant: ${value}`);
+    }
+    return n;
+  }
+  throw new RpcError(`Tx.txType returned non-numeric: ${JSON.stringify(value)}`);
+}
+
 function parseUint(hex: string, ctx: string): number {
   const n = hex.startsWith("0x") ? parseInt(hex, 16) : parseInt(hex, 10);
   if (!Number.isFinite(n)) throw new RpcError(`${ctx} returned invalid number: ${hex}`);
   return n;
-}
-
-/** Tolerant uint parser — accepts plain JSON numbers + hex strings +
- *  decimal strings. Used for chain responses where the engine isn't
- *  consistently quoting numerics (a common JSON-RPC quirk). */
-function parseUintLoose(v: unknown, ctx: string): number {
-  if (typeof v === "number") {
-    if (!Number.isFinite(v)) throw new RpcError(`${ctx} returned invalid number: ${v}`);
-    return v;
-  }
-  if (typeof v === "string") return parseUint(v, ctx);
-  throw new RpcError(`${ctx} returned non-numeric: ${JSON.stringify(v)}`);
 }
 
 /** Tolerant u64 parser → bigint. Accepts JSON numbers, hex strings,
@@ -892,38 +983,17 @@ function fromWireHardFinalityCert(w: unknown): HardFinalityCert {
 
 function fromWireSnapshotManifest(w: unknown): SnapshotManifest {
   const o = w as Record<string, unknown>;
-  const chunks = (o.chunks ?? o.chunk_manifest ?? []) as unknown[];
+  const hashes = Array.isArray(o.chunk_hashes) ? (o.chunk_hashes as unknown[]) : [];
   return {
-    epoch: parseUint(asString(o.epoch, "Snapshot.epoch"), "Snapshot.epoch"),
-    stateRootBlake3: asString(
-      o.state_root_blake3 ?? o.snapshot_state_root_blake3 ?? o.stateRootBlake3,
-      "Snapshot.stateRootBlake3",
-    ),
-    stateRootPoseidon2: asString(
-      o.state_root_poseidon2 ?? o.snapshot_state_root_poseidon2 ?? o.stateRootPoseidon2,
-      "Snapshot.stateRootPoseidon2",
-    ),
-    chunks: chunks.map((c) => {
-      const cc = c as Record<string, unknown>;
-      return {
-        chunkIndex: parseUint(
-          asString(cc.chunk_index ?? cc.chunkIndex, "ChunkRef.chunkIndex"),
-          "ChunkRef.chunkIndex",
-        ),
-        chunkSize: parseUint(
-          asString(cc.chunk_size ?? cc.chunkSize, "ChunkRef.chunkSize"),
-          "ChunkRef.chunkSize",
-        ),
-        chunkHash: asString(cc.chunk_hash ?? cc.chunkHash, "ChunkRef.chunkHash"),
-        chunkPath: asString(cc.chunk_path ?? cc.chunkPath, "ChunkRef.chunkPath"),
-      };
-    }),
-    committeePubkeys: (
-      (o.committee_pubkeys ?? o.current_committee_pubkeys ?? o.committeePubkeys ?? []) as unknown[]
-    ).map((s) => asString(s, "committeePubkey")),
-    signatures: ((o.signatures ?? []) as unknown[]).map((s) => asString(s, "signature")),
-  };
+    waveId: BigInt(o.wave_id as number | string | bigint),
+    stateRoot: asString(o.state_root, "Snapshot.stateRoot"),
+    chunkSize: Number(o.chunk_size),
+    chunkCount: Number(o.chunk_count),
+    chunkHashes: hashes.map((h, i) => asString(h, `Snapshot.chunkHashes[${i}]`)),
+    totalKeys: Number(o.total_keys),
+  } as SnapshotManifest;
 }
+
 
 // ----------------------------------------------------------------------------
 // Receipt + Log
@@ -978,42 +1048,55 @@ function fromWireLog(w: unknown): Log {
 // TransactionInfo
 // ----------------------------------------------------------------------------
 
-function fromWireTransactionInfo(w: unknown): TransactionInfo {
+function fromWireTransactionInfo(w: unknown, queriedHash?: string): TransactionInfo {
   const o = w as Record<string, unknown>;
+  // Engine catalog §22 returns the raw archival Tx envelope:
+  //   - No `hash` field (caller already knew it — that's how they
+  //     queried). Fall back to `queriedHash`.
+  //   - `sender` not `from` (per pyde_engine_types::Tx).
+  //   - Address / hash / data fields ship as byte arrays
+  //     (`[240, 120, ...]`) instead of hex strings — tolerate both
+  //     via `asHex`.
+  //   - `value` is u128 in JSON, either string or numeric — keep
+  //     raw via `asString` after normalising.
+  //   - `nonce`, `chain_id`, `gas_limit`, `tx_type` are raw JSON
+  //     numbers (not hex strings).
+  const wireHash = o.hash ?? o.tx_hash;
+  const hash =
+    wireHash !== undefined ? asHex(wireHash, "Tx.hash") : queriedHash;
+  if (hash === undefined) {
+    throw new RpcError("Tx.hash missing on wire and no queried hash supplied");
+  }
   const out: TransactionInfo = {
-    hash: asString(o.hash ?? o.tx_hash, "Tx.hash"),
-    from: asString(o.from, "Tx.from"),
-    to: asString(o.to, "Tx.to"),
-    value: asString(o.value, "Tx.value"),
-    data: asString(o.data, "Tx.data"),
-    gasLimit: asString(o.gas_limit ?? o.gasLimit, "Tx.gasLimit"),
+    hash,
+    from: asHex(o.sender ?? o.from, "Tx.from"),
+    to: asHex(o.to, "Tx.to"),
+    value:
+      typeof o.value === "string"
+        ? o.value
+        : typeof o.value === "number" || typeof o.value === "bigint"
+          ? String(o.value)
+          : asHex(o.value, "Tx.value"),
+    data: asHex(o.data, "Tx.data"),
+    gasLimit:
+      typeof o.gas_limit === "number"
+        ? "0x" + o.gas_limit.toString(16)
+        : typeof o.gasLimit === "number"
+          ? "0x" + o.gasLimit.toString(16)
+          : asString(o.gas_limit ?? o.gasLimit, "Tx.gasLimit"),
     nonce: parseBigIntLoose(o.nonce, "Tx.nonce"),
-    chainId: parseUint(asString(o.chain_id ?? o.chainId, "Tx.chainId"), "Tx.chainId"),
-    txType: parseUint(asString(o.tx_type ?? o.txType, "Tx.txType"), "Tx.txType"),
+    chainId:
+      typeof o.chain_id === "number"
+        ? (o.chain_id as number)
+        : typeof o.chainId === "number"
+          ? (o.chainId as number)
+          : parseUint(asString(o.chain_id ?? o.chainId, "Tx.chainId"), "Tx.chainId"),
+    txType: parseTxTypeWire(o.tx_type ?? o.txType),
   };
   if (o.wave_id !== undefined || o.waveId !== undefined) {
     out.waveId = parseBigIntLoose(o.wave_id ?? o.waveId, "Tx.waveId");
   }
   return out;
-}
-
-// ----------------------------------------------------------------------------
-// AccessList
-// ----------------------------------------------------------------------------
-
-function parseAccessList(result: unknown): AccessEntry[] {
-  const arr =
-    (result as { accessList?: unknown[]; access_list?: unknown[] })?.accessList ??
-    (result as { access_list?: unknown[] })?.access_list ??
-    [];
-  return (arr as unknown[]).map((e) => {
-    const o = e as Record<string, unknown>;
-    return {
-      address: asString(o.address, "AccessEntry.address"),
-      reads: ((o.reads ?? []) as unknown[]).map((s) => asString(s, "AccessEntry.read")),
-      writes: ((o.writes ?? []) as unknown[]).map((s) => asString(s, "AccessEntry.write")),
-    };
-  });
 }
 
 // ----------------------------------------------------------------------------

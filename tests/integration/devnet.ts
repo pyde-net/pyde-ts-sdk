@@ -11,13 +11,25 @@
  */
 
 import { spawn, type ChildProcess } from "node:child_process";
+import { rmSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
 import { Provider } from "../../src/provider";
 
+// Pinned to 9933 because `otigen deploy` resolves its network URL from
+// `otigen.toml`'s `[network.devnet]` which the example fixtures all
+// pin to `http://localhost:9933`. Random-port would break the deploy
+// path used by `contract.live` + `state-and-emit.live`. If a parallel
+// `pyde validator` / `otigen devnet` is already on 9933, spawnDevnet
+// will silently attach to it — kill the contender before running.
 const DEFAULT_PORT = 9933;
-const READY_TIMEOUT_MS = 30_000;
-const READY_POLL_MS = 200;
+const READY_TIMEOUT_MS = 60_000;
+const READY_POLL_MS = 500;
+// otigen's HTTP server warms up its rate-limiter aggressively against
+// burst clients — give it a moment before the first readiness probe.
+const READY_INITIAL_DELAY_MS = 2_000;
 
 export interface DevnetHandle {
   /** HTTP RPC URL (e.g. `http://127.0.0.1:9933`). */
@@ -47,7 +59,10 @@ export async function spawnDevnet(opts?: {
     await waitForReady(provider);
     return {
       rpcUrl: preExisting,
-      wsUrl: preExisting.replace("http", "ws"),
+      // otigen exposes the WS endpoint at /ws; bare host[:port] gets a
+      // 405 (HTTP RPC POST endpoint). Append the path if not already
+      // present.
+      wsUrl: preExisting.replace("http", "ws").replace(/\/?$/, "/ws"),
       provider,
       chainId: opts?.chainId ?? 31337,
       stop: async () => {},
@@ -58,6 +73,18 @@ export async function spawnDevnet(opts?: {
   const prefundCount = opts?.prefundCount ?? 10;
   const tickMs = opts?.tickMs ?? 100;
   const chainId = opts?.chainId ?? 31337;
+
+  // otigen persists chain state under ~/.pyde/{blocks,data,state}.
+  // Wipe it before spawning so deploys + name-registry land in a
+  // clean state — without this, "name already registered" errors
+  // cascade across test files because borsh-coverage stays on-chain
+  // from previous runs. Leave `keystore.json` + `wallets/` alone;
+  // those hold the otigen wallet keystore that `contract.live.test`
+  // imports via `otigen wallet import --from-devnet`.
+  const pydeRoot = join(homedir(), ".pyde");
+  for (const dir of ["blocks", "data", "state", "explorer"]) {
+    rmSync(join(pydeRoot, dir), { recursive: true, force: true });
+  }
 
   const proc = spawn(
     "otigen",
@@ -96,7 +123,8 @@ export async function spawnDevnet(opts?: {
 
   return {
     rpcUrl,
-    wsUrl: `ws://127.0.0.1:${port}`,
+    // otigen exposes the WS endpoint at /ws.
+    wsUrl: `ws://127.0.0.1:${port}/ws`,
     provider,
     chainId,
     stop: () => stopProc(proc),
@@ -104,6 +132,11 @@ export async function spawnDevnet(opts?: {
 }
 
 async function waitForReady(provider: Provider): Promise<void> {
+  // Initial settling delay: don't hammer otigen's HTTP server before
+  // it's bound the port + warmed its rate-limiter. Burst probes get
+  // 429-throttled and stretch readiness past the deadline; a single
+  // 2s wait up front is cheaper.
+  await delay(READY_INITIAL_DELAY_MS);
   const deadline = Date.now() + READY_TIMEOUT_MS;
   let lastError: unknown = null;
   while (Date.now() < deadline) {
