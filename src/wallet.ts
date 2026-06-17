@@ -377,16 +377,20 @@ export class Wallet extends AbstractSigner {
     try {
       const wire = this.signTransaction(tx);
       const sim = await p.simulateTransaction(wire);
+      // The engine's simulator returns flat slot keys; bucket them into
+      // the canonical engine shape: one AccessEntry per (address,
+      // accessType). Slots only read → `read` entry; slots written
+      // (or both read and written) → `readWrite` entry, so the admit
+      // scheduler treats them as write-conflicting.
       const writeSet = new Set(sim.writes);
-      const accessEntries: AccessEntry[] = [];
-      // Group slots into a single AccessEntry per target address; the
-      // engine's simulator returns slot keys, not address-keyed entries.
-      // The minimal scheduler-correct envelope is one address (the
-      // call target) with all touched slots split into reads + writes.
-      const reads = sim.reads.filter((r) => !writeSet.has(r.slot)).map((r) => r.slot);
+      const readOnly = sim.reads.filter((r) => !writeSet.has(r.slot)).map((r) => r.slot);
       const writes = sim.writes;
-      if (reads.length > 0 || writes.length > 0) {
-        accessEntries.push({ address: tx.to, reads, writes });
+      const accessEntries: AccessEntry[] = [];
+      if (readOnly.length > 0) {
+        accessEntries.push({ address: tx.to, storageKeys: readOnly, accessType: "read" });
+      }
+      if (writes.length > 0) {
+        accessEntries.push({ address: tx.to, storageKeys: writes, accessType: "readWrite" });
       }
       return {
         gasLimit: sim.receipt ? Number(sim.receipt.gasUsed) : undefined,
@@ -481,7 +485,11 @@ export class Wallet extends AbstractSigner {
           "Fall back to plaintext `transfer` / `sendCall` until the chain bootstraps.",
       );
     }
-    if (threshold.scheme !== "kyber-768") {
+    // Accept any Kyber-768 variant — engine reports the parameter set
+    // as e.g. "kyber-768" or "kyber-768-goldilocks" (Goldilocks-prime
+    // accelerated). Warn only on the legacy "mock" fallback which
+    // means no real DKG has run yet.
+    if (!threshold.scheme.startsWith("kyber-768")) {
       // v1 boot ships a deterministic mock pubkey for path coverage. The
       // chain admits the envelope but doesn't run decryption (no real
       // DKG to combine shares), so the encrypted tx will sit forever.
@@ -489,7 +497,7 @@ export class Wallet extends AbstractSigner {
       // ready", surface the gap to the caller.
       // eslint-disable-next-line no-console
       console.warn(
-        `[pyde-ts-sdk] threshold-pubkey scheme is "${threshold.scheme}" (not "kyber-768"); ` +
+        `[pyde-ts-sdk] threshold-pubkey scheme is "${threshold.scheme}" (not a kyber-768 variant); ` +
           "encrypted tx will be admitted but not decrypted until real Kyber-768 DKG lands. " +
           "For real MEV protection, fall back to plaintext send.",
       );
