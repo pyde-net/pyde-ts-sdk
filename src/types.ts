@@ -112,29 +112,23 @@ export interface HardFinalityCert {
 // ============================================================================
 
 /** Snapshot manifest for state sync (light client / fresh validator).
- *  Spec: STATE_SYNC.md — dual-root manifest, signed by ≥85 of the prior
- *  epoch's committee for chain-of-trust. */
+ *  Wire shape per engine RPC catalog v0.1 §26 `pyde_getSnapshotManifest`.
+ *  v1 ships single Blake3 state-root + flat chunk_hashes; dual-root +
+ *  committee signatures (per the book design) are deferred until the
+ *  archival service ships. */
 export interface SnapshotManifest {
-  epoch: number;
-  /** Snapshot state root — Blake3 (fast native verification). */
-  stateRootBlake3: Hash;
-  /** Snapshot state root — Poseidon2 (ZK light-client compatibility). */
-  stateRootPoseidon2: Hash;
-  chunks: ChunkRef[];
-  /** Current committee FALCON pubkeys (chain-of-trust). */
-  committeePubkeys: string[];
-  /** ≥85 FALCON signatures from prior epoch's committee. */
-  signatures: string[];
-}
-
-/** Reference to one snapshot chunk. */
-export interface ChunkRef {
-  chunkIndex: number;
+  /** Wave the manifest was built at (last_flushed_wave). */
+  waveId: bigint;
+  /** Blake3 root of the snapshot at `waveId`. */
+  stateRoot: Hash;
+  /** Bytes per chunk (uniform across chunks except possibly the last). */
   chunkSize: number;
-  /** Blake3 hash of the chunk contents. */
-  chunkHash: Hash;
-  /** P2P routing hint. */
-  chunkPath: string;
+  /** Number of chunks comprising the snapshot. */
+  chunkCount: number;
+  /** Blake3 hash of each chunk's bytes, indexed positionally. */
+  chunkHashes: Hash[];
+  /** Total state keys captured. */
+  totalKeys: number;
 }
 
 // ============================================================================
@@ -233,19 +227,22 @@ export interface GetLogsResponse {
  * `Provider.estimateAccess()`; the chain reverts with `AccessListViolation`
  * if execution touches a slot not declared here.
  *
- * Note: The book (chapter 11) presents a forward-looking shape with
- * `storage_keys` + `access_type: Read | ReadWrite`. The pyde-crypto-wasm
- * encoder currently consumes the split `reads` / `writes` form below —
- * this SDK matches the encoder. If the wasm encoder updates, this type
- * follows.
+ * Matches `pyde_engine_types::AccessEntry` v1: one entry per
+ * `(address, accessType)` pair carrying the storage slots touched
+ * in that direction. v1's `AccessType` has two discriminants:
+ * `Read` (slot only read; multiple `Read` entries for the same
+ * slot run in parallel) and `ReadWrite` (slot may be written;
+ * conflicts with any other entry — read or write — for the same
+ * slot). There is no separate write-only variant; write-only goes
+ * through `ReadWrite`.
  */
 export interface AccessEntry {
   /** Account whose slots are accessed. */
   address: Address;
-  /** Slots read by the tx (hex slot_hash values). */
-  reads: Hash[];
-  /** Slots written by the tx (hex slot_hash values). */
-  writes: Hash[];
+  /** Slot keys (32-byte hex) touched within `address`. */
+  storageKeys: Hash[];
+  /** Whether these slots are read-only or read-write. */
+  accessType: "read" | "readWrite";
 }
 
 /**
@@ -372,15 +369,18 @@ export interface FeeData {
 /** Per-epoch threshold-decryption pubkey returned by
  *  `pyde_getThresholdPublicKey`. v1 ships with a deterministic mock
  *  (`scheme: "mock"`); real Kyber-768 swaps in via one feature flag
- *  with no wire change. Treat `scheme !== "kyber-768"` as "encrypted
- *  path not yet ready"; encrypted submissions sit unprocessed under
- *  mock and clients should fall back to plaintext for real MEV
- *  protection. */
+ *  with no wire change. The engine may suffix the scheme with a
+ *  parameter-set tag (e.g. `"kyber-768-goldilocks"` for the
+ *  Goldilocks-prime accelerated build); the SDK treats any
+ *  `"kyber-768…"` value as "real DKG live". Anything else (including
+ *  `"mock"`) means encrypted submissions sit unprocessed — clients
+ *  should fall back to plaintext for real MEV protection. */
 export interface ThresholdPublicKey {
   /** Wave-epoch the pubkey is valid for. */
   epoch: bigint;
-  /** Crypto scheme — `"mock"` (boot default) or `"kyber-768"` (real DKG). */
-  scheme: "mock" | "kyber-768";
+  /** Crypto scheme — `"mock"` (boot default), `"kyber-768"`, or
+   *  parameter-tagged variants like `"kyber-768-goldilocks"`. */
+  scheme: string;
   /** `0x`-prefixed hex of the encryption pubkey. */
   publicKey: string;
 }

@@ -29,7 +29,7 @@
  *   - Chapter 11:   RegisterPubkey tx type (address-derivation proof)
  */
 
-import * as wasm from "pyde-crypto-wasm";
+import * as wasm from "./vendor/crypto-wasm/pyde_crypto_wasm.js";
 
 import type { AccessEntry, TxFields } from "./types";
 import { SigningError } from "./errors";
@@ -334,7 +334,7 @@ export function buildRawEncryptedTxWithHandle(params: EncryptedTxParams, handle:
  * SDK's public bigint types survive the round-trip without loss for
  * any realistically-achievable value.
  */
-function jsonBigIntReplacer(_: string, value: unknown): unknown {
+function jsonBigIntReplacer(key: string, value: unknown): unknown {
   if (typeof value === "bigint") {
     if (value > BigInt(Number.MAX_SAFE_INTEGER) || value < BigInt(Number.MIN_SAFE_INTEGER)) {
       throw new SigningError(
@@ -342,6 +342,10 @@ function jsonBigIntReplacer(_: string, value: unknown): unknown {
       );
     }
     return Number(value);
+  }
+  if (key === "accessType") {
+    if (value === "read") return 0;
+    if (value === "readWrite") return 1;
   }
   return value;
 }

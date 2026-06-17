@@ -1,0 +1,28 @@
+/* tslint:disable */
+/* eslint-disable */
+export const memory: WebAssembly.Memory;
+export const buildRawEncryptedTx: (a: number, b: number, c: number, d: number) => [number, number, number, number];
+export const buildRawEncryptedTxWithHandle: (a: number, b: number, c: number) => [number, number, number, number];
+export const computeSelector: (a: number, b: number) => number;
+export const deriveAddress: (a: number, b: number) => [number, number, number, number];
+export const dropKeypair: (a: number) => [number, number, number];
+export const encodeRegisterPubkeyTx: (a: number, b: number) => [number, number, number, number];
+export const generateKeypair: () => [number, number, number, number];
+export const generateKeypairHandle: () => [number, number, number, number];
+export const hashTransaction: (a: number, b: number) => [number, number, number, number];
+export const keypairFromSeed: (a: number, b: number) => [number, number, number, number];
+export const poseidon2Hash: (a: number, b: number) => [number, number, number, number];
+export const signMessage: (a: number, b: number, c: number, d: number) => [number, number, number, number];
+export const signMessageWithHandle: (a: number, b: number, c: number) => [number, number, number, number];
+export const signTransaction: (a: number, b: number, c: number, d: number) => [number, number, number, number];
+export const signTransactionWithHandle: (a: number, b: number, c: number) => [number, number, number, number];
+export const thresholdEncrypt: (a: number, b: number, c: number, d: number) => [number, number, number, number];
+export const verifySignature: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number];
+export const __wbindgen_exn_store: (a: number) => void;
+export const __externref_table_alloc: () => number;
+export const __wbindgen_externrefs: WebAssembly.Table;
+export const __wbindgen_malloc: (a: number, b: number) => number;
+export const __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
+export const __externref_table_dealloc: (a: number) => void;
+export const __wbindgen_free: (a: number, b: number, c: number) => void;
+export const __wbindgen_start: () => void;
