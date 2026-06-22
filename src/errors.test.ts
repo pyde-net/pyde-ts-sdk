@@ -59,3 +59,50 @@ describe("CallExceptionError revert decoding", () => {
     expect(new CallExceptionError("0x5208", "0x").reason).toBeNull();
   });
 });
+
+describe("CallExceptionError structured RevertReason", () => {
+  it("prefers structured RevertReason over return_data decoding", () => {
+    const data = "0x" + Buffer.from("misleading-rd", "utf-8").toString("hex");
+    const e = new CallExceptionError("0x5208", data, {
+      category: "Contract",
+      message: "by must be non-zero",
+    });
+    expect(e.reason).toBe("by must be non-zero");
+    expect(e.category).toBe("Contract");
+    expect(e.isContractRevert).toBe(true);
+    expect(e.isEngineValidation).toBe(false);
+    expect(e.isVmTrap).toBe(false);
+  });
+  it("EngineValidation surfaces via isEngineValidation", () => {
+    const e = new CallExceptionError("0x30d40", "0x", {
+      category: "EngineValidation",
+      message: "nonce out of window: provided=17, window_start=18",
+    });
+    expect(e.isEngineValidation).toBe(true);
+    expect(e.message).toContain("nonce out of window");
+  });
+  it("Vm surfaces via isVmTrap", () => {
+    const e = new CallExceptionError("0x30d40", "0x", {
+      category: "Vm",
+      message: "constructor trapped: out of memory",
+    });
+    expect(e.isVmTrap).toBe(true);
+    expect(e.reason).toBe("constructor trapped: out of memory");
+  });
+  it("forward-compat: unknown category passes through without crashing", () => {
+    const e = new CallExceptionError("0x30d40", "0x", {
+      category: "FutureCategory",
+      message: "some new thing",
+    });
+    expect(e.category).toBe("FutureCategory");
+    expect(e.isEngineValidation).toBe(false);
+    expect(e.isContractRevert).toBe(false);
+    expect(e.isVmTrap).toBe(false);
+  });
+  it("falls back to return_data when no structured reason is supplied", () => {
+    const data = "0x" + Buffer.from("rd-only", "utf-8").toString("hex");
+    const e = new CallExceptionError("0x5208", data, null);
+    expect(e.reason).toBe("rd-only");
+    expect(e.category).toBeNull();
+  });
+});

@@ -46,6 +46,7 @@ export {
   InsufficientFundsError,
   RpcError,
   SigningError,
+  WalletDestroyedError,
   isError,
   isCallException,
 } from "./errors";
@@ -99,8 +100,9 @@ export type {
   WaveHeader,
   HardFinalityCert,
   SnapshotManifest,
-  ChunkRef,
   Receipt,
+  RevertCategory,
+  RevertReason,
   Log,
   EventCursor,
   LogFilter,
