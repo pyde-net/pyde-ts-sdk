@@ -135,6 +135,34 @@ export interface SnapshotManifest {
 // Receipt
 // ============================================================================
 
+/** Which layer rejected a reverted tx. Matches the engine's
+ *  `pyde_engine_types::RevertCategory`. The SDK keeps unknown
+ *  values as plain strings for forward-compat. */
+export type RevertCategory =
+  /** Engine-side pre-execution checks: nonce window, fee payment,
+   *  balance for `fee + value`, native handler reject, dispatch
+   *  decode. The tx never reached the contract / transfer commit. */
+  | "EngineValidation"
+  /** Contract code called `revert(msg)` explicitly. `message` is the
+   *  contract's revert string (empty when the contract reverted
+   *  without revert data). */
+  | "Contract"
+  /** VM-level abort: wasmtime trap, memory out of bounds, gas
+   *  exhausted inside the executor, host-fn rejection. The contract
+   *  didn't *choose* to revert — the VM had to stop it. */
+  | "Vm";
+
+/** Structured revert payload carried on every `Reverted` receipt.
+ *  Branch on `category` for control flow; treat `message` as display
+ *  text only (format may shift between engine releases). */
+export interface RevertReason {
+  /** Engine-categorised reject layer. Forward-compat string allowed
+   *  so future variants don't break the parser. */
+  category: RevertCategory | (string & {});
+  /** Human-readable reason from that layer. */
+  message: string;
+}
+
 /** Transaction receipt — emitted at execution. Spec: Chapter 10. */
 export interface Receipt {
   txHash: Hash;
@@ -152,6 +180,9 @@ export interface Receipt {
   /** Return data hex. Ephemeral — only in this receipt; absent on
    *  subsequent tx lookups. */
   returnData?: string;
+  /** Structured revert payload on `Reverted` receipts. Null on
+   *  `success` / `out_of_gas`. */
+  revertReason: RevertReason | null;
   /** Events emitted during execution. */
   logs: Log[];
 }

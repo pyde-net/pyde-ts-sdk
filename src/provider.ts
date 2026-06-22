@@ -39,6 +39,7 @@ import type {
   TransactionResponse,
   CallOverrides,
   FeeData,
+  RevertReason,
   ThresholdPublicKey,
   MetricsSnapshot,
   NodeInfo,
@@ -396,7 +397,7 @@ export class Provider {
     const tx = await this.sendRawTransaction(signedTxHex);
     const r = await this.waitForReceipt(tx.hash, timeoutMs);
     if (!r.success) {
-      throw new CallExceptionError(r.gasUsed, r.returnData ?? "0x");
+      throw new CallExceptionError(r.gasUsed, r.returnData ?? "0x", r.revertReason);
     }
     return r;
   }
@@ -1020,6 +1021,7 @@ function fromWireReceipt(w: unknown): Receipt {
     feePaid: asStringOr(o.fee_paid ?? o.feePaid, "0x0"),
     feeBurned: asStringOr(o.fee_burned ?? o.feeBurned, "0x0"),
     feeValidator: asStringOr(o.fee_validator ?? o.feeValidator, "0x0"),
+    revertReason: parseRevertReason(o.revert_reason ?? o.revertReason),
     logs: rawLogs.map(fromWireLog),
   };
   // exactOptionalPropertyTypes: only set returnData when present —
@@ -1027,6 +1029,28 @@ function fromWireReceipt(w: unknown): Receipt {
   const rd = o.return_data ?? o.returnData;
   if (rd) out.returnData = asString(rd, "Receipt.returnData");
   return out;
+}
+
+/** Parse the engine's `revert_reason` wire field into the SDK's
+ *  structured shape. Tolerates three forms for backward-compat with
+ *  pre-#349 engines:
+ *   1. omitted / null   → `null` (success or out_of_gas receipt)
+ *   2. bare string      → `{ category: "EngineValidation", message }`
+ *      (pre-#349 chains emitted a flat string; coerce so old receipts
+ *      don't blow up the parser when an archival node replies).
+ *   3. `{ category, message }` → passthrough with string coercion. */
+function parseRevertReason(raw: unknown): RevertReason | null {
+  if (raw == null) return null;
+  if (typeof raw === "string") {
+    return { category: "EngineValidation", message: raw };
+  }
+  if (typeof raw === "object") {
+    const o = raw as Record<string, unknown>;
+    const category = typeof o.category === "string" ? o.category : "EngineValidation";
+    const message = typeof o.message === "string" ? o.message : "";
+    return { category, message };
+  }
+  return null;
 }
 
 function fromWireLog(w: unknown): Log {

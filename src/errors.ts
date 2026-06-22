@@ -31,14 +31,32 @@ export class PydeError extends Error {
 // Specific error classes
 // ============================================================================
 
-/** Transaction executed but reverted. Contains gas used and return data for reason decoding. */
+/** Transaction executed but reverted. Carries the engine's
+ *  structured `RevertReason` (`category` + `message`) when the chain
+ *  ships one, and falls back to UTF-8-decoding `return_data` for
+ *  pre-#349 builds that left the receipt without a `revert_reason`. */
 export class CallExceptionError extends PydeError {
   readonly gasUsed: string;
   readonly data: string;
+  /** Human-readable revert reason. Prefers the engine's structured
+   *  `RevertReason.message`; falls back to a UTF-8 decode of
+   *  `return_data` when the chain didn't ship one. */
   readonly reason: string | null;
+  /** Engine-categorised reject layer (`"EngineValidation"` |
+   *  `"Contract"` | `"Vm"` | forward-compat string). `null` when the
+   *  receipt didn't carry a structured `revert_reason` and the SDK
+   *  fell back to decoding `return_data`. */
+  readonly category: string | null;
 
-  constructor(gasUsed: string, data: string) {
-    const reason = decodeRevertReason(data);
+  constructor(gasUsed: string, data: string, revertReason?: RevertReasonLite | null) {
+    let category: string | null = null;
+    let reason: string | null = null;
+    if (revertReason && revertReason.message) {
+      category = revertReason.category ?? null;
+      reason = revertReason.message;
+    } else {
+      reason = decodeRevertReason(data);
+    }
     const msg = reason
       ? `Transaction reverted: ${reason} (gas=${gasUsed})`
       : `Transaction reverted (gas=${gasUsed})`;
@@ -47,7 +65,33 @@ export class CallExceptionError extends PydeError {
     this.gasUsed = gasUsed;
     this.data = data;
     this.reason = reason;
+    this.category = category;
   }
+
+  /** Engine-side check rejected the tx (nonce, balance, fee, etc).
+   *  Tx never reached the contract; gas is still charged per v1 rules. */
+  get isEngineValidation(): boolean {
+    return this.category === "EngineValidation";
+  }
+
+  /** Contract code explicitly reverted with a message. */
+  get isContractRevert(): boolean {
+    return this.category === "Contract";
+  }
+
+  /** VM-level trap (wasmtime trap, OOB memory, gas exhausted inside
+   *  the executor, host-fn rejection). */
+  get isVmTrap(): boolean {
+    return this.category === "Vm";
+  }
+}
+
+/** Structural subset of `RevertReason` that the error class needs;
+ *  duplicated here to keep `errors.ts` free of a circular import on
+ *  `types.ts` (which itself doesn't depend on errors). */
+interface RevertReasonLite {
+  category?: string | null;
+  message?: string | null;
 }
 
 /** Cannot connect to the RPC node. */
