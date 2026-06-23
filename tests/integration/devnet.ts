@@ -12,19 +12,39 @@
 
 import { spawn, type ChildProcess } from "node:child_process";
 import { rmSync } from "node:fs";
+import { createServer } from "node:net";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
 import { Provider } from "../../src/provider";
 
-// Pinned to 9933 because `otigen deploy` resolves its network URL from
-// `otigen.toml`'s `[network.devnet]` which the example fixtures all
-// pin to `http://localhost:9933`. Random-port would break the deploy
-// path used by `contract.live` + `state-and-emit.live`. If a parallel
-// `pyde validator` / `otigen devnet` is already on 9933, spawnDevnet
-// will silently attach to it — kill the contender before running.
-const DEFAULT_PORT = 9933;
+// Default-port pick: ask the kernel for a free port. otigen ships
+// `--rpc-url` + `--chain-id` overrides on `deploy` so the bundle's
+// baked `otigen.toml` port no longer pins us to 9933 — every
+// deploy-using test passes those overrides explicitly. Random-port
+// makes the suite survive port contention with parallel
+// `pyde validator` / `otigen devnet` instances the developer might
+// already have running. Tests that need a pinned port can pass
+// `opts.port`.
+const DEFAULT_PORT_LEGACY = 9933;
+void DEFAULT_PORT_LEGACY; // documented constant; kept for the header comment.
+
+async function pickFreePort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const srv = createServer();
+    srv.on("error", reject);
+    srv.listen(0, "127.0.0.1", () => {
+      const addr = srv.address();
+      if (addr && typeof addr === "object") {
+        const port = addr.port;
+        srv.close(() => resolve(port));
+      } else {
+        srv.close(() => reject(new Error("pickFreePort: kernel returned no address")));
+      }
+    });
+  });
+}
 const READY_TIMEOUT_MS = 60_000;
 const READY_POLL_MS = 500;
 // otigen's HTTP server warms up its rate-limiter aggressively against
@@ -69,7 +89,7 @@ export async function spawnDevnet(opts?: {
     };
   }
 
-  const port = opts?.port ?? DEFAULT_PORT;
+  const port = opts?.port ?? (await pickFreePort());
   const prefundCount = opts?.prefundCount ?? 10;
   const tickMs = opts?.tickMs ?? 100;
   const chainId = opts?.chainId ?? 31337;
