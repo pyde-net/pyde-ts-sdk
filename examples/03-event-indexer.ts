@@ -6,15 +6,18 @@
  * resume that HOST_FN_ABI §15.5 guarantees.
  *
  * Run:
- *   pyde devnet                          # terminal 1
- *   npx tsx examples/03-event-indexer.ts # terminal 2
+ *   otigen devnet --rpc-listen 127.0.0.1:9933  # terminal 1
+ *   npx tsx examples/03-event-indexer.ts       # terminal 2
  *   # interact with a contract from another shell to see events flow.
+ *
+ * tsx + the vendored `.wasm` import: use the `.mjs` sibling under
+ * `node --experimental-wasm-modules` if running from this repo.
  */
 
 import { WebSocketProvider } from "../src/index";
 
 async function main(): Promise<void> {
-  const wsUrl = process.env.PYDE_WS_URL ?? "ws://127.0.0.1:8546";
+  const wsUrl = process.env.PYDE_WS_URL ?? "ws://127.0.0.1:9933/ws";
   const ws = new WebSocketProvider(wsUrl, {
     allowInsecureTransport: wsUrl.startsWith("ws://"),
   });

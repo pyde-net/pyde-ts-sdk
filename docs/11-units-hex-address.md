@@ -28,7 +28,6 @@ Units (PYDE ↔ quanta), hex helpers (isomorphic `Uint8Array` + hex strings), ad
   - [`Address.zero()`](#addresszero)
   - [`Address.isZero(addr)`](#addressiszeroaddr)
   - [`Address.isValid(addr)`](#addressisvalidaddr)
-  - [`Address.validate(addr)`](#addressvalidateaddr)
   - [`Address.equals(a, b)`](#addressequalsa-b)
   - [`Address.isValidPrivateKey(hex)`](#addressisvalidprivatekeyhex)
 - [Encoding constants — handy reference](#encoding-constants--handy-reference)
@@ -445,35 +444,6 @@ Address.isValid(addr: string): boolean
 console.log(Address.isValid("0x" + "ab".repeat(32))); // → true
 console.log(Address.isValid("0xabc")); // → false (too short)
 console.log(Address.isValid("0xZZ" + "ab".repeat(31))); // → false (non-hex)
-```
-
----
-
-### `Address.validate(addr)`
-
-Validate + normalise to `0x`-prefix. Throws on invalid.
-
-**Signature:**
-
-```ts
-Address.validate(addr: string): string
-```
-
-**Returns:** the normalised address.
-
-**Throws:** `Error` on invalid input.
-
-**Example:**
-
-```ts
-console.log(Address.validate("ab".repeat(32))); // → "0xababab...ab" (adds prefix)
-
-try {
-  Address.validate("not an address");
-} catch (e) {
-  console.log("error:", (e as Error).message);
-  // → error: Invalid address: expected 0x + 64 hex chars, got "not an address..."
-}
 ```
 
 ---

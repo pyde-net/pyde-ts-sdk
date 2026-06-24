@@ -24,8 +24,8 @@ Dapps shouldn't import a specific wallet's SDK. Accept any `WalletAdapter` at ru
 
 ```ts
 interface WalletAdapter {
+  readonly name: string;
   readonly address: string | null;
-  readonly publicKey: string | null;
   readonly connected: boolean;
 
   connect(): Promise<string>;
@@ -44,9 +44,9 @@ type WalletAdapterEvent = "connect" | "disconnect" | "addressChange";
 
 | Member                          | Type               | Description                                                      |
 | ------------------------------- | ------------------ | ---------------------------------------------------------------- |
+| `name`                          | `string`           | Adapter identifier, e.g. `"in-memory"`, `"browser"`.             |
 | `address`                       | `string \| null`   | The connected address, or `null` before `connect()`.             |
-| `publicKey`                     | `string \| null`   | Hex pub key, or `null`.                                          |
-| `connected`                     | `boolean`          | True iff `address !== null`.                                     |
+| `connected`                     | `boolean`          | True iff a wallet is bound + ready to sign.                      |
 | `connect()`                     | `Promise<string>`  | Initiates connection (may prompt UI). Resolves with the address. |
 | `disconnect()`                  | `Promise<void>`    | Tear down the connection.                                        |
 | `signMessage(hex)`              | `Promise<string>`  | Sign arbitrary bytes. Returns FALCON-512 signature hex.          |
@@ -116,9 +116,15 @@ ok: true
 ```ts
 import { BrowserWalletAdapter } from "pyde-ts-sdk";
 
+// Defaults to reading the provider from `window.pyde`.
 const adapter = new BrowserWalletAdapter();
-// Defaults to `window.pyde`. Pass an explicit namespace if needed:
-// const adapter = new BrowserWalletAdapter({ namespace: "myWallet" });
+
+// Or pass a name + explicit injected provider (useful for tests
+// or wallets that namespace under their own global):
+// const adapter = new BrowserWalletAdapter({
+//   name: "myWallet",
+//   injected: (window as any).myWallet,
+// });
 ```
 
 Talks to an injected provider — the **browser-extension pattern**. The dapp never sees the secret key; signing happens in the wallet's process.
@@ -126,14 +132,18 @@ Talks to an injected provider — the **browser-extension pattern**. The dapp ne
 **Constructor:**
 
 ```ts
-new BrowserWalletAdapter(options?: { namespace?: string })
+new BrowserWalletAdapter(options?: {
+  name?: string;
+  injected?: InjectedPydeProvider;
+})
 ```
 
 **Args:**
 
-| Name        | Type     | Default  | Description                    |
-| ----------- | -------- | -------- | ------------------------------ |
-| `namespace` | `string` | `"pyde"` | Which `window.*` slot to read. |
+| Name       | Type                   | Default        | Description                                                                            |
+| ---------- | ---------------------- | -------------- | -------------------------------------------------------------------------------------- |
+| `name`     | `string`               | `"browser"`    | Identifier surfaced via `adapter.name`. Useful when multiple adapters coexist in a UI. |
+| `injected` | `InjectedPydeProvider` | `window.pyde`  | Explicit injected provider. When omitted, reads `globalThis.pyde`.                     |
 
 **Example:**
 
@@ -158,7 +168,7 @@ const receipt = await adapter.sendTransaction(tx, provider);
 
 **Throws:**
 
-- `Error("no injected pyde provider")` when `window.pyde` (or the namespaced equivalent) is missing.
+- `SigningError("BrowserWalletAdapter: no \`window.pyde\` injected provider found. ...")` when no provider is on `window.pyde` and none was passed via `options.injected`.
 - `SigningError` on user rejection or any signer failure.
 
 ---
@@ -193,25 +203,22 @@ import {
 type EventListener = () => void;
 
 export class MyWalletAdapter implements WalletAdapter {
+  readonly name = "my-wallet";
   private _address: string | null = null;
-  private _publicKey: string | null = null;
   private listeners = new Map<WalletAdapterEvent, Set<EventListener>>();
 
   get address() { return this._address; }
-  get publicKey() { return this._publicKey; }
   get connected() { return this._address !== null; }
 
   async connect(): Promise<string> {
-    const { address, publicKey } = await /* … your wallet's auth flow … */;
+    const { address } = await /* … your wallet's auth flow … */;
     this._address = address;
-    this._publicKey = publicKey;
     this.emit("connect");
     return address;
   }
 
   async disconnect(): Promise<void> {
     this._address = null;
-    this._publicKey = null;
     this.emit("disconnect");
   }
 

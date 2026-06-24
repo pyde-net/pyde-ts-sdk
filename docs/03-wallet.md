@@ -188,21 +188,19 @@ Wallet.fromEncrypted(keystore: Keystore, password: string): Promise<Wallet>
 
 ```ts
 interface Keystore {
-  version: number; // 1
-  address: string;
-  publicKey: string;
-  ciphertext: string; // 0x-prefixed hex (encrypted SK)
-  kdf: {
-    name: "argon2id";
-    memory: number; // KiB
-    iterations: number;
-    parallelism: number;
-    salt: string; // 0x + 32 hex
+  address: string;       // 32-byte address hex
+  publicKey: string;     // FALCON-512 pubkey hex (897 bytes)
+  kdf: "argon2id";
+  kdfParams: {
+    m: number;           // memory cost in KiB (default 65,536 = 64 MiB)
+    t: number;           // iterations (default 3)
+    p: number;           // parallelism (default 4)
+    salt: string;        // 16-byte salt hex
   };
-  cipher: {
-    name: "chacha20-poly1305";
-    nonce: string; // 0x + 24 hex
-  };
+  cipher: "chacha20-poly1305";
+  nonce: string;         // 12-byte AEAD nonce hex
+  ciphertext: string;    // encrypted SK + AEAD tag, hex
+  version: 1;
 }
 ```
 
@@ -686,7 +684,7 @@ wallet.sendCall(
 | `to`                 | `string`                 | Contract address.                                                     |
 | `data`               | `string`                 | Borsh-encoded `CallPayload`, usually built via `Contract.encodeCall`. |
 | `opts.gasLimit`      | `number`                 | Pin gas (skip auto-estimate).                                         |
-| `opts.gasMultiplier` | `number`                 | Multiplier applied to `estimateGas` result. Default `1.2`.            |
+| `opts.gasMultiplier` | `number`                 | Safety multiplier applied to the simulate-reported `gas_used`. Default `1.2`. |
 | `opts.value`         | bigint / number / string | PYDE quanta attached to the call.                                     |
 | `opts.provider`      | `Provider`               | Override the bound provider.                                          |
 
@@ -734,15 +732,16 @@ wallet.sendEncrypted(
     value?: bigint | number | string;
     deadline?: bigint;
     accessList?: AccessEntry[];
-    estimateAccess?: boolean;
     provider?: Provider;
   },
-): Promise<Receipt>
+): Promise<{ envelopeHash: string }>
 ```
 
 **Hex-backed wallets only** (until `pyde-crypto-wasm` ships `buildRawEncryptedTxWithHandle`).
 
-See [Chapter 09 — encrypted mempool](./09-encrypted-mempool.md) for the full flow, when to use it, and `estimateAccess` privacy considerations.
+Returns `{ envelopeHash }` — receipts key on the inner plaintext tx hash post-decryption; that hash isn't exposed by `buildRawEncryptedTx` yet, so the SDK doesn't poll. Treat a successful return as "admitted to encrypted mempool".
+
+See [Chapter 09 — encrypted mempool](./09-encrypted-mempool.md) for the full flow, when to use it, and the `accessList` privacy considerations.
 
 ---
 
@@ -757,7 +756,7 @@ wallet.transferEncrypted(
   to: string,
   amount: bigint | number,
   opts?: { deadline?: bigint; provider?: Provider },
-): Promise<Receipt>
+): Promise<{ envelopeHash: string }>
 ```
 
 ---
@@ -851,12 +850,12 @@ await wallet.transfer(to, amount, { gasMultiplier: 1.5 }); // tune
 await wallet.sendCall(to, data, { gasLimit: 5_000_000 }); // pin
 ```
 
-**Hardcoded defaults today (engine has no `pyde_estimateGas` in v1):**
+**Defaults today:**
 
-- 100k for plain transfers (`data === "0x"`).
-- 5M for calldata-bearing txs (`data !== "0x"`).
+- `Wallet.transfer`: fixed 100k gas (plain transfers don't execute code; the chain's `pyde_simulateTransaction` returns `receipt: null` for them).
+- `Wallet.sendCall`: signs a probe tx, calls `provider.simulateTransaction`, applies `gasUsed × gasMultiplier` (default `1.2`), and inherits the inferred access list on the real submit. Falls back to a fixed 5M default + no access list if simulate fails.
 
-Pinning `gasLimit` skips both the RPC call and the fallback.
+Pinning `gasLimit` skips the simulate round-trip entirely.
 
 ---
 
@@ -882,4 +881,4 @@ See [Chapter 10 — Errors](./10-errors.md).
 - **`provider` argument is optional after `connect()`.** Bind once, use everywhere.
 - **`saveKeystoreFile` is Node-only.** Browsers can use `toKeystore` + `localStorage` / `IndexedDB`.
 - **`transferEncrypted` / `sendEncrypted` require a hex-backed wallet.** Plain `Wallet.generate()` won't work for encrypted send today.
-- **Gas auto-estimate uses fixed defaults in v1** (100k plain / 5M calldata). The chain has no dedicated `pyde_estimateGas`; gas + access-list ride a single `pyde_simulateTransaction` dry-run that the SDK doesn't wrap yet (Tier-2 catalog item). Pin `gasLimit` when you need a tighter bound.
+- **`Wallet.sendCall` round-trips to the chain for gas + access list.** Each invocation does a probe-sign + `simulateTransaction` before the real submit. Pin `opts.gasLimit` when you've already got a bound and want to skip the extra RPC. `Wallet.transfer` stays cheap (fixed 100k, no simulate).

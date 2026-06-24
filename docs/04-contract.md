@@ -280,7 +280,7 @@ Useful for previewing a state-changing call's return value.
 
 ## `contract.estimateGas(method, args?)`
 
-Pre-flight gas estimate. v1 engine has no `pyde_estimateGas`, so this returns a fixed 5,000,000 default; the arg encoding is still validated. Tier-2 catalog alignment will wire this through `pyde_simulateTransaction` for real chain estimates.
+Pre-flight gas estimate. v1 engine has no dedicated `pyde_estimateGas`; gas + access-list ride a single `pyde_simulateTransaction` dry-run. This convenience wrapper returns a fixed 5,000,000 default + validates arg encoding. For real chain estimates, build the populated tx and call [`provider.simulateTransaction(signedTxHex)`](./02-provider.md#simulatetransactionsignedtxhex) directly.
 
 **Signature:**
 
