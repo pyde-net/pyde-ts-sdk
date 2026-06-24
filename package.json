@@ -55,7 +55,7 @@
     "SECURITY.md"
   ],
   "scripts": {
-    "build": "tsup",
+    "build": "tsup && cp src/vendor/crypto-wasm/*.d.ts dist/vendor/crypto-wasm/",
     "dev": "tsup --watch",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
@@ -67,6 +67,7 @@
     "format:check": "prettier --check .",
     "audit:prod": "npm audit --omit=dev --audit-level=high",
     "audit:all": "npm audit --audit-level=high",
+    "vendor:crypto-wasm": "bash scripts/vendor-crypto-wasm.sh",
     "prepublishOnly": "npm run typecheck && npm run lint && npm run test && npm run build && npm run audit:prod"
   },
   "engines": {
@@ -74,8 +75,7 @@
   },
   "dependencies": {
     "@noble/ciphers": "^1.0.0",
-    "@noble/hashes": "^1.5.0",
-    "pyde-crypto-wasm": "file:../pyde-crypto-wasm/pkg"
+    "@noble/hashes": "^1.5.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
