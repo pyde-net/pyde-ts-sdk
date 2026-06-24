@@ -370,8 +370,6 @@ await unsub();
 ws.destroy();
 ```
 
-In React, `<PydeProvider>` calls `destroy()` on unmount automatically.
-
 ---
 
 ## Errors

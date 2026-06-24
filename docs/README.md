@@ -16,7 +16,7 @@ What works today (verified live against `otigen devnet`):
 - Handle-based wallet (FALCON-512 SK stays in the WASM heap)
 - Argon2id + ChaCha20-Poly1305 keystore (Node-only file helpers)
 - Type-safe `Contract<TAbi>` narrowing via `pyde-tsgen`-emitted ABI shapes
-- React hooks (SSR-safe), wallet adapter pattern
+- Wallet adapter pattern (`InMemoryWalletAdapter` + `BrowserWalletAdapter`) for dapp ↔ wallet wiring
 
 Still gated on engine work — surfaces exist, but the chain hasn't shipped the RPC yet:
 
@@ -47,13 +47,12 @@ Requires Node ≥ 20 (Node 22 recommended). The browser bundle is ESM via `dist/
 | [03 — Wallet](./03-wallet.md)                       | Handle vs hex SK, keystore, sign, gas auto-estimate               |
 | [04 — Contract](./04-contract.md)                   | `Contract.read` / `write` / `queryFilter` + `Contract<TAbi>`      |
 | [05 — Codegen (`pyde-tsgen`)](./05-codegen.md)      | ABI → TS bindings, type-safe `<Name>Abi` shape                    |
-| [06 — React hooks](./06-react.md)                   | `useBalance` / `useWave` / `useEvents` / `PydeProvider`           |
 | [07 — Wallet adapters](./07-wallet-adapters.md)     | `WalletAdapter` interface, `InMemory` + `Browser` + custom        |
 | [08 — WebSocket](./08-websocket.md)                 | `WebSocketProvider` — subscriptions, cursor resume, terminalError |
 | [09 — Encrypted mempool](./09-encrypted-mempool.md) | MEV-protected submission, threshold encryption flow               |
 | [10 — Errors](./10-errors.md)                       | Error hierarchy, `isError`, `scrubError`, retry semantics         |
 | [11 — Utility surface](./11-units-hex-address.md)   | `parsePyde` / `hexlify` / `Address`                               |
-| [12 — Examples / recipes](./12-examples.md)         | Read · Send · Index · Deploy · React dapp · Encrypted             |
+| [12 — Examples / recipes](./12-examples.md)         | Read · Send · Index · Deploy · Encrypted                          |
 | [13 — Migration](./13-migration.md)                 | Upgrade notes between SDK versions                                |
 | [14 — Internals](./14-internals.md)                 | Borsh wire format · `CallPayload` · ABI normalisation             |
 
@@ -143,24 +142,6 @@ import {
   isCallException,
   type ErrorCode,
 } from "pyde-ts-sdk";
-```
-
-React (subpath export):
-
-```ts
-import {
-  PydeProvider,
-  useBalance,
-  useNonce,
-  useAccount,
-  useWave,
-  useLiveWave,
-  useEvents,
-  useContract,
-  usePydeProvider,
-  usePydeWebSocket,
-  usePydeSigner,
-} from "pyde-ts-sdk/react";
 ```
 
 Codegen (subpath export, programmatic) or CLI:

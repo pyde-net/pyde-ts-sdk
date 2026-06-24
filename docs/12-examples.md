@@ -210,47 +210,7 @@ async function index(ev: import("pyde-ts-sdk").EventLog) {
 }
 ```
 
-## 12. React dapp skeleton
-
-```tsx
-import { PydeProvider, useBalance, useLiveWave, usePydeSigner } from "pyde-ts-sdk/react";
-import { Wallet, formatPyde } from "pyde-ts-sdk";
-import { useEffect, useState } from "react";
-
-function App() {
-  const [signer, setSigner] = useState<Wallet | null>(null);
-
-  useEffect(() => {
-    const w = Wallet.generate();
-    setSigner(w);
-    return () => w.destroy();
-  }, []);
-
-  if (!signer) return <p>loading…</p>;
-
-  return (
-    <PydeProvider rpcUrl="https://rpc.pyde.network" wsUrl="wss://rpc.pyde.network" signer={signer}>
-      <Dapp />
-    </PydeProvider>
-  );
-}
-
-function Dapp() {
-  const signer = usePydeSigner();
-  const { data: balance } = useBalance(signer?.address);
-  const wave = useLiveWave();
-
-  return (
-    <>
-      <p>address: {signer?.address}</p>
-      <p>balance: {balance != null && formatPyde(balance)} PYDE</p>
-      <p>wave: {wave?.waveId.toString()}</p>
-    </>
-  );
-}
-```
-
-## 13. Browser-injected wallet
+## 12. Browser-injected wallet
 
 ```ts
 import { BrowserWalletAdapter } from "pyde-ts-sdk";
@@ -270,7 +230,7 @@ await adapter.sendTransaction(tx, provider);
 
 See [Chapter 07](./07-wallet-adapters.md) for the full adapter contract.
 
-## 14. Encrypted (MEV-protected) send
+## 13. Encrypted (MEV-protected) send
 
 ```ts
 import { Provider, Wallet, parseQuanta } from "pyde-ts-sdk";
@@ -287,7 +247,7 @@ const receipt = await wallet.transferEncrypted("0xrecipient...", parseQuanta("1"
 
 See [Chapter 09](./09-encrypted-mempool.md).
 
-## 15. Batch RPC
+## 14. Batch RPC
 
 ```ts
 const random = "0x" + "12".repeat(32);
@@ -302,7 +262,7 @@ console.log(BigInt(balance as string)); // 0n
 
 One round-trip; results returned in request order; raw `unknown` (caller post-processes).
 
-## 16. Type-safe contract bindings
+## 15. Type-safe contract bindings
 
 ```bash
 npx pyde-tsgen ./artifacts/counter.bundle/abi.json ./types/counter.d.ts --name Counter
