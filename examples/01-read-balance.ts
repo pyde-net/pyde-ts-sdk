@@ -5,7 +5,7 @@
  *   npx tsx examples/01-read-balance.ts <address>
  *
  * Or against a local devnet (one of the prefunded accounts):
- *   pyde devnet                                  # in another terminal
+ *   otigen devnet                                # in another terminal
  *   npx tsx examples/01-read-balance.ts 0x...    # use a prefunded addr
  */
 
@@ -18,7 +18,7 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  const rpc = process.env.PYDE_RPC_URL ?? "http://127.0.0.1:8545";
+  const rpc = process.env.PYDE_RPC_URL ?? "http://127.0.0.1:9933";
   const provider = new Provider(rpc, { allowInsecureTransport: rpc.startsWith("http://") });
 
   const [balance, nonce, account] = await Promise.all([

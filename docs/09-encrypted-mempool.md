@@ -80,26 +80,31 @@ wallet.sendEncrypted(
     value?: bigint | number | string;
     deadline?: bigint;
     accessList?: AccessEntry[];
-    estimateAccess?: boolean;
     provider?: Provider;
   },
-): Promise<Receipt>
+): Promise<{ envelopeHash: string }>
 ```
 
 **Args:**
 
-| Name                  | Type                     | Description                                                                                                                                                                                                                                      |
-| --------------------- | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `to`                  | `string`                 | Target address.                                                                                                                                                                                                                                  |
-| `data`                | `string`                 | Hex calldata. Build via `Contract.encodeCall(...)`.                                                                                                                                                                                              |
-| `opts.gasLimit`       | `number`                 | Pin gas. Default `100_000_000` (encrypted txs have higher ceilings).                                                                                                                                                                             |
-| `opts.value`          | bigint / number / string | Quanta.                                                                                                                                                                                                                                          |
-| `opts.deadline`       | `bigint`                 | Wave id past which the tx auto-cancels.                                                                                                                                                                                                          |
-| `opts.accessList`     | `AccessEntry[]`          | Manual access list. **⚠ leaks slot keys.**                                                                                                                                                                                                       |
-| `opts.estimateAccess` | `boolean`                | Reserved for Tier-2 catalog alignment (currently a no-op — engine has no dedicated `pyde_estimateAccess` in v1). When wired it will route through `pyde_simulateTransaction`; setting `true` would leak slot keys, so the default stays `false`. |
-| `opts.provider`       | `Provider`               | Override the bound provider.                                                                                                                                                                                                                     |
+| Name              | Type                     | Description                                                          |
+| ----------------- | ------------------------ | -------------------------------------------------------------------- |
+| `to`              | `string`                 | Target address.                                                      |
+| `data`            | `string`                 | Hex calldata. Build via `Contract.encodeCall(...)`.                  |
+| `opts.gasLimit`   | `number`                 | Pin gas. Default `100_000_000` (encrypted txs have higher ceilings). |
+| `opts.value`      | bigint / number / string | Quanta.                                                              |
+| `opts.deadline`   | `bigint`                 | Wave id past which the tx auto-cancels.                              |
+| `opts.accessList` | `AccessEntry[]`          | Manual access list. **⚠ leaks slot keys.**                           |
+| `opts.provider`   | `Provider`               | Override the bound provider.                                         |
 
-**Returns:** `Promise<Receipt>` — receipt after the tx is committed + decrypted on chain.
+**Returns:** `Promise<{ envelopeHash: string }>` — the chain echoes back
+the **envelope hash** (Blake3 of `version ‖ ciphertext_len ‖ ciphertext`).
+Receipts key on the inner plaintext tx hash post-decryption; that hash
+isn't exposed by `pyde-crypto-wasm.buildRawEncryptedTx` yet, so the SDK
+returns `{ envelopeHash }` instead of polling. Treat a successful return
+as "admitted to encrypted mempool". When the wasm side exposes the inner
+hash, this method will start polling for the receipt the same way
+`sendCall` does — no caller-side change.
 
 **Throws:**
 
@@ -144,15 +149,18 @@ wallet.transferEncrypted(
   to: string,
   amount: bigint | number,
   opts?: { deadline?: bigint; provider?: Provider },
-): Promise<Receipt>
+): Promise<{ envelopeHash: string }>
 ```
 
 **Example:**
 
 ```ts
-const receipt = await wallet.transferEncrypted("0xrecipient...", parseQuanta("1"), {
-  deadline: 999_999n,
-});
+const { envelopeHash } = await wallet.transferEncrypted(
+  "0xrecipient...",
+  parseQuanta("1"),
+  { deadline: 999_999n },
+);
+console.log("admitted; envelope:", envelopeHash);
 ```
 
 ---
@@ -196,15 +204,13 @@ const receipt = await wallet.transferEncrypted("0xrecipient...", parseQuanta("1"
 
 ```ts
 await wallet.sendEncrypted(to, data, {
-  estimateAccess: true, // ⚠ leaks the touched slot keys
+  accessList: myEntries, // ⚠ leaks the touched slot keys
 });
 ```
 
 The plain mempool accepts access lists as a hint to the parallel scheduler — they let the chain place a tx without serializing it against unknown state.
 
-**In the encrypted path, the access list defeats the encryption** for the slot keys it lists. The SDK leaves it **off by default**.
-
-Only opt in if your contract's storage layout doesn't reveal sensitive information from the slot keys alone (e.g., the access list shape doesn't disclose which user is interacting).
+**In the encrypted path, the access list defeats the encryption** for the slot keys it lists. The SDK leaves it **off by default** — only pass `opts.accessList` when you explicitly want the parallel-scheduler hint and your storage layout doesn't disclose sensitive information from slot keys alone (e.g., the shape doesn't reveal which user is interacting).
 
 ---
 
@@ -253,7 +259,7 @@ Useful when the tx's purpose is time-sensitive (an arbitrage that's only profita
 
 - **Encryption doesn't hide gas / nonce / sender.** Replay protection requires them in cleartext. If you need to hide the sender, run through a relayer.
 - **The committee key rotates per epoch.** The SDK refetches on every send; no caching footgun.
-- **`estimateAccess: true` defeats the MEV protection** for the slot keys it lists. The default is off — don't flip it without thinking through what you're revealing.
+- **Passing `accessList` defeats the MEV protection** for the slot keys it lists. The default is off — don't pass one without thinking through what you're revealing.
 - **Plain `getTransactionReceipt`** is fine to poll — the receipt for an encrypted tx looks identical post-commit (decryption happened on chain).
 - **You can't preview the ciphertext content.** `simulate` / `previewTransaction` only work on plain calls. Build the encrypted path with what you know about the contract; bugs surface as on-chain reverts.
 - **Engine-side gap:** as of this writing, the devnet doesn't expose `pyde_sendRawEncryptedTransaction` or `pyde_getThresholdPublicKey`. Live exercise goes green once the engine ships them.

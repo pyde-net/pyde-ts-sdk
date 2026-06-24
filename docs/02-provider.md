@@ -23,10 +23,11 @@ HTTP JSON-RPC client for a Pyde node. **Use this when you need to read chain sta
   - [`resolveName(name)`](#resolvenamename)
   - [`getWave(waveId?)`](#getwavewaveid)
   - [`getHardFinalityCert(waveId)`](#gethardfinalitycertwaveid)
-  - [`getSnapshotManifest(waveId)`](#getsnapshotmanifestwaveid)
+  - [`getSnapshot()`](#getsnapshot)
+  - [`getSnapshotManifest()`](#getsnapshotmanifest)
 - View calls + simulation
   - [`call(to, data, overrides?)`](#callto-data-overrides)
-  - [Gas estimation status](#gas-estimation-status)
+  - [`simulateTransaction(signedTxHex)`](#simulatetransactionsignedtxhex)
 - Write surface
   - [`sendRawTransaction(signedTxHex)`](#sendrawtransactionsignedtxhex)
   - [`sendRawEncryptedTransaction(encTxHex)`](#sendrawencryptedtransactionenctxhex)
@@ -34,10 +35,18 @@ HTTP JSON-RPC client for a Pyde node. **Use this when you need to read chain sta
 - Receipts + waiting
   - [`getTransaction(txHash)`](#gettransactiontxhash)
   - [`getTransactionReceipt(txHash)`](#gettransactionreceipttxhash)
+  - [`getReceiptArchival(txHash)`](#getreceiptarchivaltxhash)
   - [`waitForReceipt(txHash, timeoutMs?)`](#waitforreceipttxhash-timeoutms)
   - [`sendAndWait(signedTxHex, timeoutMs?)`](#sendandwaitsignedtxhex-timeoutms)
-- Logs
+- Logs + events
   - [`getLogs(filter)`](#getlogsfilter)
+  - [`getEvents(filter?)`](#geteventsfilter)
+- Validators
+  - [`getValidator(address)`](#getvalidatoraddress)
+  - [`getOperatorValidators(address)`](#getoperatorvalidatorsaddress)
+- Node introspection
+  - [`getNodeInfo()`](#getnodeinfo)
+  - [`getMetrics()`](#getmetrics)
 - Batch RPC
   - [`batch(calls)`](#batchcalls)
 - [Retry semantics](#retry-semantics)
@@ -569,21 +578,23 @@ txCount: 0
 
 Get the threshold-signed hard-finality certificate for a wave.
 
-**Spec:** Chapter 6 · RPC method `pyde_getHardFinalityCert`
+**Spec:** Engine RPC catalog v0.1 §24 · RPC method `pyde_getHardFinalityCert`
 
 **Signature:**
 
 ```ts
-provider.getHardFinalityCert(waveId: number): Promise<HardFinalityCert | null>
+provider.getHardFinalityCert(waveId: number | bigint): Promise<HardFinalityCert | null>
 ```
 
 **Args:**
 
-| Name     | Type     | Description |
-| -------- | -------- | ----------- |
-| `waveId` | `number` | Wave id.    |
+| Name     | Type               | Description                                                     |
+| -------- | ------------------ | --------------------------------------------------------------- |
+| `waveId` | `number \| bigint` | Wave id. Engine expects a bare u64 number on the wire (not hex). |
 
 **Returns:** `Promise<HardFinalityCert | null>` — certificate or `null` if the wave hasn't reached hard finality.
+
+**Status:** Single-validator devnet can't produce the ≥85 (`QUORUM`) signatures finalisation requires, so this returns `null` for every wave there. Method also currently returns `-32601` on otigen devnet (catalog method listed but not yet wired) — the SDK surfaces that cleanly as `RpcError`. Lights up on multi-validator testnet + matching otigen build.
 
 **Example:**
 
@@ -600,43 +611,71 @@ finalized: true
 
 ---
 
-## `getSnapshotManifest(waveId)`
+## `getSnapshot()`
 
-Get the snapshot manifest for a wave (light-client state-sync protocol).
+Fetch the full state snapshot at the state store's `last_flushed_wave`.
 
-**Spec:** `STATE_SYNC.md` · RPC method `pyde_getSnapshotManifest`
+**Spec:** Engine RPC catalog v0.1 §25 · RPC method `pyde_getSnapshot`
 
 **Signature:**
 
 ```ts
-provider.getSnapshotManifest(waveId: number): Promise<SnapshotManifest | null>
+provider.getSnapshot(): Promise<string>
 ```
 
-**Args:**
+**Returns:** `Promise<string>` — standard-base64 (RFC 4648 §4, **not** URL-safe) encoding the borsh-encoded `SnapshotBundle { manifest, chunks }`. Multi-MB on populated chains; consumers base64-decode → borsh-decode → `SnapshotLoader::apply`. The loader verifies per-chunk Blake3 + state-root, so transport integrity is enforced at the consumer.
 
-| Name     | Type     | Description       |
-| -------- | -------- | ----------------- |
-| `waveId` | `number` | Snapshot wave id. |
+**Example:**
+
+```ts
+const blob = await provider.getSnapshot();
+console.log("snapshot bytes (base64):", blob.length);
+// Pipe into a SnapshotLoader, or persist for a fresh node bootstrap.
+```
+
+---
+
+## `getSnapshotManifest()`
+
+Just the snapshot manifest — small wire payload, useful to pin a `--state-sync-checkpoint` without downloading the body.
+
+**Spec:** Engine RPC catalog v0.1 §26 · RPC method `pyde_getSnapshotManifest`
+
+**Signature:**
+
+```ts
+provider.getSnapshotManifest(): Promise<SnapshotManifest | null>
+```
 
 **Returns:** `Promise<SnapshotManifest | null>`:
 
 ```ts
 interface SnapshotManifest {
-  waveId: bigint;
-  chunks: ChunkRef[]; // chunk references for downloading partial state
-  stateRoot: string;
+  waveId: bigint;        // wave the manifest was built at (last_flushed_wave)
+  stateRoot: string;     // Blake3 root of the snapshot at waveId
+  chunkSize: number;     // bytes per chunk
+  chunkCount: number;    // number of chunks comprising the snapshot
+  chunkHashes: string[]; // Blake3 hash per chunk, in positional order
+  totalKeys: number;     // total state keys captured
 }
 ```
+
+The engine takes no params — it always returns the manifest at the state store's current `last_flushed_wave`.
 
 **Example:**
 
 ```ts
-const manifest = await provider.getSnapshotManifest(10_000);
+const manifest = await provider.getSnapshotManifest();
 if (manifest) {
-  console.log("chunks:", manifest.chunks.length);
+  console.log("at wave:", manifest.waveId);
+  console.log("chunks:", manifest.chunkCount, "x", manifest.chunkSize, "bytes");
   console.log("state root:", manifest.stateRoot);
 }
 ```
+
+**Notes:**
+
+- v1 ships single Blake3 state-root + flat `chunkHashes`. Dual-root (Blake3 + Poseidon2) + committee signatures (per the state-sync book design) are deferred until the archival service ships.
 
 ---
 
@@ -729,17 +768,59 @@ ret hex: 0x2a00000000000000
 
 ---
 
-## Gas estimation status
+## `simulateTransaction(signedTxHex)`
 
-The v1 engine has **no dedicated `pyde_estimateGas` or `pyde_estimateAccess`** RPC methods. Both responsibilities ride on a single `pyde_simulateTransaction` dry-run that returns receipt + access-list together. The SDK doesn't wrap that surface yet — wiring it is queued as **Tier-2 catalog alignment**.
+Dry-run a signed transaction against current state. Returns the would-be receipt + the read/write access list the run would touch. Powers gas + access-list inference for `Wallet.sendCall`.
 
-In the meantime:
+**Spec:** Engine RPC catalog v0.1 §12 · RPC method `pyde_simulateTransaction`
 
-- `Wallet.transfer` and `Wallet.sendCall` use **fixed conservative defaults**: 100,000 gas for plain transfers (`data === "0x"`), 5,000,000 gas for calldata-bearing calls. Override at the call site (`{ gasLimit: ... }`) when you have a tighter bound.
-- `Contract.estimateGas(...)` returns the same 5,000,000 default. The arg encoding is still validated so type errors surface at call time; the chain just isn't consulted.
-- Access lists must be supplied manually via `opts.accessList` if you want parallel-schedulable txs. Without them, the chain serializes (costing throughput, not correctness).
+**Signature:**
 
-When Tier-2 lands, the same call sites pick up real chain estimates with no API change.
+```ts
+provider.simulateTransaction(signedTxHex: string): Promise<SimulateTransactionResult>
+```
+
+**`SimulateTransactionResult`:**
+
+```ts
+interface SimulateTransactionResult {
+  receipt: Receipt | null;
+  reads: string[];   // slot hashes the tx would read
+  writes: string[];  // slot hashes the tx would write
+}
+```
+
+**Returns:**
+
+- `receipt: null` for plain native transfers (no execution to receipt).
+- `receipt: Receipt` (with `gas_used`, `success`, `logs`, `return_data`) for contract calls.
+- `reads` / `writes` — the access list the chain inferred during the dry-run. Use it to populate `opts.accessList` on real submits for parallel scheduling.
+
+**Example — gas + access-list inference:**
+
+```ts
+const probe = wallet.signTransaction({ ...tx, gasLimit: 100_000_000 });
+const sim = await provider.simulateTransaction(probe);
+
+if (sim.receipt && sim.receipt.success) {
+  const realGas = Math.ceil(parseInt(sim.receipt.gasUsed, 16) * 1.2);
+  const accessList = [{
+    address: tx.to,
+    reads: sim.reads,
+    writes: sim.writes,
+  }];
+  const signed = wallet.signTransaction({ ...tx, gasLimit: realGas });
+  await provider.sendRawTransaction(signed);
+}
+```
+
+`Wallet.sendCall` does this automatically: signs a probe tx, simulates, and re-signs with `gasUsed × gasMultiplier` (default `1.2`) plus the inferred access list. Falls back to a fixed 5,000,000 default on sim failure.
+
+**Notes:**
+
+- v1 has **no separate `pyde_estimateGas` / `pyde_estimateAccess`** — both responsibilities ride on this single endpoint.
+- `Wallet.transfer` skips simulate and uses a fixed 100,000 default (plain transfers don't execute code; the chain doesn't ship a useful receipt for them).
+- `Contract.estimateGas(...)` is a thin wrapper that returns 5,000,000 + validates arg encoding; for tight bounds, build the populated tx and call this method directly.
 
 ---
 
@@ -812,18 +893,33 @@ See [Chapter 09 — encrypted mempool](./09-encrypted-mempool.md) for the constr
 
 Get the current committee's threshold encryption public key.
 
+**Spec:** Engine RPC catalog v0.1 §20 · RPC method `pyde_getThresholdPublicKey`
+
 **Signature:**
 
 ```ts
-provider.getThresholdPublicKey(): Promise<string>
+provider.getThresholdPublicKey(): Promise<ThresholdPublicKey | null>
 ```
 
-**Returns:** `Promise<string>` — `0x`-prefixed hex of the Kyber-768 public key.
+**Returns:** `Promise<ThresholdPublicKey | null>`:
+
+```ts
+interface ThresholdPublicKey {
+  epoch: bigint;     // u64 — epoch this key belongs to
+  scheme: string;    // "mock" | "kyber-768" | "kyber-768-goldilocks" | …
+  publicKey: string; // 0x-prefixed hex of the public key
+}
+```
+
+- `null` if no DKG ceremony has run yet (chain at boot, no bootstrap, no real DKG epochs).
+- `scheme: "mock"` is the v1 boot default — a deterministic mock pubkey under `epoch: 0` so the encrypted-mempool path is reachable from the first wave.
+- `scheme: "kyber-768…"` (with optional parameter-set tag, e.g. `"kyber-768-goldilocks"` for the Goldilocks-prime accelerated build) means real DKG state is live and encrypted submissions will decrypt at wave-commit.
 
 **Notes:**
 
 - The key **rotates per epoch**. SDK refetches on every encrypted submission rather than caching.
-- Used internally by `wallet.sendEncrypted`; rarely called directly.
+- Used internally by `wallet.sendEncrypted` / `transferEncrypted`; rarely called directly.
+- `wallet.sendEncrypted` warns when the scheme does **not** start with `"kyber-768"` — anything else (including `"mock"`) means submissions sit unprocessed on chain.
 
 ---
 
@@ -903,6 +999,37 @@ if (receipt === null) {
 ```
 ok; gas used: 100000
 ```
+
+---
+
+## `getReceiptArchival(txHash)`
+
+Fetch the archival raw-serde receipt by hash. **Different wire shape** from `getTransactionReceipt` — useful for explorers / indexers that need byte-array fields + JSON-number wave ids + PascalCase status (`"Success"` / `"Reverted"` / `"OutOfGas"`).
+
+**Spec:** Engine RPC catalog v0.1 §21 · RPC method `pyde_getReceipt`
+
+**Signature:**
+
+```ts
+provider.getReceiptArchival(txHash: string): Promise<unknown | null>
+```
+
+**Returns:** `Promise<unknown | null>` — the raw archival receipt object as-is (no SDK-side normalisation), or `null` when the tx isn't on chain.
+
+**Example:**
+
+```ts
+const raw = await provider.getReceiptArchival(hash);
+if (raw) {
+  console.log("raw archival receipt:", raw);
+  // Consume the byte-array tx_hash + raw integer wave_id directly.
+}
+```
+
+**Notes:**
+
+- The SDK returns this as `unknown` deliberately — archival consumers (block explorers, analytics pipelines) own the schema decode.
+- For human / wallet flows use `getTransactionReceipt(txHash)` (canonical hex-string shape).
 
 ---
 
@@ -1026,6 +1153,171 @@ more pages — resume from { waveId: 998n, txIndex: 0, eventIndex: 3 }
 
 ---
 
+## `getEvents(filter?)`
+
+Permissive event scan. Same engine surface as `getLogs` but tolerant of malformed filters (returns `[]` instead of failing) — useful for opportunistic indexers that don't want to crash on edge inputs.
+
+**Spec:** Engine RPC catalog v0.1 §13 · RPC method `pyde_getEvents`
+
+**Signature:**
+
+```ts
+provider.getEvents(filter?: {
+  fromWave?: bigint;
+  toWave?: bigint;
+  contract?: string;
+}): Promise<EventLog[]>
+```
+
+**Args:**
+
+| Name              | Type     | Description                                        |
+| ----------------- | -------- | -------------------------------------------------- |
+| `filter.fromWave` | `bigint` | Inclusive lower bound. Default 0.                  |
+| `filter.toWave`   | `bigint` | Inclusive upper bound. Default current head.       |
+| `filter.contract` | `string` | Restrict to a single contract.                     |
+
+**Returns:** `Promise<EventLog[]>` — flat array (no pagination cursor; use `getLogs` for strict / paginated semantics).
+
+**Example:**
+
+```ts
+const events = await provider.getEvents({
+  fromWave: 0n,
+  toWave: 1000n,
+  contract: "0xtoken...",
+});
+console.log(`scanned ${events.length} events`);
+```
+
+**Notes:**
+
+- Use `getLogs` when you need strict validation, topic filtering, or pagination. `getEvents` is the easy-mode read.
+
+---
+
+## `getValidator(address)`
+
+Fetch the validator record for a validator address.
+
+**Spec:** Engine RPC catalog v0.1 §16 · RPC method `pyde_getValidator`
+
+**Signature:**
+
+```ts
+provider.getValidator(address: string): Promise<ValidatorInfo | null>
+```
+
+**`ValidatorInfo` shape:** operator, FALCON pubkey, stake amount, status (active / unbonding / jailed), `unbond_wave`, `jail_until_wave`, `last_claimed_rps`, `uptime_bps`. `null` when no validator at that address.
+
+**Example:**
+
+```ts
+const v = await provider.getValidator("0xvalidator...");
+if (v) {
+  console.log("operator:", v.operator);
+  console.log("stake:", v.stake);
+  console.log("status:", v.status);
+}
+```
+
+---
+
+## `getOperatorValidators(address)`
+
+Reverse index — every validator address an operator controls.
+
+**Spec:** Engine RPC catalog v0.1 §17 · RPC method `pyde_getOperatorValidators`
+
+**Signature:**
+
+```ts
+provider.getOperatorValidators(address: string): Promise<string[]>
+```
+
+**Returns:** `Promise<string[]>` — validator addresses, at most 3 per operator (the staking model caps operator-controlled validators at 3).
+
+**Example:**
+
+```ts
+const validators = await provider.getOperatorValidators("0xoperator...");
+console.log("operator runs", validators.length, "validator(s)");
+```
+
+---
+
+## `getNodeInfo()`
+
+Identity + network info for the RPC node.
+
+**Spec:** Engine RPC catalog v0.1 §18 · RPC method `pyde_getNodeInfo`
+
+**Signature:**
+
+```ts
+provider.getNodeInfo(): Promise<NodeInfo>
+```
+
+**`NodeInfo` shape:**
+
+```ts
+interface NodeInfo {
+  peerId: string;              // libp2p peer id
+  falconPubkey: string | null; // signing key; null for full/archive nodes (can't sign)
+  listenAddrs: string[];       // libp2p multiaddrs
+  agentVersion: string;        // node software self-id, e.g. "pyde/0.1.0"
+  protocolVersion: string;     // wire protocol family + version, e.g. "pyde/1"
+}
+```
+
+`agentVersion` vs `protocolVersion` — different layers:
+
+| Field             | Catalog format       | What it answers                                            | Analogue                                            |
+| ----------------- | -------------------- | ---------------------------------------------------------- | --------------------------------------------------- |
+| `agentVersion`    | `"pyde/<semver>"`    | "What build of the node software am I talking to?"         | EVM `web3_clientVersion` (e.g. `Geth/v1.13.0`)      |
+| `protocolVersion` | `"pyde/<integer>"`   | "Which version of the Pyde wire protocol does this speak?" | EVM `eth_protocolVersion` (e.g. `65` for eth/65)    |
+
+Compatibility checks: gate `protocolVersion === "pyde/1"` for v1 wire calls; surface `agentVersion` in logs / telemetry to pin down "which build serves this RPC" during outages.
+
+Gate "this node can sign waves" UX on the non-null `falconPubkey` variant.
+
+**Example:**
+
+```ts
+const info = await provider.getNodeInfo();
+console.log("peer:", info.peerId);
+console.log("signing-capable:", info.falconPubkey !== null);
+```
+
+---
+
+## `getMetrics()`
+
+Instantaneous `MainLoopMetrics` snapshot.
+
+**Spec:** Engine RPC catalog v0.1 §19 · RPC method `pyde_getMetrics`
+
+**Signature:**
+
+```ts
+provider.getMetrics(): Promise<MetricsSnapshot>
+```
+
+**Returns:** `Promise<MetricsSnapshot>` — a counter map. Field names map to internal `MainLoopMetrics` counters (waves committed, txs admitted, mempool depth, etc.) and may change between engine versions.
+
+**Example:**
+
+```ts
+const m = await provider.getMetrics();
+console.log("metric keys:", Object.keys(m).length);
+```
+
+**Notes:**
+
+- For **time-series scraping** use the Prometheus `/metrics` HTTP endpoint instead. This RPC is for one-shot point-in-time reads.
+
+---
+
 ## `batch(calls)`
 
 Send multiple JSON-RPC calls in **one** HTTP round-trip.
@@ -1075,7 +1367,7 @@ nonce: 0
 | `options.retries`                | transport errors (5xx, ECONNRESET, abort) | `fetch` throws            | exponential, capped                          |
 | `callWithFallback` (internal)    | per-fallback-method-name list             | `method not found`        | none — try next                              |
 | `WebSocketProvider` reconnect    | socket dropped                            | `close` event             | exponential, capped at `reconnectMaxDelayMs` |
-| `Wallet.transfer` gas estimation | once                                      | `estimateGas` fails       | hardcoded fallback (100k / 5M)               |
+| `Wallet.sendCall` simulate fallback | once                                   | `simulateTransaction` fails | fixed 5M default + no access list           |
 | `waitForReceipt`                 | every ~500 ms until `timeoutMs`           | receipt not yet available | linear                                       |
 
 **Never retries on:**
@@ -1101,7 +1393,7 @@ See [Chapter 10 — Errors](./10-errors.md) for the full hierarchy + type guards
 
 ## Gotchas
 
-- **bigint everywhere on the wire.** `getNonce`, `getBalance`, `getWave`, `latestWaveId`, log cursor fields are all `bigint`. JSON-RPC ships hex strings; the SDK parses them losslessly. Don't `Number(nonce)` unless you know it's small.
+- **bigint everywhere on the wire.** `getNonce`, `getBalance`, `getWave`, `getWaveId`, log cursor fields are all `bigint`. JSON-RPC ships hex strings; the SDK parses them losslessly. Don't `Number(nonce)` unless you know it's small.
 - **`getWave()` no-arg path now resolves the head via `pyde_waveId`** (use `getWaveId()` directly if you only need the number). Older docs referenced `pyde_getWaveNumber` / `pyde_blockNumber` — those never existed in the v1 catalog.
 - **`getLogs` wave span is capped at 5,000.** Larger queries return an RPC error; page via `cursor`.
 - **`http://` URLs throw.** Devnet local dev: pass `allowInsecureTransport: true`. Anywhere else: use `https://`.
