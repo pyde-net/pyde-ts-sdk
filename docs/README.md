@@ -34,8 +34,6 @@ Still gated on tooling — code path is built, no funded test:
 npm install pyde-ts-sdk
 ```
 
-> **Not yet published to npm.** The line above is what the install will look like; for now, link locally against the source.
-
 Requires Node ≥ 20 (Node 22 recommended). The browser bundle is ESM via `dist/index.js`; pair with Vite / Rollup / webpack. `pyde-crypto-wasm`'s ESM-bundler shape needs a wasm loader (`vite-plugin-wasm` for Vite, native `webassembly/async` for webpack 5).
 
 ## TOC
@@ -51,7 +49,7 @@ Requires Node ≥ 20 (Node 22 recommended). The browser bundle is ESM via `dist/
 | [08 — WebSocket](./08-websocket.md)                 | `WebSocketProvider` — subscriptions, cursor resume, terminalError |
 | [09 — Encrypted mempool](./09-encrypted-mempool.md) | MEV-protected submission, threshold encryption flow               |
 | [10 — Errors](./10-errors.md)                       | Error hierarchy, `isError`, `scrubError`, retry semantics         |
-| [11 — Utility surface](./11-units-hex-address.md)   | `parsePyde` / `hexlify` / `Address`                               |
+| [11 — Utility surface](./11-units-hex-address.md)   | `parseQuanta` / `hexlify` / `Address`                             |
 | [12 — Examples / recipes](./12-examples.md)         | Read · Send · Index · Deploy · Encrypted                          |
 | [13 — Migration](./13-migration.md)                 | Upgrade notes between SDK versions                                |
 | [14 — Internals](./14-internals.md)                 | Borsh wire format · `CallPayload` · ABI normalisation             |
@@ -109,8 +107,6 @@ Units / hex / address helpers:
 
 ```ts
 import {
-  parsePyde,
-  formatPyde,
   parseQuanta,
   formatQuanta,
   parseUnits,

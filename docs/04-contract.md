@@ -697,7 +697,9 @@ const data = await DeployData.fromArtifact("./out/Counter.bundle", {
 
 const wallet = Wallet.generate();
 wallet.connect(provider);
-const receipt = await wallet.deploy(data);
+// `wallet.deploy` takes the borsh-encoded hex envelope; `DeployData.build()`
+// produces it.
+const receipt = await wallet.deploy(data.build());
 console.log("contract:", receipt.returnData);
 ```
 

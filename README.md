@@ -8,7 +8,7 @@ Post-quantum, MEV-resistant by construction, and cross-chain by certificate. Thi
 - **Handle-based signing** by default — FALCON-512 secret keys stay inside `pyde-crypto-wasm`'s WASM heap and never enter the JS heap
 - **Encrypted-mempool submission** for MEV-resistant txs (`Wallet.sendEncrypted`)
 - **Type-safe contracts** via the `pyde-tsgen` codegen CLI
-- **React hooks** + **wallet adapter** pattern for dapp integration
+- **Wallet adapter** pattern (`InMemoryWalletAdapter` + `BrowserWalletAdapter`) for dapp ↔ wallet wiring
 - **Isomorphic** (browser + Node) where possible; Node-only paths are clearly flagged
 
 ## Status
@@ -20,8 +20,6 @@ Pre-1.0, in active development. Track progress under the project's task list; sp
 ```bash
 npm install pyde-ts-sdk
 ```
-
-> **Not yet published to npm.** The line above is what the install will look like; for now, link locally against the source.
 
 ## Quickstart
 
@@ -205,29 +203,6 @@ npx pyde-tsgen out/Counter.bundle/Counter.abi.json types/counter.d.ts --name Cou
 
 That emits `CounterContract` plus per-event interfaces with full TypeScript inference at the call site.
 
-## React hooks
-
-```tsx
-import { PydeProvider, useBalance, useLiveWave, useEvents } from "pyde-ts-sdk/react";
-
-function App() {
-  return (
-    <PydeProvider rpcUrl="https://rpc.pyde.network" wsUrl="wss://rpc.pyde.network">
-      <Wallet />
-    </PydeProvider>
-  );
-}
-
-function Wallet() {
-  const { data: balance, loading, refetch } = useBalance("0xalice...");
-  const wave = useLiveWave();
-  const transfers = useEvents({ topics: [[transferTopic]] });
-  // ...
-}
-```
-
-Exports: `useBalance`, `useNonce`, `useAccount`, `useWave`, `useLiveWave`, `useEvents`, `useContract`, plus escape-hatches `usePydeProvider`, `usePydeWebSocket`, `usePydeSigner`. SSR-safe — no `window` access during render.
-
 ## Wallet adapters
 
 Dapps shouldn't import a specific wallet's SDK. Accept any `WalletAdapter` at runtime:
@@ -263,8 +238,6 @@ import {
   dataLength,
   dataSlice,
   // units (PYDE / quanta, 9 decimals)
-  parsePyde,
-  formatPyde,
   parseQuanta,
   formatQuanta,
   // addresses
@@ -283,7 +256,7 @@ import {
 } from "pyde-ts-sdk";
 ```
 
-Wait — the units helpers expose `parsePyde` / `formatPyde` as aliases for `parseQuanta` / `formatQuanta` (PYDE has 9 decimals per Chapter 10). Use `parseUnits`/`formatUnits` for generic-decimal math.
+`parseQuanta` / `formatQuanta` are the PYDE ↔ quanta helpers (9 decimals per Chapter 10). Use `parseUnits` / `formatUnits` for generic-decimal math.
 
 ## Crypto surface
 
@@ -351,7 +324,6 @@ The pre-pivot SDK targeted a different consensus + execution layer. Most APIs su
 
 Module-level changes:
 
-- **`./react`** sub-entry — React hooks live there now (not in main).
 - **`./codegen`** sub-entry + **`pyde-tsgen` CLI bin** — type-safe contract bindings from `*.abi.json`.
 - **`WalletAdapter` interface** + `InMemoryWalletAdapter` / `BrowserWalletAdapter` — new in the post-pivot SDK.
 
