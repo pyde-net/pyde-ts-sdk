@@ -93,7 +93,6 @@ Live-verified against `otigen/examples/borsh-coverage` — struct + enum + Vec l
 - `Provider.getWave(waveId?)` takes `Wave` (bigint).
 - `Provider.latestWaveId()` returns `Wave` (bigint).
 - `Contract.queryFilter(name, fromWave?, toWave?)` takes `bigint?` for the wave bounds.
-- React hooks: `useNonce` returns `AsyncState<bigint>`, `useWave` takes `Wave?`.
 
 **Why:** JS Numbers lose precision above `2^53`. u64 fields on chain routinely exceed that range over a long-running validator's lifetime; silent truncation would corrupt downstream computation.
 

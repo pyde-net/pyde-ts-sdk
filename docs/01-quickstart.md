@@ -158,4 +158,3 @@ See [Chapter 04](./04-contract.md) for the full Contract API and [Chapter 05](./
 | Encode complex args (`Vec<Order>`, enums) | [04 — Contract](./04-contract.md)                   |
 | Subscribe to new waves / events live      | [08 — WebSocket](./08-websocket.md)                 |
 | MEV-protected (encrypted) submission      | [09 — Encrypted mempool](./09-encrypted-mempool.md) |
-| Build a dapp with React hooks             | [06 — React](./06-react.md)                         |

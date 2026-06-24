@@ -342,7 +342,6 @@ Three reasons:
 | `src/wallet-adapter.ts`               | Dapp ↔ wallet adapter interface                             |
 | `src/crypto.ts`                       | Thin TS wrapper around `pyde-crypto-wasm`                   |
 | `src/codegen.ts` + `src/cli-tsgen.ts` | `pyde-tsgen` codegen module + CLI                           |
-| `src/react.ts`                        | React hooks + `<PydeProvider>`                              |
 | `src/errors.ts`                       | Error hierarchy + `isError`                                 |
 | `src/simulate.ts`                     | Tier 1 RPC-backed simulation; Tier 2 local wasmtime in v1.1 |
 
