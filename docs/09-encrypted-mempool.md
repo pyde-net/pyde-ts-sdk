@@ -78,7 +78,7 @@ wallet.sendEncrypted(
   opts?: {
     gasLimit?: number;
     value?: bigint | number | string;
-    deadline?: bigint;
+    deadline?: number;
     accessList?: AccessEntry[];
     provider?: Provider;
   },
@@ -93,7 +93,7 @@ wallet.sendEncrypted(
 | `data`            | `string`                 | Hex calldata. Build via `Contract.encodeCall(...)`.                  |
 | `opts.gasLimit`   | `number`                 | Pin gas. Default `100_000_000` (encrypted txs have higher ceilings). |
 | `opts.value`      | bigint / number / string | Quanta.                                                              |
-| `opts.deadline`   | `bigint`                 | Wave id past which the tx auto-cancels.                              |
+| `opts.deadline`   | `number`                 | Wave id past which the tx auto-cancels.                              |
 | `opts.accessList` | `AccessEntry[]`          | Manual access list. **⚠ leaks slot keys.**                           |
 | `opts.provider`   | `Provider`               | Override the bound provider.                                         |
 
@@ -130,10 +130,10 @@ const calldata = dex.encodeCall("swap", {
   minOut: parseQuanta("95"),
 });
 
-const receipt = await wallet.sendEncrypted("0xdex...", calldata, {
-  deadline: 999_999n,
+const { envelopeHash } = await wallet.sendEncrypted("0xdex...", calldata, {
+  deadline: 999_999,
 });
-console.log("encrypted swap:", receipt.success);
+console.log("encrypted swap admitted; envelope:", envelopeHash);
 ```
 
 ---
@@ -148,7 +148,7 @@ Encrypted variant of `transfer`. Value-only send through the MEV-protected mempo
 wallet.transferEncrypted(
   to: string,
   amount: bigint | number,
-  opts?: { deadline?: bigint; provider?: Provider },
+  opts?: { deadline?: number; provider?: Provider },
 ): Promise<{ envelopeHash: string }>
 ```
 
@@ -158,7 +158,7 @@ wallet.transferEncrypted(
 const { envelopeHash } = await wallet.transferEncrypted(
   "0xrecipient...",
   parseQuanta("1"),
-  { deadline: 999_999n },
+  { deadline: 999_999 },
 );
 console.log("admitted; envelope:", envelopeHash);
 ```
@@ -235,7 +235,7 @@ Handle-backed wallets (`Wallet.generate()`) work everywhere else but not encrypt
 ## Deadline
 
 ```ts
-await wallet.sendEncrypted(to, data, { deadline: 1_000_000n });
+await wallet.sendEncrypted(to, data, { deadline: 1_000_000 });
 ```
 
 If the chain doesn't commit the tx by wave `deadline`, the chain **auto-cancels** it — the encrypted payload never gets decrypted, so there's no leakage.

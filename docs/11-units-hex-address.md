@@ -11,7 +11,6 @@ Units (PYDE ↔ quanta), hex helpers (isomorphic `Uint8Array` + hex strings), ad
 - Units
   - [`parseQuanta(value)`](#parsequantavalue)
   - [`formatQuanta(value)`](#formatquantavalue)
-  - [`parsePyde` / `formatPyde`](#parsepyde--formatpyde)
   - [`parseUnits(value, decimals)`](#parseunitsvalue-decimals)
   - [`formatUnits(value, decimals)`](#formatunitsvalue-decimals)
 - Hex helpers
@@ -40,14 +39,7 @@ Units (PYDE ↔ quanta), hex helpers (isomorphic `Uint8Array` + hex strings), ad
 Pyde uses **9 decimals**. The on-chain unit is **quanta** (1 PYDE = 10⁹ quanta). Always work in `bigint` quanta inside the SDK; convert to PYDE only at display time.
 
 ```ts
-import {
-  parseQuanta,
-  formatQuanta,
-  parsePyde,
-  formatPyde,
-  parseUnits,
-  formatUnits,
-} from "pyde-ts-sdk";
+import { parseQuanta, formatQuanta, parseUnits, formatUnits } from "pyde-ts-sdk";
 ```
 
 ### `parseQuanta(value)`
@@ -100,17 +92,6 @@ console.log(formatQuanta(1500000000n)); // → "1.5"
 console.log(formatQuanta(10n ** 9n)); // → "1.0"
 console.log(formatQuanta(0n)); // → "0.0"
 console.log(formatQuanta("0x3b9aca00")); // hex string → "1.0"
-```
-
----
-
-### `parsePyde` / `formatPyde`
-
-Aliases for `parseQuanta` / `formatQuanta` — surface exports both names for symmetry with the generic `parseUnits` / `formatUnits` pair.
-
-```ts
-parsePyde("1.5") === parseQuanta("1.5"); // true
-formatPyde(1500000000n) === formatQuanta(1500000000n); // true
 ```
 
 ---

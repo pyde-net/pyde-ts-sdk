@@ -20,6 +20,8 @@ HTTP JSON-RPC client for a Pyde node. **Use this when you need to read chain sta
   - [`getContractCode(address)`](#getcontractcodeaddress)
   - [`getStorageSlot(slotHash)`](#getstorageslotslothash)
   - [`getWaveId()`](#getwaveid)
+  - [`getBaseFee()`](#getbasefee)
+  - [`getFeeData()`](#getfeedata)
   - [`resolveName(name)`](#resolvenamename)
   - [`getWave(waveId?)`](#getwavewaveid)
   - [`getHardFinalityCert(waveId)`](#gethardfinalitycertwaveid)
@@ -710,6 +712,62 @@ Used internally by `getWave()` when no wave id is passed.
 
 ---
 
+## `getBaseFee()`
+
+Current network base fee per gas unit.
+
+**Spec:** Engine RPC catalog v0.1 · Chapter 10 — EIP-1559-per-wave · RPC method `pyde_getBaseFee`
+
+**Signature:**
+
+```ts
+provider.getBaseFee(): Promise<bigint>
+```
+
+**Returns:** `Promise<bigint>` — base fee in quanta per gas unit.
+
+**Example:**
+
+```ts
+const baseFee = await provider.getBaseFee();
+console.log("baseFee:", baseFee, "quanta/gas");
+```
+
+The base fee floats per wave per Chapter 10's EIP-1559-style adjustment, anchored to recent wave gas utilisation. v1 has no priority tips, so `gasPrice === baseFee` (see [`getFeeData()`](#getfeedata)).
+
+---
+
+## `getFeeData()`
+
+Current fee data — base fee, derived gas price, and recent-wave utilisation snapshots.
+
+**Spec:** Engine RPC catalog v0.1 · Chapter 10 · RPC method `pyde_getFeeData`
+
+**Signature:**
+
+```ts
+provider.getFeeData(): Promise<FeeData>
+
+interface FeeData {
+  /** Effective gas price (= baseFee in v1; no priority fees). */
+  gasPrice: bigint;
+  /** Base fee per gas unit. */
+  baseFee: bigint;
+}
+```
+
+**Returns:** `Promise<FeeData>` — `{baseFee, gasPrice}` where `gasPrice = baseFee + suggested_tip`. v1's suggested tip is always 0, so `gasPrice === baseFee`.
+
+**Example:**
+
+```ts
+const fd = await provider.getFeeData();
+console.log("baseFee:", fd.baseFee, "gasPrice:", fd.gasPrice);
+// → baseFee: 1n gasPrice: 1n
+```
+
+---
+
 ## `call(to, data, overrides?)`
 
 Run an off-chain view call against current state.
@@ -977,9 +1035,22 @@ interface Receipt {
   feeBurned: string;
   feeValidator: string;
   returnData?: string;
+  /** Structured reject payload on reverted receipts; null on success / out_of_gas. */
+  revertReason: RevertReason | null;
   logs: Log[];
 }
+
+type RevertCategory = "EngineValidation" | "Contract" | "Vm";
+
+interface RevertReason {
+  /** Engine-categorised reject layer. Forward-compat string allowed. */
+  category: RevertCategory | (string & {});
+  /** Human-readable reason from that layer. Branch on `category`, not the string. */
+  message: string;
+}
 ```
+
+`revertReason.category` is `"EngineValidation"` (pre-execution rejects: nonce window, fee balance, native handler reject), `"Contract"` (contract code called `revert(msg)` explicitly), or `"Vm"` (wasmtime trap / OOB / executor gas exhausted). `CallExceptionError` exposes `isEngineValidation` / `isContractRevert` / `isVmTrap` accessors that wrap the same field — see [Chapter 10 — Errors](./10-errors.md#callexceptionerror).
 
 **Example:**
 
@@ -990,7 +1061,7 @@ if (receipt === null) {
 } else if (receipt.success) {
   console.log("ok; gas used:", parseInt(receipt.gasUsed, 16));
 } else {
-  console.log("reverted");
+  console.log("reverted:", receipt.revertReason?.category, receipt.revertReason?.message);
 }
 ```
 

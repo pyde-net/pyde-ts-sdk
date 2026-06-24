@@ -39,7 +39,7 @@ FALCON-512 signing + keystore I/O + high-level transfer / sendCall / deploy / en
   - [`wallet.sendEncrypted(to, calldata, opts?)`](#walletsendencryptedto-calldata-opts)
   - [`wallet.transferEncrypted(to, amount, opts?)`](#wallettransferencryptedto-amount-opts)
 - Staking helpers
-  - [`wallet.stakeDeposit(amount, opts?)`](#walletstakedepositamount-opts)
+  - [`wallet.stakeDeposit(falconPubkey, amount, opts?)`](#walletstakedepositfalconpubkey-amount-opts)
   - [`wallet.stakeWithdraw(opts?)`](#walletstakewithdrawopts)
   - [`wallet.claimReward(opts?)`](#walletclaimrewardopts)
 - Read-side conveniences
@@ -708,12 +708,12 @@ Submits a `Deploy` tx carrying a borsh-encoded `DeployData`.
 
 ```ts
 wallet.deploy(
-  bundle: DeployData,
+  deployData: string,
   opts?: { gasLimit?: number; value?: bigint | number | string; provider?: Provider },
 ): Promise<Receipt>
 ```
 
-Most authors use the `otigen deploy` CLI; this is the in-process equivalent. See [Chapter 04 — Contract → `DeployData`](./04-contract.md#deploydata--deploy-tx-payload) for the bundle.
+`deployData` is the `0x`-prefixed hex of the borsh-encoded `pyde_engine_types::DeployData` envelope. Build it from a [`DeployData`](./04-contract.md#deploydata--deploy-tx-payload) instance via `data.build()`. Most authors use the `otigen deploy` CLI; this is the in-process equivalent.
 
 ---
 
@@ -730,7 +730,7 @@ wallet.sendEncrypted(
   opts?: {
     gasLimit?: number;
     value?: bigint | number | string;
-    deadline?: bigint;
+    deadline?: number;
     accessList?: AccessEntry[];
     provider?: Provider;
   },
@@ -755,13 +755,13 @@ Encrypted variant of `transfer`. Value-only send through the MEV-protected mempo
 wallet.transferEncrypted(
   to: string,
   amount: bigint | number,
-  opts?: { deadline?: bigint; provider?: Provider },
+  opts?: { deadline?: number; provider?: Provider },
 ): Promise<{ envelopeHash: string }>
 ```
 
 ---
 
-## `wallet.stakeDeposit(amount, opts?)`
+## `wallet.stakeDeposit(falconPubkey, amount, opts?)`
 
 Validator-side flow. Lock ≥ `MIN_VALIDATOR_STAKE` (10,000 PYDE) and register as a validator.
 
@@ -769,10 +769,13 @@ Validator-side flow. Lock ≥ `MIN_VALIDATOR_STAKE` (10,000 PYDE) and register a
 
 ```ts
 wallet.stakeDeposit(
-  amount: bigint,
-  opts?: { provider?: Provider },
+  falconPubkey: string,
+  amount: bigint | number,
+  opts?: { gasLimit?: number; provider?: Provider },
 ): Promise<Receipt>
 ```
+
+`falconPubkey` is the `0x`-prefixed hex of the 897-byte FALCON-512 pubkey the chain will record against the validator record. Typically the wallet's own `publicKey`, but separable for delegated-validator-key setups.
 
 ---
 
