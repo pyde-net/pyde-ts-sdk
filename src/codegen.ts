@@ -114,18 +114,26 @@ function tsType(abiType: string | undefined): string {
 }
 
 /** Normalise a raw ABI function entry into the codegen's internal shape.
- *  Tolerates `{type}` vs `{ty}` divergence + missing optional fields. */
+ *  Tolerates `{type}` vs `{ty}` divergence + missing optional fields.
+ *  Resolves view/payable from either the legacy direct booleans or the
+ *  engine's packed `attrs.bits` field (bit 0 = view, bit 1 = payable). */
 function normaliseFunction(raw: AbiFunctionRaw): NormalisedFunction {
   const params = (raw.params ?? []).map((p, i) => ({
     name: p.name ?? `arg${i}`,
     type: p.ty ?? p.type ?? "unknown",
   }));
+  let view = Boolean(raw.view);
+  let payable = Boolean(raw.payable);
+  if (typeof raw.attrs?.bits === "number") {
+    view = view || (raw.attrs.bits & 0x01) !== 0;
+    payable = payable || (raw.attrs.bits & 0x02) !== 0;
+  }
   return {
     name: raw.name,
     params,
     returns: raw.returns ?? "()",
-    view: Boolean(raw.view),
-    payable: Boolean(raw.payable),
+    view,
+    payable,
   };
 }
 

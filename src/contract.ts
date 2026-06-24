@@ -469,13 +469,12 @@ export class Contract<TAbi extends AbiShape = DefaultAbi> {
     // Wrap with ABI-aware decode
     const fn = this.functions.get(method);
     const retType = fn?.returns;
-    const contract = this;
     return Object.assign(receipt, {
-      decodeReturnData(): any {
+      decodeReturnData: (): any => {
         const rd = receipt.returnData;
         if (!rd || rd === "0x" || rd === "") return null;
         if (!retType || retType === "()" || retType === "unit") return null;
-        return contract.decodeReturn(retType, rd);
+        return this.decodeReturn(retType, rd);
       },
     });
   }
