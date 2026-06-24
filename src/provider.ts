@@ -32,6 +32,7 @@ import type {
   Wave,
   WaveHeader,
   HardFinalityCert,
+  WaveCommit,
   SnapshotManifest,
   Account,
   AccountTypeDiscriminant,
@@ -969,12 +970,76 @@ function hexlifyAnchor(raw: unknown): string {
 
 function fromWireHardFinalityCert(w: unknown): HardFinalityCert {
   const o = w as Record<string, unknown>;
+  // The engine emits `{ commit: WaveCommitRecord, signatures: Vec<(u32, FalconSignature)> }`
+  // (engine/crates/node/src/rpc.rs::pyde_getHardFinalityCert serializes
+  // the Rust struct directly). Older devnet builds shipped a flat
+  // `{ wave_id, state_root, events_root, events_bloom, signature }`;
+  // the decoder accepts both so an SDK against a pre-rollout node
+  // still reads the field set correctly.
+  const commitWire = (o.commit ?? o) as Record<string, unknown>;
+  const sigsWire = o.signatures;
+  const signatures = Array.isArray(sigsWire)
+    ? sigsWire.map((entry, i) => {
+        // The wire entry is the borsh-deserialised `(u32, FalconSignature)`
+        // — JSON-emitted as `[memberId, sigBytes]` under serde's tuple
+        // default, OR `{member_id, signature}` if a future engine flips
+        // to a named-field tuple struct. Accept both shapes.
+        if (Array.isArray(entry)) {
+          const [m, s] = entry as [unknown, unknown];
+          return {
+            memberId: Number(m),
+            signature: asString(s, `HFC.signatures[${i}][1]`),
+          };
+        }
+        const e = entry as Record<string, unknown>;
+        return {
+          memberId: Number(e.member_id ?? e.memberId ?? 0),
+          signature: asString(e.signature, `HFC.signatures[${i}].signature`),
+        };
+      })
+    : typeof o.signature === "string"
+      ? // Pre-engine-PR-cert v1 wire emitted a single aggregate `signature`.
+        // Map it as a single anonymous-member entry so the public surface
+        // is uniform.
+        [{ memberId: 0, signature: asString(o.signature, "HFC.signature") }]
+      : [];
   return {
-    waveId: parseBigIntLoose(o.wave_id ?? o.waveId, "HFC.waveId"),
-    stateRoot: asString(o.state_root ?? o.stateRoot, "HFC.stateRoot"),
-    eventsRoot: asString(o.events_root ?? o.eventsRoot, "HFC.eventsRoot"),
-    eventsBloom: asString(o.events_bloom ?? o.eventsBloom, "HFC.eventsBloom"),
-    signature: asString(o.signature, "HFC.signature"),
+    commit: parseWaveCommit(commitWire),
+    signatures,
+  };
+}
+
+function parseWaveCommit(o: Record<string, unknown>): WaveCommit {
+  const stateRootRaw = o.state_root ?? o.stateRoot;
+  let stateRoot: WaveCommit["stateRoot"];
+  if (stateRootRaw && typeof stateRootRaw === "object") {
+    const sr = stateRootRaw as Record<string, unknown>;
+    stateRoot = {
+      blake3: asString(sr.blake3, "WaveCommit.stateRoot.blake3"),
+      poseidon2: asString(sr.poseidon2, "WaveCommit.stateRoot.poseidon2"),
+    };
+  } else {
+    // Legacy flat hex string (engine builds before dual-hash landed).
+    stateRoot = asString(stateRootRaw, "WaveCommit.stateRoot");
+  }
+  const priorRaw = o.prior_anchor_round ?? o.priorAnchorRound;
+  return {
+    waveId: parseBigIntLoose(o.wave_id ?? o.waveId, "WaveCommit.waveId"),
+    anchorRound: parseBigIntLoose(o.anchor_round ?? o.anchorRound, "WaveCommit.anchorRound"),
+    priorAnchorRound:
+      priorRaw == null
+        ? null
+        : parseBigIntLoose(priorRaw, "WaveCommit.priorAnchorRound"),
+    anchorHash: asString(o.anchor_hash ?? o.anchorHash, "WaveCommit.anchorHash"),
+    epoch: parseBigIntLoose(o.epoch ?? 0, "WaveCommit.epoch"),
+    nextEpochBeacon:
+      o.next_epoch_beacon == null && o.nextEpochBeacon == null
+        ? null
+        : asString(o.next_epoch_beacon ?? o.nextEpochBeacon, "WaveCommit.nextEpochBeacon"),
+    stateRoot,
+    eventsRoot: asString(o.events_root ?? o.eventsRoot, "WaveCommit.eventsRoot"),
+    eventsBloom: asString(o.events_bloom ?? o.eventsBloom, "WaveCommit.eventsBloom"),
+    gasUsed: parseBigIntLoose(o.gas_used ?? o.gasUsed ?? 0, "WaveCommit.gasUsed"),
   };
 }
 

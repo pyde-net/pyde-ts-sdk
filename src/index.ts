@@ -99,6 +99,7 @@ export type {
   AccountTypeDiscriminant,
   WaveHeader,
   HardFinalityCert,
+  WaveCommit,
   SnapshotManifest,
   Receipt,
   RevertCategory,

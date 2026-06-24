@@ -93,18 +93,46 @@ export interface WaveHeader {
   txCount?: number;
 }
 
-/** Threshold-signed hard finality certificate. Committee signs
- *  (wave_id, state_root, events_root, events_bloom) so a light client
- *  can verify the entire wave's integrity from a 200-byte header.
- *  Spec: Chapter 6 + HOST_FN_ABI_SPEC §15.2. */
+/** Threshold-signed hard finality certificate. Committee signs the
+ *  wave commit; ≥85 of 128 entries required for hard finality so a
+ *  light client can verify the entire wave's integrity.
+ *  Spec: Chapter 6 + `pyde_engine_types::consensus::HardFinalityCert`. */
 export interface HardFinalityCert {
+  /** The wave commit being attested. */
+  commit: WaveCommit;
+  /** Committee signatures: `(memberId, FALCON-512 signature)` pairs.
+   *  `memberId ∈ [0, COMMITTEE_SIZE)`; `length >= 85` on a quorum-passing
+   *  cert. v1 wire form is a list of FALCON sigs (true aggregate
+   *  threshold signatures arrive in a future engine release). */
+  signatures: Array<{ memberId: number; signature: string }>;
+}
+
+/** Per-wave commit record carried inside `HardFinalityCert.commit` and
+ *  echoed (in flatter form) by `Provider.getWave`. */
+export interface WaveCommit {
   waveId: Wave;
-  stateRoot: Hash;
+  /** Round of the anchor vertex that committed this wave. */
+  anchorRound: bigint;
+  /** Round of the prior wave's anchor — `null` only for the first
+   *  wave after genesis. */
+  priorAnchorRound: bigint | null;
+  /** Anchor vertex hash. */
+  anchorHash: Hash;
+  /** Epoch this wave belongs to. */
+  epoch: bigint;
+  /** Beacon for the NEXT epoch — populated only on the last wave
+   *  of each epoch (Ch 6 §9 step 4). `null` on every other wave. */
+  nextEpochBeacon: string | null;
+  /** State root after this wave's txs are applied. Dual-hash
+   *  (Blake3 + Poseidon2). Pre-PR-#349 engines emit a single Blake3
+   *  string — kept as a backward-compat fallback. */
+  stateRoot: { blake3: Hash; poseidon2: Hash } | Hash;
+  /** Blake3 binary-Merkle root over the wave's events. */
   eventsRoot: Hash;
-  /** 256-byte bloom filter over the wave's events (hex). */
+  /** 256-byte bloom filter over event topics + emitter addresses (hex). */
   eventsBloom: string;
-  /** Aggregated FALCON signature (≥85 of 128 committee members). */
-  signature: string;
+  /** Total gas consumed across all txs in the wave. */
+  gasUsed: bigint;
 }
 
 // ============================================================================
@@ -351,6 +379,32 @@ export const TxType = {
    * only when `balance > 0` and `auth_keys == AuthKeys::None`.
    */
   RegisterPubkey: 13,
+  /**
+   * Release a validator from `Status::Jailed` back to
+   * `Status::Active`. Allowed only when the jail period has
+   * elapsed (`wave_id >= jail_until_wave`) and the caller pays the
+   * unjail fee. `tx.from` is the validator's own address;
+   * `tx.to == ZERO`; `tx.data` is empty.
+   */
+  Unjail: 14,
+  /**
+   * Rotate the FALCON-512 signing key on an already-registered
+   * validator. `tx.from` is the validator's address; `tx.to == ZERO`;
+   * `tx.data` is the new 897-byte FALCON pubkey. The tx itself is
+   * signed by the OLD key — the handler swaps both
+   * `ValidatorRecord.pubkey` and `Account.auth_keys` to the new
+   * pubkey on success. Allowed only while `Status == Active`.
+   */
+  RotateValidatorKeys: 15,
+  /**
+   * Governance dispute over a pending slash. Treasury multisig
+   * gates submission via an embedded bundle; `tx.from` is any
+   * address, `tx.to == ZERO`, `tx.data` is `borsh(DisputeSlashPayload)`
+   * — `{escrow_id, action, multisig_sigs}` where `action` is `Void`
+   * or `Reduce { new_bps }`. Allowed only while the targeted
+   * `PendingSlash` is still `Pending`.
+   */
+  DisputeSlash: 16,
 } as const;
 
 export type TxTypeDiscriminant = (typeof TxType)[keyof typeof TxType];
