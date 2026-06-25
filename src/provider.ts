@@ -268,10 +268,42 @@ export class Provider {
   // ========================================================================
 
   /** Off-chain view-function call. Free; no tx, no consensus. Spec:
-   *  chapter 17.4 — bounded by per-call instruction cap on the node. */
+   *  chapter 17.4 — bounded by per-call instruction cap on the node.
+   *
+   *  `data` MUST be a hex-encoded borsh `CallPayload { function, calldata }`:
+   *
+   *  ```rust
+   *  struct CallPayload {
+   *      function: String,   // 4-byte LE len + UTF-8 bytes
+   *      calldata: Vec<u8>,  // 4-byte LE len + borsh-encoded args
+   *  }
+   *  ```
+   *
+   *  Most callers should reach this through `Contract.read(method, args)`
+   *  (auto-encodes via `encodeCall`) rather than building the borsh
+   *  frame by hand. Empty `data` (e.g. `"0x"`) is rejected by the engine
+   *  with `-32602 missing \`data\` — must be borsh-encoded CallPayload`.
+   *  See [`Provider.callFunction`] for the convenience wrapper. */
   async call(to: string, data: string, overrides?: CallOverrides): Promise<string> {
     const params = this.buildCallParams(to, data, overrides);
     return asString(await this.call_("pyde_call", [params]), "pyde_call");
+  }
+
+  /** Convenience wrapper around `pyde_call` that builds the borsh
+   *  `CallPayload { function, calldata }` frame for you. Use when you
+   *  don't have a `Contract` instance handy (one-shot ad-hoc reads,
+   *  view fns whose ABI isn't loaded, etc.).
+   *
+   *  `calldata` is the raw borsh-encoded function args — pass `"0x"`
+   *  for a no-arg function. The returned hex is the chain's raw
+   *  `return_data`; caller decodes per the function's declared returns. */
+  async callFunction(
+    to: string,
+    functionName: string,
+    calldata = "0x",
+    overrides?: CallOverrides,
+  ): Promise<string> {
+    return this.call(to, encodeCallPayload(functionName, calldata), overrides);
   }
 
   /**
@@ -743,6 +775,37 @@ export function enforceSecureScheme(
   }
 }
 
+/** Borsh-encode `CallPayload { function: String, calldata: Vec<u8> }`
+ *  for `pyde_call`. Mirrors `Contract.encodeCall` but takes the
+ *  already-encoded calldata bytes instead of an args object — used by
+ *  [`Provider.callFunction`] for the no-Contract path. */
+function encodeCallPayload(functionName: string, calldataHex: string): string {
+  const fnBytes = new TextEncoder().encode(functionName);
+  const cdHex = calldataHex.startsWith("0x") ? calldataHex.slice(2) : calldataHex;
+  const cdBytes = new Uint8Array(cdHex.length / 2);
+  for (let i = 0; i < cdBytes.length; i++) {
+    cdBytes[i] = parseInt(cdHex.slice(i * 2, i * 2 + 2), 16);
+  }
+  const out = new Uint8Array(4 + fnBytes.length + 4 + cdBytes.length);
+  let p = 0;
+  // function: 4-byte LE len + UTF-8
+  out[p++] = fnBytes.length & 0xff;
+  out[p++] = (fnBytes.length >> 8) & 0xff;
+  out[p++] = (fnBytes.length >> 16) & 0xff;
+  out[p++] = (fnBytes.length >> 24) & 0xff;
+  out.set(fnBytes, p);
+  p += fnBytes.length;
+  // calldata: 4-byte LE len + raw bytes
+  out[p++] = cdBytes.length & 0xff;
+  out[p++] = (cdBytes.length >> 8) & 0xff;
+  out[p++] = (cdBytes.length >> 16) & 0xff;
+  out[p++] = (cdBytes.length >> 24) & 0xff;
+  out.set(cdBytes, p);
+  let hex = "0x";
+  for (let i = 0; i < out.length; i++) hex += out[i]!.toString(16).padStart(2, "0");
+  return hex;
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -957,9 +1020,14 @@ function hexlifyAnchor(raw: unknown): string {
     return "0x" + raw.map((b) => Number(b).toString(16).padStart(2, "0")).join("");
   }
   if (typeof raw === "object") {
+    // Engine ships state_root as `{blake3: "0x<hex>", poseidon2: "0x<hex>"}`
+    // — both legs are strings, not byte arrays. The earlier `Array.isArray`-
+    // only descent fell through to `String(raw)` and emitted the literal
+    // `"[object Object]"`. Accept string-or-array on each leg + recurse;
+    // Blake3 is the execution-side authority so it wins when present.
     const o = raw as Record<string, unknown>;
-    if (Array.isArray(o.blake3)) return hexlifyAnchor(o.blake3);
-    if (Array.isArray(o.poseidon2)) return hexlifyAnchor(o.poseidon2);
+    if (o.blake3 !== undefined && o.blake3 !== null) return hexlifyAnchor(o.blake3);
+    if (o.poseidon2 !== undefined && o.poseidon2 !== null) return hexlifyAnchor(o.poseidon2);
   }
   return String(raw);
 }
