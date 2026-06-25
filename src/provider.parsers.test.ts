@@ -155,6 +155,110 @@ describe("getTransaction — archival wire shape (catalog §22)", () => {
   });
 });
 
+describe("getWave — WaveHeader.stateRoot dual-hash struct (regression)", () => {
+  it("decodes {blake3, poseidon2} string fields to a 32-byte hex string", async () => {
+    // Engine ships state_root as `{blake3: "0x<hex>", poseidon2: "0x<hex>"}`
+    // — both legs are strings, not byte arrays. Pre-fix `hexlifyAnchor`
+    // only descended on array values and fell through to `String(raw)`,
+    // emitting the literal `"[object Object]"`.
+    const blake3Hex = "0x" + "d3".repeat(32);
+    const poseidon2Hex = "0x" + "00".repeat(32);
+    mockFetch({
+      wave_id: "0x1",
+      anchor: "0x" + "f5".repeat(32),
+      state_root: { blake3: blake3Hex, poseidon2: poseidon2Hex },
+      events_root: "0x" + "00".repeat(32),
+      tx_count: "0x0",
+      timestamp_secs: "0x0",
+    });
+    const provider = new Provider("https://rpc.example.com");
+    const wave = await provider.getWave(1);
+    expect(wave.stateRoot).toBe(blake3Hex);
+    expect(wave.stateRoot).not.toBe("[object Object]");
+  });
+
+  it("falls back to poseidon2 when blake3 is absent", async () => {
+    const poseidon2Hex = "0x" + "aa".repeat(32);
+    mockFetch({
+      wave_id: "0x1",
+      anchor: "0x" + "f5".repeat(32),
+      state_root: { poseidon2: poseidon2Hex },
+      tx_count: "0x0",
+      timestamp_secs: "0x0",
+    });
+    const provider = new Provider("https://rpc.example.com");
+    const wave = await provider.getWave(1);
+    expect(wave.stateRoot).toBe(poseidon2Hex);
+  });
+
+  it("still accepts byte-array legs (forward-compat with engine drift)", async () => {
+    const blake3Bytes = Array.from({ length: 32 }, (_, i) => i);
+    mockFetch({
+      wave_id: "0x1",
+      anchor: "0x" + "f5".repeat(32),
+      state_root: { blake3: blake3Bytes },
+      tx_count: "0x0",
+      timestamp_secs: "0x0",
+    });
+    const provider = new Provider("https://rpc.example.com");
+    const wave = await provider.getWave(1);
+    expect(wave.stateRoot).toBe(
+      "0x" + blake3Bytes.map((b) => b.toString(16).padStart(2, "0")).join(""),
+    );
+  });
+});
+
+describe("callFunction — borsh-encoded CallPayload (regression)", () => {
+  it("wraps function + calldata into the canonical CallPayload bytes", async () => {
+    // Pin the borsh frame: CallPayload { function: "get", calldata: [] }
+    // → 4-byte LE len + "get" UTF-8 + 4-byte LE 0 = 11 bytes
+    //   = 0x03000000 67657400 000000 = 0x0300000067657400000000
+    let capturedData: string | undefined;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockImplementation(async (_url: string, init: RequestInit) => {
+        const body = JSON.parse(init.body as string);
+        capturedData = (body.params[0] as Record<string, string>).data;
+        return {
+          ok: true,
+          status: 200,
+          statusText: "OK",
+          headers: new Headers(),
+          json: async () => ({ jsonrpc: "2.0", id: 1, result: "0x0000000000000000" }),
+        };
+      }),
+    );
+    const provider = new Provider("https://rpc.example.com");
+    const out = await provider.callFunction("0x" + "ab".repeat(32), "get", "0x");
+    expect(out).toBe("0x0000000000000000");
+    expect(capturedData).toBe("0x0300000067657400000000");
+  });
+
+  it("propagates raw calldata bytes verbatim", async () => {
+    let capturedData: string | undefined;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockImplementation(async (_url: string, init: RequestInit) => {
+        const body = JSON.parse(init.body as string);
+        capturedData = (body.params[0] as Record<string, string>).data;
+        return {
+          ok: true,
+          status: 200,
+          statusText: "OK",
+          headers: new Headers(),
+          json: async () => ({ jsonrpc: "2.0", id: 1, result: "0x" }),
+        };
+      }),
+    );
+    const provider = new Provider("https://rpc.example.com");
+    // CallPayload { function: "x", calldata: [0xde, 0xad, 0xbe, 0xef] }
+    //   4-byte LE len (1) + "x" UTF-8 + 4-byte LE len (4) + raw bytes
+    //   = 0x01000000 78 04000000 deadbeef
+    await provider.callFunction("0x" + "ab".repeat(32), "x", "0xdeadbeef");
+    expect(capturedData).toBe("0x010000007804000000deadbeef");
+  });
+});
+
 describe("getThresholdPublicKey — scheme passthrough (no coercion)", () => {
   it("passes 'kyber-768-goldilocks' through verbatim", async () => {
     mockFetch({
