@@ -547,7 +547,10 @@ export class WebSocketProvider {
       nonce: bigHex(o.nonce, "nonce"),
       balance: BigInt(asString(o.balance, "balance")),
       codeHash: asString(o.code_hash ?? o.codeHash, "codeHash"),
-      storageRoot: asString(o.storage_root ?? o.storageRoot, "storageRoot"),
+      stateRoot: asString(
+        o.state_root ?? o.stateRoot ?? o.storage_root ?? o.storageRoot,
+        "stateRoot",
+      ),
       accountType: numHex(o.account_type ?? o.accountType, "accountType") as Account["accountType"],
       authKeys: asString(o.auth_keys ?? o.authKeys, "authKeys"),
       gasTank: BigInt(asString(o.gas_tank ?? o.gasTank, "gasTank")),

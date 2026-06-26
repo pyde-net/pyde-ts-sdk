@@ -59,8 +59,10 @@ export interface Account {
   balance: bigint;
   /** WASM code hash (Poseidon2). Zero hash for EOAs. */
   codeHash: Hash;
-  /** State subtree root for this contract. Zero for empty contracts. */
-  storageRoot: Hash;
+  /** State subtree root for this account. Zero for empty contracts /
+   *  freshly-funded EOAs. Engine ships this under `state_root` per
+   *  Chapter 11 §11.1; the SDK uses `stateRoot` to match the wire. */
+  stateRoot: Hash;
   accountType: AccountTypeDiscriminant;
   /** Opaque authorization-keys blob (variable layout per Chapter 11 §11.5). */
   authKeys: string;
@@ -194,17 +196,23 @@ export interface RevertReason {
 /** Transaction receipt — emitted at execution. Spec: Chapter 10. */
 export interface Receipt {
   txHash: Hash;
+  /** Position of this tx within the wave's canonical order. */
+  txIndex: number;
   success: boolean;
   /** Hex-encoded u64. */
   gasUsed: string;
-  /** Effective gas (= gasUsed in v1; no refunds per Chapter 10 §10.1). */
-  effectiveGas: string;
+  /** Effective gas (= gasUsed in v1; no refunds per Chapter 10 §10.1).
+   *  `null` when the engine omits the field on the wire — distinguish
+   *  "missing" from a real `0x0` charge. */
+  effectiveGas: string | null;
   /** Total fee paid (base × gasUsed), hex-encoded u128. */
   feePaid: string;
-  /** Portion of fee burned (Chapter 10 — EIP-1559-style). */
-  feeBurned: string;
-  /** Portion of fee credited to the wave's validator. */
-  feeValidator: string;
+  /** Portion of fee burned (Chapter 10 — EIP-1559-style). `null` when
+   *  the engine omits the field — distinguish "missing" from `0x0`. */
+  feeBurned: string | null;
+  /** Portion of fee credited to the wave's validator. `null` when the
+   *  engine omits the field — distinguish "missing" from `0x0`. */
+  feeValidator: string | null;
   /** Return data hex. Ephemeral — only in this receipt; absent on
    *  subsequent tx lookups. */
   returnData?: string;

@@ -32,7 +32,7 @@
 import * as wasm from "./vendor/crypto-wasm/pyde_crypto_wasm.js";
 
 import type { AccessEntry, TxFields } from "./types";
-import { SigningError } from "./errors";
+import { InvalidArgumentError, SigningError } from "./errors";
 
 // ============================================================================
 // Types
@@ -221,6 +221,19 @@ export function poseidon2Hash(dataHex: string): string {
 /** FNV-1a selector for a method name. Matches Otigen codegen so SDK and
  *  contract-side codegen produce identical selectors. */
 export function computeSelector(methodName: string): number {
+  // wasm-bindgen's release-mode `passStringToWasm0` doesn't validate
+  // its arg is a string — handing it a non-string makes the buffer-
+  // length math go NaN and the realloc traps with
+  // `RuntimeError: memory access out of bounds`. Validate at the JS
+  // boundary so callers get an actionable error instead of a wasm
+  // stack trace pointing at a phantom OOB.
+  if (typeof methodName !== "string") {
+    throw new InvalidArgumentError(
+      `computeSelector: methodName must be a string, got ${typeof methodName}`,
+      "methodName",
+      methodName,
+    );
+  }
   return wasm.computeSelector(methodName);
 }
 
