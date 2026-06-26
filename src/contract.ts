@@ -19,6 +19,7 @@
  */
 
 import { computeSelector } from "./crypto";
+import { InvalidArgumentError } from "./errors";
 import { Provider } from "./provider";
 import { Wallet } from "./wallet";
 import { TxType } from "./types";
@@ -356,7 +357,13 @@ export class Contract<TAbi extends AbiShape = DefaultAbi> {
     return new Contract<T>(address, provider);
   }
 
-  /** Register a function manually (when no artifact is available). */
+  /** Register a function manually (when no artifact is available).
+   *
+   *  Positional signature — not an options object. Calling
+   *  `addFunction({...})` will throw an `InvalidArgumentError` rather
+   *  than silently destroying the wasm-bindgen string boundary in
+   *  `computeSelector`.
+   */
   addFunction(
     name: string,
     params: AbiParam[],
@@ -364,6 +371,29 @@ export class Contract<TAbi extends AbiShape = DefaultAbi> {
     view = false,
     payable = false,
   ): this {
+    if (typeof name !== "string") {
+      throw new InvalidArgumentError(
+        `Contract.addFunction: name must be a string, got ${typeof name}. ` +
+          `Did you pass an options object? The signature is positional: ` +
+          `addFunction(name, params, returns, view?, payable?)`,
+        "name",
+        name,
+      );
+    }
+    if (!Array.isArray(params)) {
+      throw new InvalidArgumentError(
+        `Contract.addFunction: params must be an AbiParam[], got ${typeof params}`,
+        "params",
+        params,
+      );
+    }
+    if (typeof returns !== "string") {
+      throw new InvalidArgumentError(
+        `Contract.addFunction: returns must be a type string (e.g. "u64", "()"), got ${typeof returns}`,
+        "returns",
+        returns,
+      );
+    }
     this.functions.set(name, {
       name,
       selector: "0x" + computeSelector(name).toString(16).padStart(8, "0"),

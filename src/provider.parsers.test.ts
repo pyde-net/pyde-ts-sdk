@@ -172,9 +172,10 @@ describe("getWave — WaveHeader.stateRoot dual-hash struct (regression)", () =>
       timestamp_secs: "0x0",
     });
     const provider = new Provider("https://rpc.example.com");
-    const wave = await provider.getWave(1);
-    expect(wave.stateRoot).toBe(blake3Hex);
-    expect(wave.stateRoot).not.toBe("[object Object]");
+    const wave = await provider.getWave(1n);
+    expect(wave).not.toBeNull();
+    expect(wave!.stateRoot).toBe(blake3Hex);
+    expect(wave!.stateRoot).not.toBe("[object Object]");
   });
 
   it("falls back to poseidon2 when blake3 is absent", async () => {
@@ -187,8 +188,10 @@ describe("getWave — WaveHeader.stateRoot dual-hash struct (regression)", () =>
       timestamp_secs: "0x0",
     });
     const provider = new Provider("https://rpc.example.com");
-    const wave = await provider.getWave(1);
-    expect(wave.stateRoot).toBe(poseidon2Hex);
+    const wave = await provider.getWave(1n);
+    expect(wave).not.toBeNull();
+    expect(wave!.stateRoot).toBe(poseidon2Hex);
+    expect(wave!.stateRoot).not.toBe("[object Object]");
   });
 
   it("still accepts byte-array legs (forward-compat with engine drift)", async () => {
@@ -201,10 +204,124 @@ describe("getWave — WaveHeader.stateRoot dual-hash struct (regression)", () =>
       timestamp_secs: "0x0",
     });
     const provider = new Provider("https://rpc.example.com");
-    const wave = await provider.getWave(1);
-    expect(wave.stateRoot).toBe(
+    const wave = await provider.getWave(1n);
+    expect(wave).not.toBeNull();
+    expect(wave!.stateRoot).toBe(
       "0x" + blake3Bytes.map((b) => b.toString(16).padStart(2, "0")).join(""),
     );
+  });
+});
+
+describe("getAccount — wire field naming (regression)", () => {
+  it("reads engine's canonical `state_root` field into `stateRoot`", async () => {
+    const stateRootHex = "0x" + "ab".repeat(32);
+    mockFetch({
+      address: "0x" + "11".repeat(32),
+      nonce: 0,
+      balance: "0x0",
+      code_hash: "0x" + "00".repeat(32),
+      state_root: stateRootHex,
+      account_type: "eoa",
+    });
+    const provider = new Provider("https://rpc.example.com");
+    const account = await provider.getAccount("0x" + "11".repeat(32));
+    expect(account).not.toBeNull();
+    expect(account!.stateRoot).toBe(stateRootHex);
+  });
+
+  it("tolerates legacy `storage_root` for forward-compat", async () => {
+    const stateRootHex = "0x" + "cd".repeat(32);
+    mockFetch({
+      address: "0x" + "11".repeat(32),
+      nonce: 0,
+      balance: "0x0",
+      code_hash: "0x" + "00".repeat(32),
+      storage_root: stateRootHex,
+      account_type: "eoa",
+    });
+    const provider = new Provider("https://rpc.example.com");
+    const account = await provider.getAccount("0x" + "11".repeat(32));
+    expect(account!.stateRoot).toBe(stateRootHex);
+  });
+
+  it.each([
+    ["eoa", 0],
+    ["contract", 1],
+    ["system", 2],
+    ["EOA", 0],
+    ["Contract", 1],
+  ])("parses account_type string %s as discriminant %d", async (tag, expected) => {
+    mockFetch({
+      address: "0x" + "11".repeat(32),
+      nonce: 0,
+      balance: "0x0",
+      code_hash: "0x" + "00".repeat(32),
+      state_root: "0x" + "00".repeat(32),
+      account_type: tag,
+    });
+    const provider = new Provider("https://rpc.example.com");
+    const account = await provider.getAccount("0x" + "11".repeat(32));
+    expect(account!.accountType).toBe(expected);
+  });
+
+  it("still accepts numeric account_type for legacy nodes", async () => {
+    mockFetch({
+      address: "0x" + "11".repeat(32),
+      nonce: 0,
+      balance: "0x0",
+      code_hash: "0x" + "00".repeat(32),
+      state_root: "0x" + "00".repeat(32),
+      account_type: 1,
+    });
+    const provider = new Provider("https://rpc.example.com");
+    const account = await provider.getAccount("0x" + "11".repeat(32));
+    expect(account!.accountType).toBe(1);
+  });
+});
+
+describe("resolveName — .pyde suffix stripping", () => {
+  it("strips a trailing `.pyde` before hitting the engine", async () => {
+    // The engine rejects `.` in names with `-32602 'invalid name format'`.
+    // We mock the RPC to capture exactly what the SDK forwarded.
+    let observedParams: unknown[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockImplementation(async (_url, init) => {
+        const body = JSON.parse((init as { body: string }).body);
+        observedParams = body.params;
+        return {
+          ok: true,
+          status: 200,
+          statusText: "OK",
+          headers: new Headers(),
+          json: async () => ({ jsonrpc: "2.0", id: body.id, result: "0x" + "22".repeat(32) }),
+        };
+      }),
+    );
+    const provider = new Provider("https://rpc.example.com");
+    await provider.resolveName("alice.pyde");
+    expect(observedParams).toEqual(["alice"]);
+  });
+
+  it("leaves bare labels untouched", async () => {
+    let observedParams: unknown[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockImplementation(async (_url, init) => {
+        const body = JSON.parse((init as { body: string }).body);
+        observedParams = body.params;
+        return {
+          ok: true,
+          status: 200,
+          statusText: "OK",
+          headers: new Headers(),
+          json: async () => ({ jsonrpc: "2.0", id: body.id, result: null }),
+        };
+      }),
+    );
+    const provider = new Provider("https://rpc.example.com");
+    await provider.resolveName("alice");
+    expect(observedParams).toEqual(["alice"]);
   });
 });
 

@@ -333,7 +333,7 @@ interface Account {
   nonce: bigint; // u64
   balance: bigint; // u128 quanta
   codeHash: string; // 0x + 64 hex; "0x" + 64*"0" for EOAs
-  storageRoot: string; // 0x + 64 hex
+  stateRoot: string; // 0x + 64 hex (Chapter 11 §11.1 state subtree root)
   accountType: AccountType; // EOA | Contract | System
   authKeys: string; // hex
   gasTank: bigint; // u128 quanta — paymaster pool

@@ -183,7 +183,12 @@ export class Provider {
   /** Resolve a Pyde Name Service `.pyde` name to its 32-byte address.
    *  Returns null if the name is unregistered. Spec: chapter 17.4. */
   async resolveName(name: string): Promise<string | null> {
-    const result = await this.call_("pyde_resolveName", [name]);
+    // PNS only accepts bare labels — engine rejects `.pyde` suffixes
+    // with `-32602 'invalid name format: name contains invalid character .'`.
+    // Strip a trailing `.pyde` so callers can use either form
+    // interchangeably (matches the ENS convention dapps already know).
+    const bare = name.endsWith(".pyde") ? name.slice(0, -".pyde".length) : name;
+    const result = await this.call_("pyde_resolveName", [bare]);
     return result == null ? null : asString(result, "pyde_resolveName");
   }
 
@@ -564,11 +569,14 @@ export class Provider {
   // Archival receipts + raw tx + snapshot bundle
   // ========================================================================
 
-  /** Archival receipt query — raw serde-derived wire shape with byte
-   *  arrays + JSON numbers (NOT the hex-string convention of
-   *  `getTransactionReceipt`). Use this for explorer / indexer code
-   *  that wants the canonical borsh-shape data without the SDK's
-   *  hex normalization. Returns `null` if not found.
+  /** Archival receipt query via `pyde_getReceipt`. As of the current
+   *  otigen release this returns the SAME hex-string-flavoured shape
+   *  as `pyde_getTransactionReceipt` (verified against `otigen 0.1.0
+   *  (sha b2cdcc11+dirty)`) — the byte-array distinction earlier
+   *  drafts called out has been collapsed. Prefer
+   *  `getTransactionReceipt` for typed `Receipt`; use this only when
+   *  you need the raw wire `unknown` for explorer / indexer code
+   *  that wants to format its own shape. Returns `null` if not found.
    *  Engine RPC catalog v0.1 §21 · `pyde_getReceipt`. */
   async getReceiptArchival(txHash: string): Promise<unknown | null> {
     const result = await this.call_("pyde_getReceipt", [txHash]);
@@ -935,7 +943,11 @@ function fromWireAccount(w: unknown): Account {
     nonce: tryBigInt(o.nonce) ?? 0n,
     balance: tryBigInt(o.balance) ?? 0n,
     codeHash: tryString(o.code_hash ?? o.codeHash) ?? ZERO_HASH,
-    storageRoot: tryString(o.storage_root ?? o.storageRoot) ?? ZERO_HASH,
+    // Engine canonically ships this as `state_root` (Ch 11 §11.1);
+    // the older `storage_root` name is accepted for any node still on
+    // the pre-rename wire.
+    stateRoot:
+      tryString(o.state_root ?? o.stateRoot ?? o.storage_root ?? o.storageRoot) ?? ZERO_HASH,
     accountType: parseAccountType(o.account_type ?? o.accountType ?? 0),
     authKeys: tryString(o.auth_keys ?? o.authKeys) ?? "0x",
     gasTank: tryBigInt(o.gas_tank ?? o.gasTank) ?? 0n,
@@ -970,12 +982,33 @@ function tryBigInt(v: unknown): bigint | null {
 }
 
 function parseAccountType(v: unknown): AccountTypeDiscriminant {
-  const n = typeof v === "number" ? v : typeof v === "string" ? parseInt(v, 10) : 0;
-  if (n === AccountType.EOA || n === AccountType.Contract || n === AccountType.System) {
-    return n;
+  // Engine canonically emits a lowercase tag string (`"eoa"` /
+  // `"contract"` / `"system"`) per the borsh-derived Serialize impl
+  // on `pyde_engine_types::AccountType`. Older engine builds emitted
+  // the bare numeric discriminant (0 / 1 / 2). Decode both so contract
+  // and system accounts don't get silently classified EOA.
+  if (typeof v === "string") {
+    const tag = v.toLowerCase();
+    if (tag === "eoa") return AccountType.EOA;
+    if (tag === "contract") return AccountType.Contract;
+    if (tag === "system") return AccountType.System;
+    // Fall through to numeric decode in case the engine ever ships
+    // the tag as a string-wrapped int (e.g. `"1"`).
+    const n = parseInt(v, 10);
+    if (
+      Number.isFinite(n) &&
+      (n === AccountType.EOA || n === AccountType.Contract || n === AccountType.System)
+    ) {
+      return n as AccountTypeDiscriminant;
+    }
+  }
+  if (typeof v === "number") {
+    if (v === AccountType.EOA || v === AccountType.Contract || v === AccountType.System) {
+      return v as AccountTypeDiscriminant;
+    }
   }
   // Default to EOA for unknown / out-of-range values — pragmatic for
-  // engine drift, parser stays strict via the asserts above.
+  // engine drift.
   return AccountType.EOA;
 }
 
@@ -1135,25 +1168,30 @@ function fromWireSnapshotManifest(w: unknown): SnapshotManifest {
 
 function fromWireReceipt(w: unknown): Receipt {
   const o = w as Record<string, unknown>;
-  // Engine drift: the chain emits a `status: "success" | "reverted"
-  // | "out_of_gas"` string AND/OR an older `success: boolean`. Accept
-  // both. Likewise not every field (effective_gas / fee_burned /
-  // fee_validator / logs) ships on every chain build; fall back to
-  // "0x0" / [] so callers see a stable shape.
+  // Engine drift: the chain emits `status: "success" | "reverted" |
+  // "out_of_gas"` AND/OR an older `success: boolean`. Accept both.
+  // `effective_gas` / `fee_burned` / `fee_validator` are not on the
+  // canonical wire today (engine's `receipt_to_json` only emits
+  // `tx_hash`, `wave_id`, `tx_index`, `status`, `gas_used`, `fee_paid`,
+  // `return_data`, `events`). Use `null` for absent fields so callers
+  // can distinguish "engine didn't ship this" from a genuine `0x0`
+  // charge.
   const status = typeof o.status === "string" ? o.status : null;
   const success =
     typeof o.success === "boolean" ? o.success : status !== null ? status === "success" : false;
-  const asStringOr = (v: unknown, fallback: string): string =>
-    typeof v === "string" ? v : fallback;
+  const tryWireString = (v: unknown): string | null => (typeof v === "string" ? v : null);
   const rawLogs = (o.logs ?? o.events ?? []) as unknown[];
+  const txIndexRaw = o.tx_index ?? o.txIndex;
+  const txIndex = tryParseUint(txIndexRaw) ?? 0;
   const out: Receipt = {
     txHash: asString(o.tx_hash ?? o.txHash, "Receipt.txHash"),
+    txIndex,
     success,
     gasUsed: asString(o.gas_used ?? o.gasUsed, "Receipt.gasUsed"),
-    effectiveGas: asStringOr(o.effective_gas ?? o.effectiveGas, "0x0"),
-    feePaid: asStringOr(o.fee_paid ?? o.feePaid, "0x0"),
-    feeBurned: asStringOr(o.fee_burned ?? o.feeBurned, "0x0"),
-    feeValidator: asStringOr(o.fee_validator ?? o.feeValidator, "0x0"),
+    effectiveGas: tryWireString(o.effective_gas ?? o.effectiveGas),
+    feePaid: tryWireString(o.fee_paid ?? o.feePaid) ?? "0x0",
+    feeBurned: tryWireString(o.fee_burned ?? o.feeBurned),
+    feeValidator: tryWireString(o.fee_validator ?? o.feeValidator),
     revertReason: parseRevertReason(o.revert_reason ?? o.revertReason),
     logs: rawLogs.map(fromWireLog),
   };
@@ -1360,9 +1398,11 @@ function fromWireSimulateResult(w: unknown): SimulateTransactionResult {
 
 function fromWireGetLogsResponse(w: unknown): GetLogsResponse {
   const o = w as Record<string, unknown>;
-  // Engine exposes the field as `entries`; older spec drafts + the
-  // SDK type call it `events`. Accept both — engine is the authority
-  // for the current shape.
+  // Engine canonical wire shape is `{ entries: [...], next_cursor? }`.
+  // The `events` fallback handles a hypothetical future flip or a
+  // mock-server that still uses the older field name — verified the
+  // current engine ships `entries` only (no `events` alias), so the
+  // fallback is belt-and-braces, not load-bearing.
   const raw = (o.entries ?? o.events ?? []) as unknown[];
   const events = raw.map(fromWireLog);
   const out: GetLogsResponse = { events };

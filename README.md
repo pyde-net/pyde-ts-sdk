@@ -29,11 +29,11 @@ import { Provider, Wallet } from "pyde-ts-sdk";
 const provider = new Provider("https://rpc.pyde.network");
 const wallet = Wallet.generate(); // handle-backed; SK stays in WASM heap
 
-await wallet.registerPubkey(provider); // one-time per address
+wallet.connect(provider);
+await wallet.registerPubkey(); // one-time per address
 const receipt = await wallet.transfer(
   "0xrecipient...",
   1_000_000_000n, // 1 PYDE in quanta
-  provider,
 );
 console.log("tx:", receipt.txHash, "success:", receipt.success);
 ```
@@ -100,22 +100,17 @@ const ws = new WebSocketProvider("wss://rpc.pyde.network", {
 });
 await ws.ready;
 
-const unsubscribe = await ws.subscribeNewHeads((h) => {
-  console.log("wave", h.waveId, "anchor", h.anchor);
-});
-
-await ws.subscribeAccountChanges("0xalice...", (account) => {
-  console.log("alice's balance now:", account.balance);
-});
-
-await ws.subscribeLogs({ contract: "0xtoken...", topics: [[transferTopic]] }, (log) =>
-  console.log("transfer:", log.waveId, log.topics, log.data),
+const unsubscribe = await ws.subscribeLogs(
+  { contract: "0xtoken...", topics: [[transferTopic]] },
+  (log) => console.log("transfer:", log.waveId, log.topics, log.data),
 );
 
 // Later
 await unsubscribe();
 ws.destroy(); // tears down everything
 ```
+
+`subscribeLogs` is the only `pyde_subscribe` topic the engine wires in catalog v0.1. `subscribeNewHeads` / `subscribeAccountChanges` exist on the SDK as forward-compat surfaces but throw `RpcError("logs only in v1; <topic> is on the engine roadmap")` until the engine ships the extra topics.
 
 Subscriptions are at-least-once with cursor-based resume after a reconnect (HOST_FN_ABI §15.5). The provider tracks each subscription's last delivered cursor and re-subscribes on reconnect with `from: lastCursor`. Listeners may see duplicates around a reconnect — dedupe by `(waveId, txIndex, eventIndex)` if you need exactly-once.
 
@@ -139,12 +134,13 @@ const restored = await Wallet.fromEncrypted(keystore, "strong-passphrase");
 const w1 = await Wallet.fromKeystoreFile("/keys/alice.json", "passphrase");
 await unsafe.saveKeystoreFile("/keys/alice.json", "passphrase");
 
-// Sign / submit — gasLimit auto-estimates via provider.estimateGas
-// (with a 1.2× safety multiplier). Pass `gasLimit` to override.
+// Sign / submit — `sendCall` runs a `pyde_simulateTransaction` probe
+// for gas + access-list (1.2× safety multiplier on the simulate-
+// reported gas_used by default; override via `opts.gasMultiplier`).
+// `transfer` uses a fixed 100k gas — plain transfers don't execute code.
+// Pin either via `opts.gasLimit` to skip the probe.
 const sig = wallet.sign("0xdeadbeef");
-const txReceipt = await wallet.sendCall(contractAddr, calldataHex, {
-  provider,
-});
+const txReceipt = await wallet.sendCall(contractAddr, calldataHex);
 
 // Wipe + drop the WASM-retained SK
 wallet.destroy();
