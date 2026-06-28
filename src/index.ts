@@ -86,6 +86,7 @@ export {
   poseidon2Hash,
   computeSelector,
   hashTransaction,
+  plaintextHashFromEncryptedParams,
   encodeRegisterPubkeyTx,
   thresholdEncrypt,
   buildRawEncryptedTx,

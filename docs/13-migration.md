@@ -48,11 +48,10 @@ New methods added in the same pass (catalog v0.1 §8/§12/§13/§16–§21/§25)
 Encrypted-mempool path is now wired (catalog v0.1 §8/§20):
 
 - `provider.getThresholdPublicKey()` return shape changed from `Promise<string>` to `Promise<ThresholdPublicKey | null>` (`{epoch, scheme, publicKey}`). The catalog's `scheme: "mock"` boot default means encrypted submissions sit unprocessed until real Kyber-768 DKG lands — `Wallet.sendEncrypted` warns on `scheme !== "kyber-768"` so dapps can fall back to plaintext for real MEV protection.
-- `Wallet.sendEncrypted` / `transferEncrypted` return `{envelopeHash}` instead of `Receipt`. The engine echoes back the **envelope hash** (Blake3 of `version ‖ ciphertext_len ‖ ciphertext`), distinct from the inner plaintext tx hash receipts key on post-decryption. Auto-polling for encrypted receipts is gated on a future inner-hash exposure on the wasm side — for now treat a successful return as "admitted to encrypted mempool".
+- `Wallet.sendEncrypted` / `transferEncrypted` return `{envelopeHash, plaintextHash}` instead of `Receipt`. `envelopeHash` (Blake3 of `version ‖ ciphertext_len ‖ ciphertext`) is what the chain echoes back from `pyde_sendRawEncryptedTransaction`. `plaintextHash` (Poseidon2 of the inner Tx the chain reconstructs after threshold-decryption) is the key receipts are stored under post-commit — it is computed locally on the SDK side from the same `(sender, to, value, calldata, gasLimit, nonce, chainId, accessList)` projection the wasm side feeds into `buildRawEncryptedTx`, so callers can poll `provider.waitForReceipt(plaintextHash)` to wait for commit without a wasm-side round-trip. Also exported standalone as `plaintextHashFromEncryptedParams(params)` for callers that build envelopes directly.
 
 What this still doesn't do (genuine engine / wasm gaps):
 
-- Encrypted-tx receipt auto-polling — needs inner Tx plaintext hash exposed from `buildRawEncryptedTx` so the SDK can poll `getTransactionReceipt` against the right key.
 - Strongly-typed `getReceiptArchival` parser — the wire shape uses byte arrays + JSON numbers + PascalCase status; SDK currently returns `unknown` and lets archival consumers decode. Add a typed parser when an explorer / indexer needs it.
 
 ## Unreleased — borsh codec + `CallPayload`

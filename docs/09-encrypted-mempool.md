@@ -82,7 +82,7 @@ wallet.sendEncrypted(
     accessList?: AccessEntry[];
     provider?: Provider;
   },
-): Promise<{ envelopeHash: string }>
+): Promise<{ envelopeHash: string; plaintextHash: string }>
 ```
 
 **Args:**
@@ -97,14 +97,21 @@ wallet.sendEncrypted(
 | `opts.accessList` | `AccessEntry[]`          | Manual access list. **⚠ leaks slot keys.**                           |
 | `opts.provider`   | `Provider`               | Override the bound provider.                                         |
 
-**Returns:** `Promise<{ envelopeHash: string }>` — the chain echoes back
-the **envelope hash** (Blake3 of `version ‖ ciphertext_len ‖ ciphertext`).
-Receipts key on the inner plaintext tx hash post-decryption; that hash
-isn't exposed by `pyde-crypto-wasm.buildRawEncryptedTx` yet, so the SDK
-returns `{ envelopeHash }` instead of polling. Treat a successful return
-as "admitted to encrypted mempool". When the wasm side exposes the inner
-hash, this method will start polling for the receipt the same way
-`sendCall` does — no caller-side change.
+**Returns:** `Promise<{ envelopeHash: string; plaintextHash: string }>` —
+both hashes the encrypted flow produces:
+
+- `envelopeHash` (Blake3 of `version ‖ ciphertext_len ‖ ciphertext`) is what
+  the chain echoes back from `pyde_sendRawEncryptedTransaction`. Use it
+  to confirm the envelope was admitted to the encrypted mempool.
+- `plaintextHash` (Poseidon2 of the inner `(from, to, value, calldata,
+  gasLimit, nonce, chainId, accessList, txType)` tuple) is the key
+  receipts are stored under after threshold-decryption and execution.
+  It is computed **locally** from the same projection the wasm side
+  feeds into `buildRawEncryptedTx`; no extra round-trip.
+
+To wait for the post-commit receipt, poll
+`provider.waitForReceipt(plaintextHash)`. Polling against `envelopeHash`
+will time out — the chain never indexes by envelope hash.
 
 **Throws:**
 
@@ -130,10 +137,15 @@ const calldata = dex.encodeCall("swap", {
   minOut: parseQuanta("95"),
 });
 
-const { envelopeHash } = await wallet.sendEncrypted("0xdex...", calldata, {
-  deadline: 999_999,
-});
+const { envelopeHash, plaintextHash } = await wallet.sendEncrypted(
+  "0xdex...",
+  calldata,
+  { deadline: 999_999 },
+);
 console.log("encrypted swap admitted; envelope:", envelopeHash);
+// Wait for the receipt the chain stores under the plaintext hash.
+const receipt = await provider.waitForReceipt(plaintextHash);
+console.log("swap committed in wave", receipt.waveId, "gas used:", receipt.gasUsed);
 ```
 
 ---
@@ -149,18 +161,19 @@ wallet.transferEncrypted(
   to: string,
   amount: bigint | number,
   opts?: { deadline?: number; provider?: Provider },
-): Promise<{ envelopeHash: string }>
+): Promise<{ envelopeHash: string; plaintextHash: string }>
 ```
 
 **Example:**
 
 ```ts
-const { envelopeHash } = await wallet.transferEncrypted(
+const { envelopeHash, plaintextHash } = await wallet.transferEncrypted(
   "0xrecipient...",
   parseQuanta("1"),
   { deadline: 999_999 },
 );
 console.log("admitted; envelope:", envelopeHash);
+const receipt = await provider.waitForReceipt(plaintextHash);
 ```
 
 ---

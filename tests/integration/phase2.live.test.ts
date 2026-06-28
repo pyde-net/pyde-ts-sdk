@@ -272,10 +272,14 @@ describe("Phase 2 — encrypted transfer E2E", () => {
     const threshold = await devnet.provider.getThresholdPublicKey();
     expect(threshold).not.toBeNull();
     expect(threshold!.scheme.startsWith("kyber-768")).toBe(true);
-    const { envelopeHash } = await w.transferEncrypted(
+    const { envelopeHash, plaintextHash } = await w.transferEncrypted(
       "0x" + "ce".repeat(32),
       100_000n,
     );
     expect(envelopeHash).toMatch(/^0x[0-9a-fA-F]{64}$/);
+    expect(plaintextHash).toMatch(/^0x[0-9a-fA-F]{64}$/);
+    // Envelope and plaintext are distinct domains (Blake3 of ciphertext
+    // vs Poseidon2 of the inner Tx), so the two hashes must differ.
+    expect(plaintextHash).not.toBe(envelopeHash);
   }, 30_000);
 });

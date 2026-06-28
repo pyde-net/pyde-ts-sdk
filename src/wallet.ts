@@ -453,14 +453,16 @@ export class Wallet extends AbstractSigner {
    * The chain still parallelises without an access list; the cost is
    * conservative serialisation, not correctness.
    *
-   * Returns the **envelope hash** the engine echoed back from
-   * `pyde_sendRawEncryptedTransaction` — NOT a receipt. Per engine RPC
-   * catalog v0.1 §8, receipts after wave commit are keyed by the
-   * **plaintext** tx hash the chain reconstructs post-decryption, not
-   * the envelope hash. Polling `provider.waitForReceipt(envelopeHash)`
-   * will time out. Receipt-polling for encrypted submissions is a
-   * gap pending an inner-hash exposure on the wasm side; until then
-   * treat a successful return as "admitted to encrypted mempool".
+   * Returns BOTH the **envelope hash** the engine echoed back from
+   * `pyde_sendRawEncryptedTransaction` AND the **plaintext** tx hash
+   * the chain reconstructs after threshold-decryption. Per engine RPC
+   * catalog v0.1 §8, receipts post-commit are keyed by the plaintext
+   * hash, so callers polling for the encrypted tx's receipt should
+   * pass `plaintextHash` to `provider.waitForReceipt(...)` — the
+   * envelope hash will time out. `plaintextHash` is computed locally
+   * from the same `(sender, to, value, calldata, gasLimit, nonce,
+   * chainId, accessList)` projection the wasm side feeds into
+   * `compute_tx_hash`; no extra round-trip to the node.
    */
   async sendEncrypted(
     to: string,
@@ -473,7 +475,7 @@ export class Wallet extends AbstractSigner {
       estimateAccess?: boolean;
       provider?: Provider;
     },
-  ): Promise<{ envelopeHash: string }> {
+  ): Promise<{ envelopeHash: string; plaintextHash: string }> {
     const p = this.resolveProvider(opts?.provider);
     const [threshold, [nonce, chainId]] = await Promise.all([
       p.getThresholdPublicKey(),
@@ -530,18 +532,25 @@ export class Wallet extends AbstractSigner {
       "handle" in this.key
         ? crypto.buildRawEncryptedTxWithHandle(params, this.key.handle)
         : crypto.buildRawEncryptedTx(params, this.key.hex);
+    // Derive plaintextHash from the same params we hand to
+    // buildRawEncryptedTx. It's deterministic, so callers can
+    // poll waitForReceipt(plaintextHash) without a separate round
+    // trip — receipts file under the chain's post-decryption
+    // Poseidon2 tx hash, not the wire envelope's Blake3.
+    const plaintextHash = crypto.plaintextHashFromEncryptedParams(params);
     const tx = await p.sendRawEncryptedTransaction(wire);
-    return { envelopeHash: tx.hash };
+    return { envelopeHash: tx.hash, plaintextHash };
   }
 
   /** Encrypted variant of `transfer` — value-only send through the
    *  MEV-protected mempool. Same hex-SK constraint as `sendEncrypted`,
-   *  same envelope-hash semantics (see `sendEncrypted` JSDoc). */
+   *  same return shape (`envelopeHash` + `plaintextHash`; see
+   *  `sendEncrypted` JSDoc). */
   async transferEncrypted(
     to: string,
     amount: bigint | number,
     opts?: { deadline?: number; provider?: Provider },
-  ): Promise<{ envelopeHash: string }> {
+  ): Promise<{ envelopeHash: string; plaintextHash: string }> {
     return this.sendEncrypted(to, "0x", {
       value: amount,
       gasLimit: 21_000,
