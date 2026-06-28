@@ -734,12 +734,10 @@ wallet.sendEncrypted(
     accessList?: AccessEntry[];
     provider?: Provider;
   },
-): Promise<{ envelopeHash: string }>
+): Promise<{ envelopeHash: string; plaintextHash: string }>
 ```
 
-**Hex-backed wallets only** (until `pyde-crypto-wasm` ships `buildRawEncryptedTxWithHandle`).
-
-Returns `{ envelopeHash }` — receipts key on the inner plaintext tx hash post-decryption; that hash isn't exposed by `buildRawEncryptedTx` yet, so the SDK doesn't poll. Treat a successful return as "admitted to encrypted mempool".
+Returns `{ envelopeHash, plaintextHash }`. `envelopeHash` is what the chain echoes back from `pyde_sendRawEncryptedTransaction` (Blake3 of the ciphertext envelope). `plaintextHash` is the Poseidon2 hash of the inner Tx the chain reconstructs after threshold-decryption — receipts key on this hash, so poll `provider.waitForReceipt(plaintextHash)` to wait for commit. `plaintextHash` is computed locally from the same `(sender, to, value, calldata, gasLimit, nonce, chainId, accessList)` projection the wasm side feeds into `buildRawEncryptedTx`.
 
 See [Chapter 09 — encrypted mempool](./09-encrypted-mempool.md) for the full flow, when to use it, and the `accessList` privacy considerations.
 
@@ -756,7 +754,7 @@ wallet.transferEncrypted(
   to: string,
   amount: bigint | number,
   opts?: { deadline?: number; provider?: Provider },
-): Promise<{ envelopeHash: string }>
+): Promise<{ envelopeHash: string; plaintextHash: string }>
 ```
 
 ---

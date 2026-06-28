@@ -155,13 +155,20 @@ Keystore format matches `pyde keys generate` (Chapter 17): Argon2id KDF (default
 // adds buildRawEncryptedTxWithHandle).
 const wallet = Wallet.generateUnsafe();
 
-const receipt = await wallet.sendEncrypted(contractAddr, calldata, {
-  provider,
-  value: 0n,
-  deadline: 999_999n, // optional wave deadline
-  // gasLimit: 1_000_000,             // omit to auto-estimate
-  // estimateAccess: true,            // OFF by default — privacy leak
-});
+const { envelopeHash, plaintextHash } = await wallet.sendEncrypted(
+  contractAddr,
+  calldata,
+  {
+    provider,
+    value: 0n,
+    deadline: 999_999n, // optional wave deadline
+    // gasLimit: 1_000_000,             // omit to auto-estimate
+    // estimateAccess: true,            // OFF by default — privacy leak
+  },
+);
+// Receipts post-decryption are keyed by `plaintextHash`, not the
+// envelope hash echoed back from the encrypted-mempool admit.
+const receipt = await provider.waitForReceipt(plaintextHash);
 ```
 
 The (to, value, calldata) tuple is threshold-encrypted against the committee pubkey before submission. No validator or RPC operator can read the call before the wave commits. Spec: Chapter 8.5 + Chapter 9.

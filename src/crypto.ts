@@ -247,6 +247,39 @@ export function hashTransaction(tx: TxFields): string {
   return wasm.hashTransaction(toWasmJson(tx));
 }
 
+/**
+ * Compute the **plaintext** inner-Tx hash that the chain reconstructs
+ * after threshold-decrypting an `EncryptedTx`. Receipts are stored
+ * keyed by this hash post-commit, NOT the envelope hash echoed back
+ * from `pyde_sendRawEncryptedTransaction`. Use it to poll
+ * `Provider.waitForReceipt(plaintextHash)` for an encrypted tx.
+ *
+ * Mirrors `build_inner_tx_value` in pyde-crypto-wasm: renames
+ * `sender → from`, `calldata → data` (default `"0x"`), defaults
+ * `txType` to `Standard` (0). Forwards `accessList` so the chain-side
+ * `hash_access_list` runs over the same entries. `deadline` is
+ * deliberately not included — the chain hashes it as `None` regardless
+ * (see `compute_tx_hash` in pyde-crypto-wasm).
+ *
+ * Spec: Chapter 8.5 + Chapter 9.
+ */
+export function plaintextHashFromEncryptedParams(params: EncryptedTxParams): string {
+  const innerTx: TxFields = {
+    from: params.sender,
+    to: params.to,
+    value: params.value,
+    data: params.calldata ?? "0x",
+    gasLimit: params.gasLimit,
+    nonce: params.nonce,
+    chainId: params.chainId,
+    // Encrypted submission is wired only for Standard (transfers + generic
+    // contract calls); buildRawEncryptedTx hardcodes this on the wasm side.
+    txType: 0,
+    ...(params.accessList ? { accessList: params.accessList } : {}),
+  };
+  return hashTransaction(innerTx);
+}
+
 // ============================================================================
 // RegisterPubkey transaction (unsigned)
 // ============================================================================

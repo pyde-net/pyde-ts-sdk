@@ -18,6 +18,7 @@ import { Wallet, WalletDestroyedError } from "../src/index";
 import {
   verifySignature,
   hashTransaction,
+  plaintextHashFromEncryptedParams,
   generateKeypair,
   generateKeypairHandle,
   dropKeypair,
@@ -30,6 +31,7 @@ import {
   computeSelector,
   keypairFromSeed,
 } from "../src/crypto";
+import type { EncryptedTxParams } from "../src/crypto";
 import { TxType } from "../src/types";
 import type { TxFields } from "../src/types";
 
@@ -431,5 +433,97 @@ describe("AbstractSigner — custom signer subclassing", () => {
       txType: TxType.Standard,
     });
     expect(wire).toMatch(/^0x[0-9a-fA-F]+$/);
+  });
+});
+
+// --------------------------------------------------------------------------
+// plaintextHashFromEncryptedParams — receipt-polling key for encrypted txs.
+// Mirrors the inner-tx projection pyde-crypto-wasm's `build_inner_tx_value`
+// uses: `sender → from`, `calldata → data`, `txType` defaults to Standard.
+// --------------------------------------------------------------------------
+describe("plaintextHashFromEncryptedParams", () => {
+  const baseParams: EncryptedTxParams = {
+    thresholdPk: "0x" + "a1".repeat(64),
+    sender: "0x" + "ab".repeat(32),
+    nonce: 7n,
+    gasLimit: 100_000,
+    chainId: 31337,
+    to: "0x" + "cd".repeat(32),
+    value: "1000000000",
+    calldata: "0x",
+  };
+
+  it("returns a 32-byte hex hash matching the canonical inner-Tx shape", () => {
+    const h = plaintextHashFromEncryptedParams(baseParams);
+    expect(h).toMatch(/^0x[0-9a-fA-F]{64}$/);
+    // Same hash as if the caller had built the inner TxFields manually
+    // (sender → from, calldata → data, txType = Standard).
+    const equivalent = hashTransaction({
+      from: baseParams.sender,
+      to: baseParams.to,
+      value: baseParams.value,
+      data: "0x",
+      gasLimit: baseParams.gasLimit,
+      nonce: baseParams.nonce,
+      chainId: baseParams.chainId,
+      txType: 0,
+    });
+    expect(h).toBe(equivalent);
+  });
+
+  it("is deterministic — same params produce the same hash", () => {
+    expect(plaintextHashFromEncryptedParams(baseParams)).toBe(
+      plaintextHashFromEncryptedParams({ ...baseParams }),
+    );
+  });
+
+  it("missing calldata defaults to 0x (matches wasm build_inner_tx_value)", () => {
+    const { calldata: _drop, ...rest } = baseParams;
+    void _drop;
+    const withoutCalldata = plaintextHashFromEncryptedParams(rest);
+    const explicitEmpty = plaintextHashFromEncryptedParams({ ...baseParams, calldata: "0x" });
+    expect(withoutCalldata).toBe(explicitEmpty);
+  });
+
+  it("changing nonce changes the plaintext hash", () => {
+    const a = plaintextHashFromEncryptedParams(baseParams);
+    const b = plaintextHashFromEncryptedParams({ ...baseParams, nonce: 8n });
+    expect(a).not.toBe(b);
+  });
+
+  it("changing chainId changes the plaintext hash (replay protection)", () => {
+    const a = plaintextHashFromEncryptedParams({ ...baseParams, chainId: 31337 });
+    const b = plaintextHashFromEncryptedParams({ ...baseParams, chainId: 1 });
+    expect(a).not.toBe(b);
+  });
+
+  it("deadline is NOT part of the hash (chain hashes it as None)", () => {
+    const a = plaintextHashFromEncryptedParams(baseParams);
+    const b = plaintextHashFromEncryptedParams({ ...baseParams, deadline: 9_999 });
+    expect(a).toBe(b);
+  });
+
+  it("accessList participates in the hash", () => {
+    const a = plaintextHashFromEncryptedParams(baseParams);
+    const b = plaintextHashFromEncryptedParams({
+      ...baseParams,
+      accessList: [
+        {
+          address: baseParams.to,
+          storageKeys: ["0x" + "11".repeat(32)],
+          accessType: "read",
+        },
+      ],
+    });
+    expect(a).not.toBe(b);
+  });
+
+  it("thresholdPk does NOT change the inner hash (envelope-only field)", () => {
+    const a = plaintextHashFromEncryptedParams(baseParams);
+    const b = plaintextHashFromEncryptedParams({
+      ...baseParams,
+      thresholdPk: "0x" + "ff".repeat(64),
+    });
+    expect(a).toBe(b);
   });
 });
