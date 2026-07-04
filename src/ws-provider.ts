@@ -414,7 +414,7 @@ export class WebSocketProvider {
     if (sub.kind !== "logs") {
       throw new RpcError(
         `pyde_subscribe v1 only supports event_type="logs"; ` +
-          `${sub.kind} is on the engine roadmap (not yet wired).`,
+          `${sub.kind} is not yet wired in the engine.`,
       );
     }
     const params = this.subscribeParams(sub);

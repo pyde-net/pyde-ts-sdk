@@ -110,7 +110,7 @@ await unsubscribe();
 ws.destroy(); // tears down everything
 ```
 
-`subscribeLogs` is the only `pyde_subscribe` topic the engine wires in catalog v0.1. `subscribeNewHeads` / `subscribeAccountChanges` exist on the SDK as forward-compat surfaces but throw `RpcError("logs only in v1; <topic> is on the engine roadmap")` until the engine ships the extra topics.
+`subscribeLogs` is the only `pyde_subscribe` topic the engine wires in catalog v0.1. `subscribeNewHeads` / `subscribeAccountChanges` exist on the SDK as forward-compat surfaces but throw `RpcError("logs only in v1; <topic> is not yet wired in the engine")` until the engine ships the extra topics.
 
 Subscriptions are at-least-once with cursor-based resume after a reconnect (HOST_FN_ABI §15.5). The provider tracks each subscription's last delivered cursor and re-subscribes on reconnect with `from: lastCursor`. Listeners may see duplicates around a reconnect — dedupe by `(waveId, txIndex, eventIndex)` if you need exactly-once.
 
