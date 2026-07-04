@@ -1574,6 +1574,7 @@ function parseTupleTypes(s: string): string[] {
 
 const ATTR_VIEW_BIT = 0x01;
 const ATTR_PAYABLE_BIT = 0x02;
+const ATTR_CONSTRUCTOR_BIT = 0x10;
 
 /** Engine wire-shape type spec — either a flat string or a discriminated
  *  union (`{Custom}`, `{Vec}`, `{FixedBytes}`, `{Option}`, `{Tuple}`,
@@ -1640,17 +1641,20 @@ function normaliseAbiFunction(raw: Record<string, unknown>): AbiFunction {
     };
   });
 
-  // attrs.bits: bit 0 = view, bit 1 = payable. Older drafts use direct
-  // booleans — honour them when present.
+  // attrs.bits: bit 0 = view, bit 1 = payable, bit 4 = constructor. Older
+  // drafts use direct booleans — honour them when present.
   let view = Boolean(raw.view);
   let payable = Boolean(raw.payable);
+  let isCtor = Boolean(raw.constructor);
   const attrs = raw.attrs as { bits?: number } | undefined;
   if (typeof attrs?.bits === "number") {
     view = (attrs.bits & ATTR_VIEW_BIT) !== 0;
     payable = (attrs.bits & ATTR_PAYABLE_BIT) !== 0;
+    isCtor = (attrs.bits & ATTR_CONSTRUCTOR_BIT) !== 0;
   } else if (typeof raw.attributes === "number") {
     view = (raw.attributes & ATTR_VIEW_BIT) !== 0;
     payable = (raw.attributes & ATTR_PAYABLE_BIT) !== 0;
+    isCtor = (raw.attributes & ATTR_CONSTRUCTOR_BIT) !== 0;
   }
 
   // selector: engine emits a 4-byte array; older drafts a hex string.
@@ -1677,7 +1681,7 @@ function normaliseAbiFunction(raw: Record<string, unknown>): AbiFunction {
     returns: normaliseAbiType(raw.returns as EngineAbiType),
     view,
     payable,
-    constructor: Boolean(raw.constructor),
+    constructor: isCtor,
   };
 }
 
@@ -1777,149 +1781,115 @@ export function decodeVecAddress(hex: string): string[] {
  * ```
  */
 export class DeployData {
-  private constructor_: Uint8Array;
-  private runtime: Uint8Array;
-  private argsBuf: Uint8Array = new Uint8Array(0);
+  private name: string;
+  private wasmBytes: Uint8Array;
+  private contractTypeTag: number; // 0 = Contract, 1 = Parachain
+  private initCalldata: Uint8Array = new Uint8Array(0);
 
-  constructor(constructorHex: string, runtimeHex: string) {
-    this.constructor_ = bytesFromHex(constructorHex);
-    this.runtime = bytesFromHex(runtimeHex);
+  /** `wasm` may be raw bytes or a hex string. */
+  constructor(name: string, wasm: Uint8Array | string, opts: { parachain?: boolean } = {}) {
+    this.name = name;
+    this.wasmBytes = typeof wasm === "string" ? bytesFromHex(wasm) : wasm;
+    this.contractTypeTag = opts.parachain ? 1 : 0;
   }
 
-  /** Load from artifact JSON file (Node-only) with ABI-validated
-   *  constructor args. Pass `{}` if the constructor takes no args. */
-  static async fromArtifact(
-    artifactPath: string,
+  /** Build from the contract name + wasm bytes + ABI, ABI-encoding the
+   *  constructor args (empty when the contract has no constructor). This is
+   *  the browser-friendly path. */
+  static fromWasm(
+    name: string,
+    wasm: Uint8Array | string,
+    abiJson: string | Record<string, any>,
     args: Record<string, any> = {},
-  ): Promise<DeployData> {
-    const fs = await loadNodeFs("fromArtifact");
-    const json = fs.readFileSync(artifactPath, "utf-8");
-    return DeployData.fromJson(json, args);
-  }
-
-  /** Load from artifact JSON string with ABI-validated constructor args. */
-  static fromJson(json: string, args: Record<string, any> = {}): DeployData {
-    const artifact = JSON.parse(json);
-    const constructorHex = artifact.constructorBytecode;
-    const runtimeHex = artifact.deployedBytecode;
-    if (!constructorHex || !runtimeHex) {
-      throw new Error("Artifact missing 'constructorBytecode' or 'deployedBytecode'");
-    }
-    const deploy = new DeployData(constructorHex, runtimeHex);
-
-    // Encode constructor args from ABI
-    const abi = artifact.abi || artifact;
-    const fns = abi.functions || [];
-    const ctor = fns.find((f: any) => f.constructor === true);
-    if (ctor && ctor.params && ctor.params.length > 0) {
-      // Use a temporary Contract to leverage encodeValue
-      const tempContract = Contract.fromJson(json, "0x" + "00".repeat(32), null as any);
-      const buf: number[] = [];
-      for (const param of ctor.params) {
-        const val = args[param.name];
-        if (val === undefined) {
-          throw new Error(`constructor: missing arg '${param.name}' (${param.type})`);
-        }
-        (tempContract as any).encodeValue(buf, val, param.type, `constructor.${param.name}`);
-      }
-      deploy.argsBuf = concatBytes([deploy.argsBuf, new Uint8Array(buf)]);
-    }
-
+    opts: { parachain?: boolean } = {},
+  ): DeployData {
+    const deploy = new DeployData(name, wasm, opts);
+    deploy.initCalldata = encodeConstructorArgs(abiJson, args);
     return deploy;
   }
 
-  // GP integers (8 bytes LE)
-  argU8(val: number): this {
-    return this.argU64(val);
+  /** Load from an artifact JSON string carrying `name`, `wasm` (hex), + ABI. */
+  static fromJson(json: string, args: Record<string, any> = {}): DeployData {
+    const artifact = JSON.parse(json);
+    const name = artifact.name ?? artifact.contract;
+    const wasm = artifact.wasm ?? artifact.wasmHex;
+    if (!name || !wasm) {
+      throw new Error("Deploy artifact JSON must carry 'name' and 'wasm' (hex)");
+    }
+    return DeployData.fromWasm(name, wasm, artifact.abi ?? artifact, args, {
+      parachain: artifact.contract_type === "Parachain",
+    });
   }
-  argU16(val: number): this {
-    return this.argU64(val);
+
+  /** Load a `<name>.bundle/` directory (Node-only): reads contract.wasm +
+   *  abi.json, and takes the contract name from `name` or the dir. */
+  static async fromArtifact(bundleDir: string, args: Record<string, any> = {}): Promise<DeployData> {
+    const fs = await loadNodeFs("fromArtifact");
+    const wasmHex = bytesToHex(new Uint8Array(fs.readFileSync(`${bundleDir}/contract.wasm`) as any));
+    const abiJson = fs.readFileSync(`${bundleDir}/abi.json`, "utf-8");
+    const name = bundleDir.split("/").pop()!.replace(/\.bundle$/, "");
+    return DeployData.fromWasm(name, wasmHex, abiJson, args);
   }
-  argU32(val: number): this {
-    return this.argU64(val);
-  }
-  argU64(val: number | bigint): this {
-    const buf = new Uint8Array(8);
-    writeU64LE(buf, 0, BigInt(val));
-    this.argsBuf = concatBytes([this.argsBuf, buf]);
-    return this;
-  }
-  argI8(val: number): this {
-    return this.argI64(BigInt(val));
-  }
-  argI16(val: number): this {
-    return this.argI64(BigInt(val));
-  }
-  argI32(val: number): this {
-    return this.argI64(BigInt(val));
-  }
-  argI64(val: number | bigint): this {
-    const buf = new Uint8Array(8);
-    writeI64LE(buf, 0, BigInt(val));
-    this.argsBuf = concatBytes([this.argsBuf, buf]);
-    return this;
-  }
-  argBool(val: boolean): this {
-    return this.argU64(val ? 1 : 0);
-  }
-  // Wide integers
-  argU128(val: bigint): this {
-    const buf = new Uint8Array(16);
-    writeU64LE(buf, 0, val & 0xffffffffffffffffn);
-    writeU64LE(buf, 8, (val >> 64n) & 0xffffffffffffffffn);
-    this.argsBuf = concatBytes([this.argsBuf, buf]);
-    return this;
-  }
-  argI128(val: bigint): this {
-    const unsigned = val & ((1n << 128n) - 1n);
-    const buf = new Uint8Array(16);
-    writeU64LE(buf, 0, unsigned & 0xffffffffffffffffn);
-    writeU64LE(buf, 8, (unsigned >> 64n) & 0xffffffffffffffffn);
-    this.argsBuf = concatBytes([this.argsBuf, buf]);
-    return this;
-  }
-  argU256(val: bigint): this {
-    const buf = new Uint8Array(32);
-    for (let i = 0; i < 4; i++)
-      writeU64LE(buf, i * 8, (val >> BigInt(i * 64)) & 0xffffffffffffffffn);
-    this.argsBuf = concatBytes([this.argsBuf, buf]);
-    return this;
-  }
-  argI256(val: bigint): this {
-    const unsigned = val & ((1n << 256n) - 1n);
-    const buf = new Uint8Array(32);
-    for (let i = 0; i < 4; i++)
-      writeU64LE(buf, i * 8, (unsigned >> BigInt(i * 64)) & 0xffffffffffffffffn);
-    this.argsBuf = concatBytes([this.argsBuf, buf]);
-    return this;
-  }
-  argAddress(hex: string): this {
-    const clean = hex.startsWith("0x") ? hex.slice(2) : hex;
-    if (!/^[0-9a-fA-F]{64}$/.test(clean)) throw new Error("argAddress: expected 64 hex chars");
-    this.argsBuf = concatBytes([this.argsBuf, bytesFromHex(clean)]);
-    return this;
-  }
-  argString(val: string): this {
-    const bytes = bytesFromUtf8(val);
-    const lenBuf = new Uint8Array(8);
-    writeU64LE(lenBuf, 0, BigInt(bytes.length));
-    const padding = (8 - (bytes.length % 8)) % 8;
-    this.argsBuf = concatBytes([this.argsBuf, lenBuf, bytes, new Uint8Array(padding)]);
-    return this;
-  }
-  argBytes(data: Uint8Array): this {
-    this.argsBuf = concatBytes([this.argsBuf, data]);
+
+  /** Override the constructor calldata directly (advanced). */
+  withInitCalldata(bytes: Uint8Array): this {
+    this.initCalldata = bytes;
     return this;
   }
 
-  /** Build: [clen:4 LE][rlen:4 LE][constructor][runtime][args]. Returns hex string. */
+  /** Build `borsh(DeployData { name, wasm_bytes, contract_type, init_calldata })`
+   *  — the exact wire format `pyde_engine_types::deploy::DeployData` expects
+   *  (and `otigen deploy` sends). Returns a `0x`-hex string. */
   build(): string {
-    const header = new Uint8Array(8);
-    writeU32LE(header, 0, this.constructor_.length);
-    writeU32LE(header, 4, this.runtime.length);
-    const full = concatBytes([header, this.constructor_, this.runtime, this.argsBuf]);
+    const nameBytes = bytesFromUtf8(this.name);
+    const full = concatBytes([
+      u32LenLE(nameBytes.length),
+      nameBytes,
+      u32LenLE(this.wasmBytes.length),
+      this.wasmBytes,
+      Uint8Array.of(this.contractTypeTag),
+      u32LenLE(this.initCalldata.length),
+      this.initCalldata,
+    ]);
     return "0x" + bytesToHex(full);
   }
+}
+
+/** 4-byte little-endian length prefix (borsh Vec/String header). */
+function u32LenLE(n: number): Uint8Array {
+  const b = new Uint8Array(4);
+  writeU32LE(b, 0, n);
+  return b;
+}
+
+/** ABI-encode a contract's constructor args into `init_calldata`. Returns an
+ *  empty buffer when the contract has no constructor (or it takes no args). */
+function encodeConstructorArgs(
+  abiJson: string | Record<string, any>,
+  args: Record<string, any>,
+): Uint8Array {
+  const abiObj = typeof abiJson === "string" ? JSON.parse(abiJson) : abiJson;
+  const jsonStr = typeof abiJson === "string" ? abiJson : JSON.stringify(abiObj);
+  const abi = abiObj.abi ?? abiObj;
+  const rawFns = (abi.functions ?? []) as Record<string, unknown>[];
+  const ctor = rawFns.map(normaliseAbiFunction).find((f) => f.constructor);
+  if (!ctor || ctor.params.length === 0) return new Uint8Array(0);
+  // Reuse Contract.encodeValue for the ABI encoding (address unused for encode).
+  const temp = Contract.fromJson(jsonStr, "0x" + "00".repeat(32), null as any);
+  const buf: number[] = [];
+  for (const p of ctor.params) {
+    const val = args[p.name];
+    if (val === undefined) {
+      throw new Error(`constructor: missing arg '${p.name}' (${p.type})`);
+    }
+    (temp as unknown as { encodeValue: (b: number[], v: unknown, t: string, path: string) => void }).encodeValue(
+      buf,
+      val,
+      p.type,
+      `constructor.${p.name}`,
+    );
+  }
+  return new Uint8Array(buf);
 }
 
 // ============================================================================
@@ -1928,6 +1898,7 @@ export class DeployData {
 
 interface NodeFsModule {
   readFileSync(path: string, encoding: "utf-8"): string;
+  readFileSync(path: string): Uint8Array;
 }
 
 async function loadNodeFs(method: string): Promise<NodeFsModule> {
