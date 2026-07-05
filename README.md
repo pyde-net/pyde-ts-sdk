@@ -21,6 +21,17 @@ Pre-1.0, in active development. Track progress under the project's task list; sp
 npm install pyde-ts-sdk
 ```
 
+The SDK is **ESM-only** and ships a vendored `pyde-crypto-wasm` module (FALCON-512
++ Poseidon2/Blake3). Because it imports the `.wasm` as an ES module, consumers
+need one of:
+
+- **A wasm-aware bundler** — Vite (`vite-plugin-wasm`), webpack 5
+  (`experiments.asyncWebAssembly`), Next.js (Turbopack handles it natively), or
+  esbuild with a wasm loader. This is the browser + dapp path and needs no extra
+  work beyond enabling the flag.
+- **Node ≥ 20 with `--experimental-wasm-modules`** for plain Node ESM scripts
+  (indexers / backend services) run without a bundler.
+
 ## Quickstart
 
 ```ts
@@ -51,7 +62,7 @@ const provider = new Provider("https://rpc.pyde.network", {
 
 // Account / state queries
 await provider.getBalance(addr); // → bigint (quanta)
-await provider.getNonce(addr); // → number
+await provider.getNonce(addr); // → bigint (quanta nonce)
 await provider.getAccount(addr); // → Account record (Chapter 11 §11.1)
 await provider.getContractCode(addr); // → WASM bytes hex
 await provider.getStorageSlot(slot); // → slot value hex (or null)
@@ -59,9 +70,9 @@ await provider.resolveName("alice.pyde"); // → 32-byte address or null
 
 // Wave + finality
 await provider.getWave(); // → latest WaveHeader
-await provider.getWave(1234); // → specific wave
+await provider.getWave(1234n); // → specific wave (waveId is bigint)
 await provider.getHardFinalityCert(1234); // → threshold-signed cert
-await provider.getSnapshotManifest(1234); // → light-client manifest
+await provider.getSnapshotManifest(); // → latest light-client manifest
 
 // View calls
 await provider.call(to, data); // → return-data hex (free)
@@ -76,8 +87,8 @@ await provider.waitForReceipt(txHash, 10_000); // → Receipt (throws TimeoutErr
 
 // Historical events (HOST_FN_ABI §15.4 — cursor pagination, 5k-wave cap)
 const page = await provider.getLogs({
-  fromWave: 1000,
-  toWave: 2000,
+  fromWave: 1000n,
+  toWave: 2000n,
   topics: [[transferTopic]],
   contract: tokenAddr,
   limit: 100,

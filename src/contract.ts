@@ -1766,18 +1766,24 @@ export function decodeVecAddress(hex: string): string[] {
 // ============================================================================
 
 /**
- * Build deploy transaction data: [clen:4 LE][rlen:4 LE][constructor][runtime][args].
+ * Build a deploy transaction's `data`: `borsh(DeployData { name, wasm_bytes,
+ * contract_type, init_calldata })` — the exact wire format the Pyde engine
+ * expects (and `otigen deploy` sends). The contract address derives from the
+ * name: `Poseidon2("pyde-contract:" || name)`.
  *
  * ```ts
- * // From artifact with named constructor args (recommended)
- * const data = DeployData.fromArtifact("out/Counter.json", {
- * initial_supply: 1000,
- * name: "MyToken",
+ * // From explicit name + wasm bytes + ABI (browser-friendly). Constructor
+ * // args are ABI-encoded into init_calldata; pass {} for a no-arg constructor.
+ * const data = DeployData.fromWasm("my-token", wasmBytes, abiJson, {
+ *   initial_supply: 1000,
  * }).build();
  *
- * // From raw bytecodes with manual args
- * const data = new DeployData(constructorHex, runtimeHex)
- * .argU64(1000).build();
+ * // From a built bundle directory (Node-only): reads contract.wasm + abi.json.
+ * const data = (await DeployData.fromArtifact("artifacts/my-token.bundle", {
+ *   initial_supply: 1000,
+ * })).build();
+ *
+ * const receipt = await wallet.deploy(data);
  * ```
  */
 export class DeployData {
