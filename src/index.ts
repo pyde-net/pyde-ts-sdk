@@ -91,6 +91,9 @@ export {
   thresholdEncrypt,
   buildRawEncryptedTx,
   buildRawEncryptedTxWithHandle,
+  thresholdKeygen,
+  generateDecryptionShare,
+  combineShares,
 } from "./crypto";
 export type { Keypair, KeypairHandle, EncryptedTxParams } from "./crypto";
 export type {
