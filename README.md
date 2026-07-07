@@ -1,8 +1,8 @@
 # pyde-ts-sdk
 
-> TypeScript SDK for [Pyde](https://pyde.network) — the blockchain network.
+> TypeScript SDK for [Pyde](https://pyde.network).
 
-Post-quantum, MEV-resistant by construction, and cross-chain by certificate. This SDK gives dapps, wallets, indexers, and backend services everything they need to read state, build + sign + submit transactions (including the MEV-protected encrypted flow), subscribe to live events, and integrate browser wallets.
+This SDK gives dapps, wallets, indexers, and backend services everything they need to read state, build + sign + submit transactions (including the MEV-protected encrypted flow), subscribe to live events, and integrate browser wallets.
 
 - **HTTP + WebSocket RPC** clients with the full Chapter 17 method surface
 - **Handle-based signing** by default — FALCON-512 secret keys stay inside `pyde-crypto-wasm`'s WASM heap and never enter the JS heap
@@ -22,14 +22,15 @@ npm install pyde-ts-sdk
 ```
 
 The SDK is **ESM-only** and ships a vendored `pyde-crypto-wasm` module (FALCON-512
-+ Poseidon2/Blake3). Because it imports the `.wasm` as an ES module, consumers
-need one of:
 
-- **A wasm-aware bundler** — Vite (`vite-plugin-wasm`), webpack 5
+- Poseidon2/Blake3). Because it imports the `.wasm` as an ES module, consumers
+  need one of:
+
+* **A wasm-aware bundler** — Vite (`vite-plugin-wasm`), webpack 5
   (`experiments.asyncWebAssembly`), Next.js (Turbopack handles it natively), or
   esbuild with a wasm loader. This is the browser + dapp path and needs no extra
   work beyond enabling the flag.
-- **Node ≥ 20 with `--experimental-wasm-modules`** for plain Node ESM scripts
+* **Node ≥ 20 with `--experimental-wasm-modules`** for plain Node ESM scripts
   (indexers / backend services) run without a bundler.
 
 ## Quickstart
@@ -166,17 +167,13 @@ Keystore format matches `pyde keys generate` (Chapter 17): Argon2id KDF (default
 // adds buildRawEncryptedTxWithHandle).
 const wallet = Wallet.generateUnsafe();
 
-const { envelopeHash, plaintextHash } = await wallet.sendEncrypted(
-  contractAddr,
-  calldata,
-  {
-    provider,
-    value: 0n,
-    deadline: 999_999n, // optional wave deadline
-    // gasLimit: 1_000_000,             // omit to auto-estimate
-    // estimateAccess: true,            // OFF by default — privacy leak
-  },
-);
+const { envelopeHash, plaintextHash } = await wallet.sendEncrypted(contractAddr, calldata, {
+  provider,
+  value: 0n,
+  deadline: 999_999n, // optional wave deadline
+  // gasLimit: 1_000_000,             // omit to auto-estimate
+  // estimateAccess: true,            // OFF by default — privacy leak
+});
 // Receipts post-decryption are keyed by `plaintextHash`, not the
 // envelope hash echoed back from the encrypted-mempool admit.
 const receipt = await provider.waitForReceipt(plaintextHash);
