@@ -4,7 +4,7 @@
   "description": "TypeScript SDK for Pyde — the blockchain network. Connects dapps, wallets, indexers, and backend services to a Pyde node. Post-quantum crypto via pyde-crypto-wasm; type-safe ABI; wallet adapter pattern.",
   "type": "module",
   "license": "Apache-2.0",
-  "author": "Pyde Network",
+  "author": "zarah <zarah@pyde.network>",
   "homepage": "https://pyde.network",
   "repository": {
     "type": "git",
