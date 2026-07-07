@@ -366,6 +366,53 @@ export function buildRawEncryptedTxWithHandle(params: EncryptedTxParams, handle:
 }
 
 // ============================================================================
+// Threshold committee — decrypt side (local / testing)
+// ============================================================================
+// A production client only ENCRYPTS (above); the validator committee owns
+// decryption. These expose the committee side — keygen + partial-decrypt +
+// combine — so a single party can run the whole threshold committee locally
+// (e.g. an in-browser sandbox at n=1). Not used against real networks.
+
+/**
+ * Generate a threshold committee of `n` members with reconstruction
+ * `threshold`. Returns `{ thresholdPk, keyShares }` (all 0x-hex): clients
+ * encrypt against `thresholdPk`; each key share is a member's secret
+ * decryption material. A local sandbox uses `thresholdKeygen(1, 1)`.
+ */
+export function thresholdKeygen(n: number, threshold: number): { thresholdPk: string; keyShares: string[] } {
+  return JSON.parse(wasm.thresholdKeygen(n, threshold));
+}
+
+/**
+ * One committee member's partial decryption of a ciphertext. `ciphertextHex`
+ * is the raw `ThresholdCiphertext` wire (exactly what `thresholdEncrypt`
+ * returns); `falconSkHex` is that member's FALCON secret key (each share is
+ * signed). Returns a `DecryptionShare` hex.
+ */
+export function generateDecryptionShare(
+  keyShareHex: string,
+  ciphertextHex: string,
+  falconSkHex: string,
+): string {
+  return wasm.generateDecryptionShare(keyShareHex, ciphertextHex, falconSkHex);
+}
+
+/**
+ * Combine a threshold of decryption shares to recover the plaintext.
+ * `committeePks[i]` must be the FALCON pubkey of the member holding key-share
+ * index `i + 1` (shares are verified against it before use). Returns the
+ * recovered plaintext hex.
+ */
+export function combineShares(
+  shares: string[],
+  threshold: number,
+  ciphertextHex: string,
+  committeePks: string[],
+): string {
+  return wasm.combineShares(JSON.stringify(shares), threshold, ciphertextHex, JSON.stringify(committeePks));
+}
+
+// ============================================================================
 // Helpers
 // ============================================================================
 

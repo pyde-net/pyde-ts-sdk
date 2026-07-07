@@ -47,6 +47,16 @@ export function buildRawEncryptedTx(params_json: string, sk_hex: string): string
 export function buildRawEncryptedTxWithHandle(params_json: string, handle: number): string;
 
 /**
+ * Combine a threshold of decryption shares to recover the plaintext.
+ * `shares_json` = JSON array of hex `DecryptionShare`s; `ciphertext_hex` = the
+ * same `ThresholdCiphertext` wire bytes; `committee_pks_json` = JSON array of
+ * hex FALCON public keys, positioned so `committee_pks[i]` is the member with
+ * key-share index `i + 1` (shares are FALCON-verified against this table).
+ * Returns hex of the recovered plaintext.
+ */
+export function combineShares(shares_json: string, threshold: number, ciphertext_hex: string, committee_pks_json: string): string;
+
+/**
  * Compute FNV-1a function selector (same as Otigen codegen).
  */
 export function computeSelector(name: string): number;
@@ -74,6 +84,15 @@ export function dropKeypair(handle: number): boolean;
  * signed-tx path would be a hard-to-debug protocol violation.
  */
 export function encodeRegisterPubkeyTx(tx_json: string): string;
+
+/**
+ * One committee member's partial decryption of a ciphertext. `key_share_hex`
+ * is one entry from `thresholdKeygen`; `ciphertext_hex` is the
+ * `ThresholdCiphertext` wire bytes (exactly what `thresholdEncrypt` returns);
+ * `falcon_sk_hex` is THAT member's FALCON secret key (each share is signed).
+ * Returns hex of the `DecryptionShare` wire bytes.
+ */
+export function generateDecryptionShare(key_share_hex: string, ciphertext_hex: string, falcon_sk_hex: string): string;
 
 /**
  * Generate a FALCON-512 keypair.
@@ -172,6 +191,14 @@ export function signTransactionWithHandle(tx_json: string, handle: number): stri
  * embed in an `EncryptedTx`.
  */
 export function thresholdEncrypt(pk_hex: string, payload_hex: string): string;
+
+/**
+ * Generate a threshold committee of `n` members with reconstruction
+ * `threshold`. Returns JSON `{ "thresholdPk": "0x..", "keyShares": ["0x..", ..] }`.
+ * `thresholdPk` is what clients encrypt against; each key share is a member's
+ * secret decryption material. The sandbox calls `thresholdKeygen(1, 1)`.
+ */
+export function thresholdKeygen(n: number, threshold: number): string;
 
 /**
  * Verify a FALCON-512 signature.
