@@ -106,7 +106,13 @@ const BORSH_BUNDLE = resolve(
 );
 const BORSH_ABI = resolve(BORSH_BUNDLE, "abi.json");
 const BORSH_TOML = resolve(__dirname, "../../../otigen/examples/borsh-coverage/otigen.toml");
-const KEYSTORE_PW = "integration-test-password";
+// `otigen devnet` auto-imports the deterministic devnet-0..9 keys into
+// ~/.pyde/keystore.json encrypted under this fixed password (otigen-cli
+// DEVNET_AUTO_IMPORT_PASSWORD) on every spawn, and never re-encrypts an
+// existing entry — so deploy MUST unlock with the same value. The devnet
+// keys are deterministic + public (Blake3("pyde-devnet-v1/"||i)); this
+// password is a convenience, not a secret.
+const KEYSTORE_PW = "devnet";
 
 let devnet: DevnetHandle;
 let contractAddress: string;

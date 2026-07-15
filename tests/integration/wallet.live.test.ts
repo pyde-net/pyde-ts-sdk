@@ -25,8 +25,9 @@ afterAll(async () => {
 
 describe("Wallet — end-to-end live flow", () => {
   it("generate → fund → registerPubkey → transfer → balance check", async () => {
-    // devnet prefund is 10 PYDE per account; ask for 3 so we have
-    // headroom for the transfer + gas + post-tx balance check.
+    // Fund a fresh test wallet with 3 PYDE out of devnet-0's generous
+    // genesis prefund — enough headroom for the transfer + gas + the
+    // post-tx balance check below.
     const sender = await fundedTestWallet(devnet.provider, { amountPyde: 3 });
     // Use a per-run recipient — a fixed address (e.g. 0xaa..aa) would
     // accumulate balance across re-runs that share devnet state and
