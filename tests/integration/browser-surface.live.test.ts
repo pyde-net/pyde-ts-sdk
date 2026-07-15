@@ -69,7 +69,7 @@ import {
   type ErrorCode,
   type ContractReceipt,
   type EventLog,
-  type ThresholdPublicKey,
+  type PrivateSendHandle,
   type SimulateTransactionResult,
   type NodeInfo,
   type ValidatorInfo,
@@ -196,7 +196,7 @@ describe("Browser surface — module shape", () => {
     const _err: ErrorCode | null = null;
     const _r: ContractReceipt | null = null;
     const _ev: EventLog | null = null;
-    const _t: ThresholdPublicKey | null = null;
+    const _t: PrivateSendHandle | null = null;
     const _sim: SimulateTransactionResult | null = null;
     const _ni: NodeInfo | null = null;
     const _vi: ValidatorInfo | null = null;

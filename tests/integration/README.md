@@ -35,7 +35,7 @@ The runner is configured for serial execution (one devnet on `127.0.0.1:9933` at
 - ✅ WebSocket Provider live subscriptions
 - ✅ Wallet generate + register + native transfer
 - ⏭ Contract deploy + call — coming in a follow-up (needs the storage-stress bundle build wired into setup)
-- ⏭ Encrypted (MEV-protected) transaction submission — coming in a follow-up
+- ✅ Private (commit-reveal) transaction submission — `sendPrivate` end-to-end (phase2.live)
 - ⏭ ABI codegen output validation against the storage-stress artifact
 
 ## Wallet funding

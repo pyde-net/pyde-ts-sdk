@@ -2,6 +2,16 @@
 
 All notable changes to `pyde-ts-sdk` ship here. Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html) once we hit 1.0; pre-1.0 we ship `0.x.y-beta.N` and break liberally between minors. Each entry calls out wire-format / behavior-altering changes explicitly.
 
+## Unreleased
+
+### Breaking — MEV protection is now commit-reveal, not threshold encryption
+
+- **Removed the threshold-encryption surface.** `Wallet.sendEncrypted` / `transferEncrypted`, `Provider.sendRawEncryptedTransaction` / `getThresholdPublicKey`, the `EncryptedTxParams` / `ThresholdPublicKey` types, and the `buildRawEncryptedTx*` / `thresholdEncrypt` / `thresholdKeygen` / `generateDecryptionShare` / `combineShares` / `plaintextHashFromEncryptedParams` crypto helpers are gone. The engine physically removed the threshold lane; that RPC method no longer exists.
+- **Added commit-reveal ("private tx"), the permanent front-running protection.** `Wallet.sendPrivate(inner)` runs the whole commit → reveal → execute flow in one call and returns a `PrivateSendHandle` whose `waitForReceipt()` resolves on the inner tx's receipt. `Wallet.transferPrivate(to, amount)` for value-only sends; low-level `Wallet.buildCommit` / `buildReveal` for relays. New wire primitives in `./private-tx`: `requiredBond`, `commitmentHash` (`Blake3("pyde-commit-reveal-v1" || innerTxBytes || nonce)`), `encodeCommitPayload`, `encodeRevealPayload`, plus the `MIN_COMMIT_BOND` / `COMMIT_BOND_BPS` / `COMMIT_REVEAL_WINDOW_WAVES` constants.
+- **New tx types.** `TxType.Commit = 0x11`, `TxType.Reveal = 0x12` (with matching PascalCase RPC tag parsing). Wire-parity verified byte-for-byte against `otigen_commit_reveal_vectors_v1.json`.
+- Blake3 for the commitment comes from `@noble/hashes` (already a dependency); no new deps. The vendored `pyde-crypto-wasm`'s threshold/encrypted exports are now unused and can be dropped on its next rebuild.
+- **Guarantee framing:** commit-reveal prevents content-targeted front-running; it is not a total ordering lock against unrelated txs arriving in the reveal→execute window.
+
 ## 0.1.0 — 2026-06-24
 
 First stable release. Targets `pyde-engine` ≥ v0.2 and the vendored `pyde-crypto-wasm` shipped under `src/vendor/crypto-wasm/`.
@@ -10,7 +20,7 @@ First stable release. Targets `pyde-engine` ≥ v0.2 and the vendored `pyde-cryp
 
 - **Contract codec is borsh-canonical.** `Contract.encodeCall` produces the borsh-encoded `pyde_engine_types::CallPayload {function: String, calldata: Vec<u8>}` struct the chain's `pyde_call` and `tx.data` expect. The chain dispatches by function name, not by selector hash. Wire types: `u8/u16/u32/u64/u128/u256` are LE bytes at their natural width (1/2/4/8/16/32), `bool` is 1 byte, `String` / `Bytes` / `Vec<T>` are 4-byte LE length + payload, struct fields concatenate with no header, enums (unit variants only) are a 1-byte discriminant. Live-verified against `otigen/examples/borsh-coverage`.
 - **Tx wire format matches `borsh::from_slice::<Tx>(...)` on the chain.** Signature framing is u32-LE Vec, `FeePayer::Sender` is a single discriminant byte (no extra length prefix), `Vec<AccessEntry>` is a flat count + entries (no outer byte wrapper). `hash_access_list` empty-case hashes `Poseidon2([0,0,0,0])` to match the engine.
-- **`u64` wire fields are `bigint` end-to-end.** `Wave`, `Account.nonce`, `TxFields.nonce`, `EncryptedTxParams.nonce`, `Provider.getNonce`, `getWave`, `latestWaveId`, `Contract.queryFilter` bounds. No silent truncation above 2^53.
+- **`u64` wire fields are `bigint` end-to-end.** `Wave`, `Account.nonce`, `TxFields.nonce`, `Provider.getNonce`, `getWave`, `latestWaveId`, `Contract.queryFilter` bounds. No silent truncation above 2^53.
 - **Type-safe contracts** via `Contract<TAbi>` + `pyde-tsgen`-emitted `<Name>Abi` shape. Narrows method names, arg shapes, return types, and event arg types.
 - **HTTPS / WSS enforced at construction.** `Provider("http://…")` and `WebSocketProvider("ws://…")` throw without `allowInsecureTransport: true`. Devnet test setup opts in explicitly.
 - **`BrowserWalletAdapter` re-verifies returned signed tx** matches the requested sender (partial wallet-substitution defense).

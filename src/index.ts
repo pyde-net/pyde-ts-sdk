@@ -23,7 +23,19 @@ export {
   type PreviewOptions,
 } from "./simulate";
 export { Wallet } from "./wallet";
-export type { Keystore } from "./wallet";
+export type { Keystore, PrivateSendHandle } from "./wallet";
+export {
+  requiredBond,
+  commitmentHash,
+  encodeCommitPayload,
+  encodeRevealPayload,
+  COMMIT_REVEAL_WINDOW_WAVES,
+  MIN_COMMIT_BOND,
+  COMMIT_BOND_BPS,
+  COMMITMENT_DOMAIN_TAG,
+  type CommitPayload,
+  type RevealPayload,
+} from "./private-tx";
 export { Address } from "./address";
 export { parseUnits, formatUnits, parseQuanta, formatQuanta } from "./units";
 export {
@@ -86,16 +98,9 @@ export {
   poseidon2Hash,
   computeSelector,
   hashTransaction,
-  plaintextHashFromEncryptedParams,
   encodeRegisterPubkeyTx,
-  thresholdEncrypt,
-  buildRawEncryptedTx,
-  buildRawEncryptedTxWithHandle,
-  thresholdKeygen,
-  generateDecryptionShare,
-  combineShares,
 } from "./crypto";
-export type { Keypair, KeypairHandle, EncryptedTxParams } from "./crypto";
+export type { Keypair, KeypairHandle } from "./crypto";
 export type {
   Wave,
   Hash,
@@ -119,7 +124,6 @@ export type {
   TransactionResponse,
   FeeData,
   CallOverrides,
-  ThresholdPublicKey,
   MetricsSnapshot,
   NodeInfo,
   ValidatorInfo,

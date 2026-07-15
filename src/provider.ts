@@ -18,7 +18,7 @@
  *     safety; the SDK parses back to `number` (≤ 2^53) or `bigint`
  *     (u128 / u256) at the boundary.
  *
- * Transaction submission, encrypted-tx, and WebSocket subscriptions
+ * Transaction submission, private-tx (commit-reveal), and WebSocket subscriptions
  * live in their respective phases — this module is the read-only +
  * tx-submission HTTP surface.
  */
@@ -41,7 +41,6 @@ import type {
   CallOverrides,
   FeeData,
   RevertReason,
-  ThresholdPublicKey,
   MetricsSnapshot,
   NodeInfo,
   ValidatorInfo,
@@ -245,7 +244,7 @@ export class Provider {
     return { baseFee, gasPrice: baseFee + tip };
   }
 
-  /** Return the threshold-signed hard finality certificate for a wave.
+  /** Return the committee-signed hard finality certificate for a wave.
    *  Spec: Chapter 6 + chapter 17.4 `pyde_getHardFinalityCert`. */
   async getHardFinalityCert(waveId: number | bigint): Promise<HardFinalityCert | null> {
     // Engine expects a **bare u64 number** for this method (not hex),
@@ -339,58 +338,6 @@ export class Provider {
   async sendRawTransaction(signedTxHex: string): Promise<TransactionResponse> {
     const result = await this.call_("pyde_sendRawTransaction", [signedTxHex]);
     return this.buildTxResponse(extractTxHash(result));
-  }
-
-  /**
-   * Fetch the committee's threshold public key (wire bytes hex). Cache
-   * per session — the key only rotates with the committee, and rotation
-   * preserves the pubkey (only shares rotate). Required input to
-   * `buildRawEncryptedTx`. Spec: Chapter 8.5 + chapter 17.4.
-   */
-  async getThresholdPublicKey(): Promise<ThresholdPublicKey | null> {
-    const result = await this.call_("pyde_getThresholdPublicKey", []);
-    if (result == null) return null;
-    if (typeof result !== "object") {
-      throw new RpcError(
-        `pyde_getThresholdPublicKey returned non-object: ${JSON.stringify(result)}`,
-      );
-    }
-    const o = result as Record<string, unknown>;
-    // Engine may suffix the scheme with a parameter-set tag (e.g.
-    // "kyber-768-goldilocks" for the Goldilocks-prime accelerated
-    // build). Pass it through verbatim — `Wallet.sendEncrypted`
-    // checks `scheme.startsWith("kyber-768")` to decide whether real
-    // DKG is live.
-    return {
-      epoch: parseBigIntLoose(o.epoch, "ThresholdPublicKey.epoch"),
-      scheme: asString(o.scheme, "ThresholdPublicKey.scheme"),
-      publicKey: asString(o.public_key ?? o.publicKey, "ThresholdPublicKey.publicKey"),
-    };
-  }
-
-  /**
-   * Submit a client-built, client-signed encrypted-tx envelope (wire-hex
-   * from `buildRawEncryptedTx`). Plaintext never leaves the client; the
-   * envelope is FALCON-signed over an `EncryptedTx::hash` that binds to
-   * the ciphertext + cleartext (sender, nonce, gas, chain).
-   *
-   * **Important — two distinct hashes:**
-   * - The RPC result is the **envelope hash**
-   *   (`Blake3(version || ciphertext_len_le || ciphertext)`). Use it to
-   *   confirm local admit / track gossip publication.
-   * - Receipts after wave-commit are keyed by the **plaintext tx hash**
-   *   the chain reconstructs post-decryption — NOT the envelope hash.
-   *
-   * The returned `TransactionResponse.wait()` will time out polling the
-   * envelope hash. Callers wanting the receipt should hash the inner
-   * Tx client-side (via `crypto.hashTransaction` against the reconstructed
-   * plaintext shape) and poll `getTransactionReceipt` against that.
-   *
-   * Spec: Engine RPC catalog v0.1 §8 · `pyde_sendRawEncryptedTransaction`.
-   */
-  async sendRawEncryptedTransaction(encTxHex: string): Promise<TransactionResponse> {
-    const result = await this.call_("pyde_sendRawEncryptedTransaction", [encTxHex]);
-    return this.buildTxResponse(asString(result, "pyde_sendRawEncryptedTransaction"));
   }
 
   // ========================================================================
@@ -872,6 +819,8 @@ function parseTxTypeWire(value: unknown): number {
       emergencypause: 11,
       emergencyresume: 12,
       registerpubkey: 13,
+      commit: 0x11,
+      reveal: 0x12,
     };
     const key = value.toLowerCase().replace(/[_-]/g, "");
     const n = map[key];
@@ -919,7 +868,7 @@ function isReceiptNotFound(e: unknown): boolean {
 }
 
 function extractTxHash(result: unknown): string {
-  // Some nodes wrap the hash in a `{txHash: "0x..."}` envelope; tolerate both.
+  // Some nodes wrap the hash in a `{txHash: "0x..."}` object; tolerate both.
   if (typeof result === "string") return result;
   if (result && typeof result === "object" && "txHash" in result) {
     return asString((result as { txHash: unknown }).txHash, "sendRawTransaction");
@@ -1245,7 +1194,7 @@ function fromWireLog(w: unknown): Log {
 
 function fromWireTransactionInfo(w: unknown, queriedHash?: string): TransactionInfo {
   const o = w as Record<string, unknown>;
-  // Engine catalog §22 returns the raw archival Tx envelope:
+  // Engine catalog §22 returns the raw archival Tx record:
   //   - No `hash` field (caller already knew it — that's how they
   //     queried). Fall back to `queriedHash`.
   //   - `sender` not `from` (per pyde_engine_types::Tx).

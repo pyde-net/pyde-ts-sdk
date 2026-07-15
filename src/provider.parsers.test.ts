@@ -2,8 +2,7 @@
  * Provider wire-shape parser tests. Cover the tolerances the SDK
  * added during the Phase 2 engine sweep:
  *   - byte-array vs hex-string address fields (catalog §22 archival)
- *   - PascalCase TxType enums (`"Standard"` / `"Deploy"` / ...)
- *   - ThresholdPublicKey scheme passthrough (kyber-768-goldilocks etc.)
+ *   - PascalCase TxType enums (`"Standard"` / `"Deploy"` / `"Commit"` / ...)
  *   - getTransaction's missing-`hash` fallback to the queried hash
  *
  * Mocks `fetch` rather than hitting a devnet — exercises the parsers
@@ -373,50 +372,6 @@ describe("callFunction — borsh-encoded CallPayload (regression)", () => {
     //   = 0x01000000 78 04000000 deadbeef
     await provider.callFunction("0x" + "ab".repeat(32), "x", "0xdeadbeef");
     expect(capturedData).toBe("0x010000007804000000deadbeef");
-  });
-});
-
-describe("getThresholdPublicKey — scheme passthrough (no coercion)", () => {
-  it("passes 'kyber-768-goldilocks' through verbatim", async () => {
-    mockFetch({
-      epoch: "0x0",
-      scheme: "kyber-768-goldilocks",
-      public_key: "0x010000",
-    });
-    const provider = new Provider("https://rpc.example.com");
-    const k = await provider.getThresholdPublicKey();
-    expect(k).not.toBeNull();
-    expect(k!.scheme).toBe("kyber-768-goldilocks");
-    expect(k!.epoch).toBe(0n);
-    expect(k!.publicKey).toBe("0x010000");
-  });
-
-  it("passes 'kyber-768' through verbatim", async () => {
-    mockFetch({ epoch: "0x1", scheme: "kyber-768", public_key: "0x00" });
-    const provider = new Provider("https://rpc.example.com");
-    const k = await provider.getThresholdPublicKey();
-    expect(k!.scheme).toBe("kyber-768");
-    expect(k!.epoch).toBe(1n);
-  });
-
-  it("passes 'mock' through verbatim", async () => {
-    mockFetch({ epoch: "0x0", scheme: "mock", public_key: "0x00" });
-    const provider = new Provider("https://rpc.example.com");
-    const k = await provider.getThresholdPublicKey();
-    expect(k!.scheme).toBe("mock");
-  });
-
-  it("returns null when the chain reports no DKG yet", async () => {
-    mockFetch(null);
-    const provider = new Provider("https://rpc.example.com");
-    expect(await provider.getThresholdPublicKey()).toBeNull();
-  });
-
-  it("accepts `publicKey` alias if the chain ships camelCase", async () => {
-    mockFetch({ epoch: "0x0", scheme: "kyber-768", publicKey: "0xabcd" });
-    const provider = new Provider("https://rpc.example.com");
-    const k = await provider.getThresholdPublicKey();
-    expect(k!.publicKey).toBe("0xabcd");
   });
 });
 

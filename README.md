@@ -2,11 +2,11 @@
 
 > TypeScript SDK for [Pyde](https://pyde.network).
 
-This SDK gives dapps, wallets, indexers, and backend services everything they need to read state, build + sign + submit transactions (including the MEV-protected encrypted flow), subscribe to live events, and integrate browser wallets.
+This SDK gives dapps, wallets, indexers, and backend services everything they need to read state, build + sign + submit transactions (including private, front-running-resistant sends), subscribe to live events, and integrate browser wallets.
 
 - **HTTP + WebSocket RPC** clients with the full Chapter 17 method surface
 - **Handle-based signing** by default — FALCON-512 secret keys stay inside `pyde-crypto-wasm`'s WASM heap and never enter the JS heap
-- **Encrypted-mempool submission** for MEV-resistant txs (`Wallet.sendEncrypted`)
+- **Private submission** via commit-reveal for front-running-resistant txs (`Wallet.sendPrivate`)
 - **Type-safe contracts** via the `pyde-tsgen` codegen CLI
 - **Wallet adapter** pattern (`InMemoryWalletAdapter` + `BrowserWalletAdapter`) for dapp ↔ wallet wiring
 - **Isomorphic** (browser + Node) where possible; Node-only paths are clearly flagged
@@ -72,7 +72,7 @@ await provider.resolveName("alice.pyde"); // → 32-byte address or null
 // Wave + finality
 await provider.getWave(); // → latest WaveHeader
 await provider.getWave(1234n); // → specific wave (waveId is bigint)
-await provider.getHardFinalityCert(1234); // → threshold-signed cert
+await provider.getHardFinalityCert(1234); // → committee-signed cert
 await provider.getSnapshotManifest(); // → latest light-client manifest
 
 // View calls
@@ -160,24 +160,36 @@ wallet.destroy();
 
 Keystore format matches `pyde keys generate` (Chapter 17): Argon2id KDF (default m=64MiB, t=3, p=4) + ChaCha20-Poly1305 AEAD. Defaults are tuned for ~250ms on a modern laptop.
 
-## Encrypted (MEV-protected) submission
+## Private (front-running-resistant) submission
+
+Pyde's MEV protection is **commit-reveal**: the tx's ordering position is locked
+before its contents are visible — no committee, no shared secret, nothing to
+trust. `sendPrivate` runs the whole commit → reveal → execute dance in one call
+and returns a handle whose `waitForReceipt()` resolves on the **inner** tx (the
+real outcome). Works with both handle and hex-SK wallets.
 
 ```ts
-// Hex-SK wallet (handle wallets unsupported until pyde-crypto-wasm
-// adds buildRawEncryptedTxWithHandle).
-const wallet = Wallet.generateUnsafe();
+const wallet = Wallet.generate().connect(provider);
 
-const { envelopeHash, plaintextHash } = await wallet.sendEncrypted(contractAddr, calldata, {
-  provider,
+const handle = await wallet.sendPrivate({
+  to: contractAddr,
+  data: calldata,      // "0x" for a value-only transfer
   value: 0n,
-  deadline: 999_999n, // optional wave deadline
-  // gasLimit: 1_000_000,             // omit to auto-estimate
-  // estimateAccess: true,            // OFF by default — privacy leak
+  // gasLimit: 1_000_000,         // defaults by data shape
+  // valueCeiling: 5_000_000n,    // over-declare to hide the exact amount; drives the bond
 });
-// Receipts post-decryption are keyed by `plaintextHash`, not the
-// envelope hash echoed back from the encrypted-mempool admit.
-const receipt = await provider.waitForReceipt(plaintextHash);
+
+// The commit posted a refundable bond and reserved the ordering slot; the
+// reveal opened it; the inner tx executes in the reveal wave, in commit order.
+handle.commitHash; // reserved the slot
+handle.revealHash; // opened it (bond refunded on accept)
+const receipt = await handle.waitForReceipt(); // the inner tx's receipt — the real result
 ```
+
+Honest scope: this prevents content-targeted front-running; it is not a total
+ordering lock against unrelated txs that arrive in the reveal→execute window.
+For value-only sends there's `wallet.transferPrivate(to, amount)`; for relays,
+low-level `buildCommit` / `buildReveal` (reveal-on-behalf is allowed).
 
 The (to, value, calldata) tuple is threshold-encrypted against the committee pubkey before submission. No validator or RPC operator can read the call before the wave commits. Spec: Chapter 8.5 + Chapter 9.
 
@@ -284,9 +296,12 @@ import {
   poseidon2Hash,
   verifySignature,
   computeSelector,
-  buildRawEncryptedTx,
-  thresholdEncrypt, // MEV-protected flow
   encodeRegisterPubkeyTx,
+  // commit-reveal (private tx) primitives:
+  requiredBond,
+  commitmentHash,
+  encodeCommitPayload,
+  encodeRevealPayload,
 } from "pyde-ts-sdk";
 ```
 
@@ -306,9 +321,9 @@ Every public type and method carries a TSDoc reference to the spec section it im
 | Log + EventCursor + LogFilter | HOST_FN_ABI §15.2 + §15.4           |
 | Subscription mechanics        | HOST_FN_ABI §15.5                   |
 | Keystore format               | Chapter 17 (`pyde keys generate`)   |
-| Cryptographic primitives      | Chapter 8.2 / 8.3 / 8.4 / 8.5       |
+| Cryptographic primitives      | Chapter 8.2 / 8.4                   |
 | ABI codec + selector          | SDK_AUTHOR_GUIDE + HOST_FN_ABI §3.7 |
-| MEV-protected submission      | Chapter 8.5 + Chapter 9             |
+| Private submission (commit-reveal) | Chapter 9                      |
 
 The full book lives at [book.pyde.network](https://book.pyde.network).
 
@@ -316,7 +331,7 @@ The full book lives at [book.pyde.network](https://book.pyde.network).
 
 The pre-pivot SDK targeted a different consensus + execution layer. Most APIs survive in shape; specific changes:
 
-- The SDK speaks the engine RPC catalog v0.1 verbatim: `pyde_chainId`, `pyde_waveId`, `pyde_getBalance`, `pyde_getTransactionCount`, `pyde_getAccount`, `pyde_getContractCode`, `pyde_getStorageSlot`, `pyde_resolveName`, `pyde_call`, `pyde_sendRawTransaction`, `pyde_getTransactionReceipt`, `pyde_getTx`, `pyde_getWave`, `pyde_getHardFinalityCert`, `pyde_getSnapshotManifest`, `pyde_getLogs`, `pyde_subscribe` / `pyde_unsubscribe` (logs only in v1). Gas / access-list estimation, encrypted-mempool submission, validator / node / metrics endpoints, and archival `pyde_getReceipt` / full `pyde_getSnapshot` ride a Tier-2 follow-up.
+- The SDK speaks the engine RPC catalog v0.1 verbatim: `pyde_chainId`, `pyde_waveId`, `pyde_getBalance`, `pyde_getTransactionCount`, `pyde_getAccount`, `pyde_getContractCode`, `pyde_getStorageSlot`, `pyde_resolveName`, `pyde_call`, `pyde_sendRawTransaction`, `pyde_getTransactionReceipt`, `pyde_getTx`, `pyde_getWave`, `pyde_getHardFinalityCert`, `pyde_getSnapshotManifest`, `pyde_getLogs`, `pyde_subscribe` / `pyde_unsubscribe` (logs only in v1). Gas / access-list estimation, validator / node / metrics endpoints, and archival `pyde_getReceipt` / full `pyde_getSnapshot` ride a Tier-2 follow-up.
 - **`BlockHeader` → `WaveHeader`** (`slot` → `waveId`, adds `anchor`). Wave, not block.
 - **`Log` carries `(waveId, txIndex, eventIndex)`** cursor coords for at-least-once delivery.
 - **`LogFilter.fromBlock / toBlock` → `fromWave / toWave`**, plus `cursor` and `limit` for HOST_FN_ABI §15.4 cursor pagination.

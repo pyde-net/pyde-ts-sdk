@@ -1,7 +1,6 @@
 /**
- * Phase 2 live sweep — items previously blocked on the otigen update
- * (Kyber-768 threshold-decryption + `AuthKeys::RegisterPubkey` admit
- * path). Mirrors the checklist's Phase 2 section under
+ * Phase 2 live sweep — end-to-end tx paths against a live devnet. Mirrors
+ * the checklist's Phase 2 section under
  * `/tmp/pyde-ts-sdk-LIVE_TEST_CHECKLIST.md`.
  *
  * Strategy: build a wallet from the devnet-0 deterministic seed (10
@@ -10,10 +9,10 @@
  *   - Tx lookup by committed hash
  *   - waitForReceipt with explicit timeout
  *   - getHardFinalityCert (now exposed; expect null on single-validator devnet)
- *   - getThresholdPublicKey happy path + kyber-768 scheme assertion
+ *   - Private submission end-to-end (commit-reveal via sendPrivate)
  *
  * Excluded from this file — covered separately:
- *   - Contract write / encrypted-tx E2E / event emit reads
+ *   - Contract write / event emit reads
  */
 
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
@@ -60,24 +59,6 @@ afterAll(async () => {
 // §1 — Engine-drift items now lit up
 // --------------------------------------------------------------------------
 describe("Phase 2 — engine drift now resolved", () => {
-  it("F.5.1 getThresholdPublicKey returns a populated record", async () => {
-    const k = await devnet.provider.getThresholdPublicKey();
-    expect(k).not.toBeNull();
-    expect(typeof k!.epoch).toBe("bigint");
-    expect(k!.publicKey).toMatch(/^0x[0-9a-fA-F]+$/);
-    expect(k!.scheme.length).toBeGreaterThan(0);
-  });
-
-  it("F.5.2 threshold pubkey scheme starts with 'kyber-768' (real DKG live, not mock)", async () => {
-    const k = await devnet.provider.getThresholdPublicKey();
-    expect(k).not.toBeNull();
-    // Engine returns either "kyber-768" or a parameter-set tagged
-    // variant like "kyber-768-goldilocks". SDK treats anything in
-    // that family as live DKG; "mock" means encrypted submissions
-    // sit unprocessed.
-    expect(k!.scheme.startsWith("kyber-768")).toBe(true);
-  });
-
   it("F.4.4 getHardFinalityCert returns null on single-validator devnet", async () => {
     // Single-validator devnet can't produce ≥85 sigs (QUORUM), so
     // every wave stays sub-quorum. Verifies the SDK round-trips the
@@ -254,32 +235,33 @@ describe("Phase 2 — validator queries (F.6.3 / F.6.4)", () => {
 });
 
 // --------------------------------------------------------------------------
-// §6 — Encrypted-mempool E2E (C.2 / F.3.2 / F.5.3)
+// §6 — Private submission E2E (commit-reveal)
 // --------------------------------------------------------------------------
-// Blocked on a cross-repo gap: the vendored pyde-crypto-wasm still builds
-// the old envelope shape, but the engine's new `kyber-768-goldilocks`
-// variant expects a different ciphertext length. Chain rejects with
-// `encrypted-tx envelope borsh decode: Unexpected length of input` on
-// every submit. The SDK round-trips the build + submit + error cleanly
-// — the gap is purely in the wasm's KEM output. When pyde-crypto-wasm
-// ships the Goldilocks-matching encapsulation, drop the .skip + the
-// envelope assertion lights up.
-describe("Phase 2 — encrypted transfer E2E", () => {
-  it("transferEncrypted returns {envelopeHash} against the live kyber-768 pubkey", async () => {
-    const kp = keypairFromSeed(seedHex(devnetSeed(0)));
-    const w = Wallet.fromKeys(kp.publicKey, kp.secretKey);
-    w.connect(devnet.provider);
-    const threshold = await devnet.provider.getThresholdPublicKey();
-    expect(threshold).not.toBeNull();
-    expect(threshold!.scheme.startsWith("kyber-768")).toBe(true);
-    const { envelopeHash, plaintextHash } = await w.transferEncrypted(
-      "0x" + "ce".repeat(32),
-      100_000n,
-    );
-    expect(envelopeHash).toMatch(/^0x[0-9a-fA-F]{64}$/);
-    expect(plaintextHash).toMatch(/^0x[0-9a-fA-F]{64}$/);
-    // Envelope and plaintext are distinct domains (Blake3 of ciphertext
-    // vs Poseidon2 of the inner Tx), so the two hashes must differ.
-    expect(plaintextHash).not.toBe(envelopeHash);
-  }, 30_000);
+// The one-call flow: sendPrivate signs the inner tx once, commits its salted
+// Blake3 hash (posting the bond), awaits inclusion, reveals, and the inner tx
+// executes in the reveal wave's resolution pass — keyed by the inner hash.
+describe("Phase 2 — private transfer E2E (commit-reveal)", () => {
+  it("sendPrivate runs commit → reveal → inner and the inner tx executes", async () => {
+    const recipient = "0x" + "ce".repeat(32);
+    const before = await devnet.provider.getBalance(recipient);
+
+    const handle = await dev0.sendPrivate({ to: recipient, value: 100_000n, gasLimit: 100_000 });
+
+    // Three distinct txs: commit, reveal, inner.
+    expect(handle.commitHash).toMatch(/^0x[0-9a-fA-F]{64}$/);
+    expect(handle.revealHash).toMatch(/^0x[0-9a-fA-F]{64}$/);
+    expect(handle.innerHash).toMatch(/^0x[0-9a-fA-F]{64}$/);
+    expect(new Set([handle.commitHash, handle.revealHash, handle.innerHash]).size).toBe(3);
+    // The commit reserved the slot (posting the 1-PYDE flat bond).
+    expect(handle.commitReceipt.success).toBe(true);
+
+    // The real outcome — the inner tx — executes after the reveal, keyed by
+    // the inner tx hash.
+    const innerReceipt = await handle.waitForReceipt(30_000);
+    expect(innerReceipt.success).toBe(true);
+    expect(innerReceipt.txHash).toBe(handle.innerHash);
+
+    const after = await devnet.provider.getBalance(recipient);
+    expect(after).toBeGreaterThanOrEqual(before + 100_000n);
+  }, 60_000);
 });

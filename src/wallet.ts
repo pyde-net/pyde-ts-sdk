@@ -32,6 +32,32 @@ import * as crypto from "./crypto";
 import type { AccessEntry, Receipt, TxFields } from "./types";
 import { TxType } from "./types";
 import { SigningError, WalletDestroyedError } from "./errors";
+import {
+  requiredBond,
+  commitmentHash,
+  encodeCommitPayload,
+  encodeRevealPayload,
+} from "./private-tx";
+
+/**
+ * Handle returned by `Wallet.sendPrivate` — the commit-reveal ("private tx")
+ * one-call flow. The commit and reveal are plumbing; the outcome the caller
+ * cares about is the INNER tx receipt, which `waitForReceipt` resolves.
+ */
+export interface PrivateSendHandle {
+  /** Hash of the Commit tx (reserved the ordering slot, posted the bond). */
+  commitHash: string;
+  /** Hash of the Reveal tx (opened the commitment; bond refunded on accept). */
+  revealHash: string;
+  /** Hash of the hidden inner tx — the receipt key for the REAL outcome. */
+  innerHash: string;
+  /** The Commit tx's own receipt (already resolved — commit was awaited). */
+  commitReceipt: Receipt;
+  /** Resolves on the INNER tx's receipt (what actually happened). It executes
+   *  in the reveal wave's resolution pass, in commit order — so allow a few
+   *  waves. Throws `TimeoutError` if not seen by `timeoutMs`. */
+  waitForReceipt(timeoutMs?: number): Promise<Receipt>;
+}
 
 // ============================================================================
 // Keystore format (matches `pyde keys generate`, per Chapter 17)
@@ -426,137 +452,198 @@ export class Wallet extends AbstractSigner {
   }
 
   // ==========================================================================
-  // MEV-protected (encrypted) submission — Chapter 8.5 + Chapter 9
+  // Private submission — commit-reveal (front-running protection)
   // ==========================================================================
 
   /**
-   * Build, encrypt, sign, and submit a transaction through the
-   * MEV-protected encrypted mempool. The recipient + value + calldata
-   * are threshold-encrypted with the committee pubkey so no validator
-   * or RPC operator can read them before the order is locked at wave
-   * commit time.
+   * Send a transaction privately via commit-reveal — the one-call flow.
    *
-   * Spec: Chapter 8.5 + Chapter 9.
+   * The tx's ordering position is locked BEFORE its contents are visible:
+   * the wallet publishes a salted Blake3 commitment (a `Commit`, which
+   * reserves the slot and posts a refundable bond), waits for it to be
+   * included, then opens it with a `Reveal` that discloses the hidden inner
+   * tx. There is no secret key anywhere — no committee, no shared secret.
+   * This one call runs the whole dance so it feels like a single send; it
+   * auto-reveals the moment the commit is included (~1-2 s), rather than
+   * crawling toward the 120-wave deadline (a censorship cushion).
    *
-   * Handle-backed (Wallet.generate()) and hex-SK (Wallet.generateUnsafe(),
-   * Wallet.fromEncrypted()) wallets both work — the implementation
-   * dispatches on the internal key material and uses either
-   * `buildRawEncryptedTxWithHandle` (handle) or `buildRawEncryptedTx`
-   * (hex). Either way, the SK that signs the EncryptedTx::hash is the
-   * same FALCON-512 key bound to `this.address`.
+   * Guarantee (be honest about scope): content-targeted front-running is
+   * prevented; this is NOT a total ordering lock against unrelated txs that
+   * arrive in the reveal→execute window.
    *
-   * Privacy note: `opts.estimateAccess` defaults to **false**.
-   * `estimateAccess` calls the RPC with the plaintext (to, data,
-   * value) — a curious node could see the call before it ever gets
-   * encrypted. Set to true only against a trusted RPC, or pass a
-   * pre-computed `opts.accessList` from a local simulator (Phase 14).
-   * The chain still parallelises without an access list; the cost is
-   * conservative serialisation, not correctness.
-   *
-   * Returns BOTH the **envelope hash** the engine echoed back from
-   * `pyde_sendRawEncryptedTransaction` AND the **plaintext** tx hash
-   * the chain reconstructs after threshold-decryption. Per engine RPC
-   * catalog v0.1 §8, receipts post-commit are keyed by the plaintext
-   * hash, so callers polling for the encrypted tx's receipt should
-   * pass `plaintextHash` to `provider.waitForReceipt(...)` — the
-   * envelope hash will time out. `plaintextHash` is computed locally
-   * from the same `(sender, to, value, calldata, gasLimit, nonce,
-   * chainId, accessList)` projection the wasm side feeds into
-   * `compute_tx_hash`; no extra round-trip to the node.
+   * The returned handle's `waitForReceipt()` resolves on the INNER tx's
+   * receipt — the real outcome. It executes in the reveal wave's resolution
+   * pass, in commit order, keyed by the inner tx hash.
    */
-  async sendEncrypted(
-    to: string,
-    data: string,
-    opts?: {
-      gasLimit?: number;
-      value?: bigint | number | string;
-      deadline?: number;
-      accessList?: AccessEntry[];
-      estimateAccess?: boolean;
-      provider?: Provider;
-    },
-  ): Promise<{ envelopeHash: string; plaintextHash: string }> {
-    const p = this.resolveProvider(opts?.provider);
-    const [threshold, [nonce, chainId]] = await Promise.all([
-      p.getThresholdPublicKey(),
-      p.getNonceAndChainId(this.address),
-    ]);
-    if (threshold === null) {
-      throw new SigningError(
-        "pyde_getThresholdPublicKey returned null — chain has no DKG state yet. " +
-          "Fall back to plaintext `transfer` / `sendCall` until the chain bootstraps.",
-      );
-    }
-    // Accept any Kyber-768 variant — engine reports the parameter set
-    // as e.g. "kyber-768" or "kyber-768-goldilocks" (Goldilocks-prime
-    // accelerated). Warn only on the legacy "mock" fallback which
-    // means no real DKG has run yet.
-    if (!threshold.scheme.startsWith("kyber-768")) {
-      // v1 boot ships a deterministic mock pubkey for path coverage. The
-      // chain admits the envelope but doesn't run decryption (no real
-      // DKG to combine shares), so the encrypted tx will sit forever.
-      // Per catalog §20 guidance: treat as "encrypted path not yet
-      // ready", surface the gap to the caller.
-      // eslint-disable-next-line no-console
-      console.warn(
-        `[pyde-ts-sdk] threshold-pubkey scheme is "${threshold.scheme}" (not a kyber-768 variant); ` +
-          "encrypted tx will be admitted but not decrypted until real Kyber-768 DKG lands. " +
-          "For real MEV protection, fall back to plaintext send.",
-      );
-    }
-    const thresholdPk = threshold.publicKey;
-
-    const accessList = opts?.accessList;
-    // `opts.estimateAccess` is reserved for the Tier-2 catalog pass —
-    // engine has no dedicated `pyde_estimateAccess` today. Until then
-    // callers either supply `opts.accessList` themselves or skip it;
-    // setting `estimateAccess: true` is a no-op (was previously a
-    // privacy-leak path against the encrypted mempool, see chapter 9).
-    void opts?.estimateAccess;
-
-    const params: import("./crypto").EncryptedTxParams = {
-      thresholdPk,
-      sender: this.address,
-      nonce,
-      gasLimit: opts?.gasLimit ?? 100_000_000,
-      chainId,
-      to,
-      value: (opts?.value ?? 0).toString(),
-      calldata: data,
-      ...(accessList ? { accessList } : {}),
-      ...(opts?.deadline !== undefined ? { deadline: opts.deadline } : {}),
-    };
-
+  async sendPrivate(inner: {
+    to: string;
+    /** Calldata hex; `"0x"` for a value-only transfer. */
+    data?: string;
+    /** Value in quanta. */
+    value?: bigint | number | string;
+    gasLimit?: number;
+    /** Declared upper bound on the hidden tx's value — drives the bond and
+     *  lets you hide the exact amount by over-declaring. Must be
+     *  `>= value`. Defaults to the inner tx's `value`. */
+    valueCeiling?: bigint | number | string;
+    accessList?: AccessEntry[];
+    provider?: Provider;
+    /** Timeout (ms) applied to both the commit-inclusion wait and the
+     *  inner-tx receipt wait. */
+    timeoutMs?: number;
+  }): Promise<PrivateSendHandle> {
     if ("destroyed" in this.key) throw new WalletDestroyedError();
-    const wire =
-      "handle" in this.key
-        ? crypto.buildRawEncryptedTxWithHandle(params, this.key.handle)
-        : crypto.buildRawEncryptedTx(params, this.key.hex);
-    // Derive plaintextHash from the same params we hand to
-    // buildRawEncryptedTx. It's deterministic, so callers can
-    // poll waitForReceipt(plaintextHash) without a separate round
-    // trip — receipts file under the chain's post-decryption
-    // Poseidon2 tx hash, not the wire envelope's Blake3.
-    const plaintextHash = crypto.plaintextHashFromEncryptedParams(params);
-    const tx = await p.sendRawEncryptedTransaction(wire);
-    return { envelopeHash: tx.hash, plaintextHash };
+    const p = this.resolveProvider(inner.provider);
+    const value = BigInt(inner.value ?? 0);
+    const data = inner.data ?? "0x";
+    const gasLimit = inner.gasLimit ?? (data === "0x" ? 100_000 : 5_000_000);
+    const valueCeiling = BigInt(inner.valueCeiling ?? value);
+    if (valueCeiling < value) {
+      throw new SigningError(
+        `valueCeiling (${valueCeiling}) must be >= inner tx value (${value}); the engine rejects the reveal otherwise`,
+      );
+    }
+
+    // One nonce fetch, incremented locally — `getNonce` lags in-flight txs,
+    // so refetching between commit and reveal would return stale values.
+    // Execution order is commit → reveal → inner, so assign nonces in that
+    // order to stay monotonic within the account's 16-slot nonce window.
+    const [base, chainId] = await p.getNonceAndChainId(this.address);
+    const commitNonce = base;
+    const revealNonce = base + 1n;
+    const innerNonce = base + 2n;
+
+    // Build + sign the inner tx ONCE and reuse its exact bytes for both the
+    // commitment hash and the reveal payload. Re-signing would change the
+    // (non-deterministic) FALCON signature and break the commitment.
+    const innerTx: TxFields = {
+      from: this.address,
+      to: inner.to,
+      value: value.toString(),
+      data,
+      gasLimit,
+      nonce: innerNonce,
+      chainId,
+      txType: TxType.Standard,
+      ...(inner.accessList ? { accessList: inner.accessList } : {}),
+    };
+    const innerWire = this.signTransaction(innerTx);
+    const innerHash = crypto.hashTransaction(innerTx);
+    const innerBytes = hexToBytes(innerWire);
+
+    // commitment = Blake3(domain_tag || innerBytes || salt).
+    const salt = randomBytes(32);
+    const commitment = commitmentHash(innerBytes, salt);
+
+    // Commit: reserve the ordering slot, post the bond, await inclusion.
+    const bond = requiredBond(valueCeiling);
+    const commitTx: TxFields = {
+      from: this.address,
+      to: ZERO_ADDR,
+      value: bond.toString(),
+      data: "0x" + bytesToHex(encodeCommitPayload({ commitment, valueCeiling })),
+      gasLimit: 200_000,
+      nonce: commitNonce,
+      chainId,
+      txType: TxType.Commit,
+    };
+    const commitReceipt = await p.sendAndWait(this.signTransaction(commitTx), inner.timeoutMs);
+
+    // Reveal: open the commitment by disclosing (salt, innerTx). Submitting
+    // only after the commit is included guarantees the reveal lands in a
+    // later wave (commit_wave < reveal_wave), as the engine requires.
+    const revealTx: TxFields = {
+      from: this.address,
+      to: ZERO_ADDR,
+      value: "0",
+      data: "0x" + bytesToHex(encodeRevealPayload({ commitment, nonce: salt, innerTx: innerBytes })),
+      gasLimit: 5_000_000,
+      nonce: revealNonce,
+      chainId,
+      txType: TxType.Reveal,
+    };
+    const revealResp = await p.sendRawTransaction(this.signTransaction(revealTx));
+
+    return {
+      commitHash: commitReceipt.txHash,
+      revealHash: revealResp.hash,
+      innerHash,
+      commitReceipt,
+      waitForReceipt: (timeoutMs = inner.timeoutMs ?? 30_000) => p.waitForReceipt(innerHash, timeoutMs),
+    };
   }
 
-  /** Encrypted variant of `transfer` — value-only send through the
-   *  MEV-protected mempool. Same hex-SK constraint as `sendEncrypted`,
-   *  same return shape (`envelopeHash` + `plaintextHash`; see
-   *  `sendEncrypted` JSDoc). */
-  async transferEncrypted(
+  /** Private value transfer — `transfer` through commit-reveal. Convenience
+   *  wrapper over `sendPrivate` with `data = "0x"`; see `PrivateSendHandle`. */
+  async transferPrivate(
     to: string,
     amount: bigint | number,
-    opts?: { deadline?: number; provider?: Provider },
-  ): Promise<{ envelopeHash: string; plaintextHash: string }> {
-    return this.sendEncrypted(to, "0x", {
+    opts?: { valueCeiling?: bigint; provider?: Provider; timeoutMs?: number },
+  ): Promise<PrivateSendHandle> {
+    return this.sendPrivate({
+      to,
       value: amount,
-      gasLimit: 21_000,
-      ...(opts?.deadline !== undefined ? { deadline: opts.deadline } : {}),
+      data: "0x",
+      gasLimit: 100_000,
+      ...(opts?.valueCeiling !== undefined ? { valueCeiling: opts.valueCeiling } : {}),
       ...(opts?.provider ? { provider: opts.provider } : {}),
+      ...(opts?.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
     });
+  }
+
+  /**
+   * Low-level: build + sign a `Commit` tx. Returns the signed wire, its tx
+   * hash, and the bond posted. Most callers want `sendPrivate` — this exists
+   * for relays / advanced flows that manage the commit and reveal separately.
+   */
+  async buildCommit(
+    args: { commitment: Uint8Array; valueCeiling: bigint },
+    opts?: { gasLimit?: number; provider?: Provider },
+  ): Promise<{ wire: string; hash: string; bond: bigint }> {
+    if ("destroyed" in this.key) throw new WalletDestroyedError();
+    const p = this.resolveProvider(opts?.provider);
+    const [nonce, chainId] = await p.getNonceAndChainId(this.address);
+    const bond = requiredBond(args.valueCeiling);
+    const tx: TxFields = {
+      from: this.address,
+      to: ZERO_ADDR,
+      value: bond.toString(),
+      data: "0x" + bytesToHex(encodeCommitPayload({ commitment: args.commitment, valueCeiling: args.valueCeiling })),
+      gasLimit: opts?.gasLimit ?? 200_000,
+      nonce,
+      chainId,
+      txType: TxType.Commit,
+    };
+    return { wire: this.signTransaction(tx), hash: crypto.hashTransaction(tx), bond };
+  }
+
+  /**
+   * Low-level: build + sign a `Reveal` tx for an already-committed
+   * commitment. Relay-friendly — ANY wallet may reveal on behalf of the
+   * committer (the disclosed preimage is the authorization). `innerTx` is the
+   * signed inner-tx wire (hex or bytes) that was hashed into the commitment.
+   */
+  async buildReveal(
+    args: { commitment: Uint8Array; nonce: Uint8Array; innerTx: Uint8Array | string },
+    opts?: { gasLimit?: number; provider?: Provider },
+  ): Promise<{ wire: string; hash: string }> {
+    if ("destroyed" in this.key) throw new WalletDestroyedError();
+    const p = this.resolveProvider(opts?.provider);
+    const [nonce, chainId] = await p.getNonceAndChainId(this.address);
+    const innerBytes = typeof args.innerTx === "string" ? hexToBytes(args.innerTx) : args.innerTx;
+    const tx: TxFields = {
+      from: this.address,
+      to: ZERO_ADDR,
+      value: "0",
+      data:
+        "0x" +
+        bytesToHex(encodeRevealPayload({ commitment: args.commitment, nonce: args.nonce, innerTx: innerBytes })),
+      gasLimit: opts?.gasLimit ?? 5_000_000,
+      nonce,
+      chainId,
+      txType: TxType.Reveal,
+    };
+    return { wire: this.signTransaction(tx), hash: crypto.hashTransaction(tx) };
   }
 
   // ==========================================================================

@@ -10,7 +10,7 @@
  *
  * Engine drift handling:
  *   When the catalog promises a method that devnet doesn't yet expose
- *   (`pyde_getHardFinalityCert`, `pyde_getThresholdPublicKey`), we
+ *   (`pyde_getHardFinalityCert`), we
  *   assert one of two outcomes — null result OR an RpcError with code
  *   -32601 (method not found). Either is acceptable; both prove the
  *   SDK round-trips the call correctly.
@@ -211,22 +211,6 @@ describe("Provider — validator queries", () => {
   it("getOperatorValidators — random operator returns []", async () => {
     const vs = await devnet.provider.getOperatorValidators("0x" + "02".repeat(32));
     expect(vs).toEqual([]);
-  });
-});
-
-// --------------------------------------------------------------------------
-// §6 — Threshold pubkey (encrypted-mempool path)
-// --------------------------------------------------------------------------
-describe("Provider — threshold pubkey", () => {
-  it("getThresholdPublicKey returns a populated typed record", async () => {
-    const k = await devnet.provider.getThresholdPublicKey();
-    expect(k).not.toBeNull();
-    expect(typeof k!.epoch).toBe("bigint");
-    // Engine may report "mock" (boot default), "kyber-768", or a
-    // parameter-set tagged variant like "kyber-768-goldilocks" for
-    // the Goldilocks-prime accelerated build.
-    expect(k!.scheme === "mock" || k!.scheme.startsWith("kyber-768")).toBe(true);
-    expect(k!.publicKey.startsWith("0x")).toBe(true);
   });
 });
 

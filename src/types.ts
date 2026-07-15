@@ -95,7 +95,7 @@ export interface WaveHeader {
   txCount?: number;
 }
 
-/** Threshold-signed hard finality certificate. Committee signs the
+/** Committee-signed hard finality certificate. The committee signs the
  *  wave commit; ≥85 of 128 entries required for hard finality so a
  *  light client can verify the entire wave's integrity.
  *  Spec: Chapter 6 + `pyde_engine_types::consensus::HardFinalityCert`. */
@@ -105,7 +105,7 @@ export interface HardFinalityCert {
   /** Committee signatures: `(memberId, FALCON-512 signature)` pairs.
    *  `memberId ∈ [0, COMMITTEE_SIZE)`; `length >= 85` on a quorum-passing
    *  cert. v1 wire form is a list of FALCON sigs (true aggregate
-   *  threshold signatures arrive in a future engine release). */
+   *  signatures arrive in a future engine release). */
   signatures: Array<{ memberId: number; signature: string }>;
 }
 
@@ -345,7 +345,7 @@ export interface TxFields {
  * values land as literal types with autocomplete and zero runtime cost.
  *
  * Spec: Chapter 11 §11.8 — the chain's `TransactionType` enum (in
- * `crates/tx/src/types.rs`) has the 13 variants below. Tag `2` is
+ * `crates/tx/src/types.rs`) has the variants below. Tag `2` is
  * intentionally vacant — `Batch` was prototyped pre-mainnet and removed
  * before launch; keeping the gap means a forged `tx_type = 2` fails
  * decode rather than silently aliasing to another type.
@@ -374,7 +374,7 @@ export const TxType = {
   SweepAirdrop: 8,
   /** Treasury spend with multisig signatures. */
   MultisigTx: 9,
-  /** Rotate the multisig signer set + threshold. */
+  /** Rotate the multisig signer set and required-signature count. */
   RotateMultisig: 10,
   /** Halt block production (multisig-signed). */
   EmergencyPause: 11,
@@ -413,6 +413,25 @@ export const TxType = {
    * `PendingSlash` is still `Pending`.
    */
   DisputeSlash: 16,
+  /**
+   * `0x11` (17) — Commit-reveal private mempool, phase 1: reserve an
+   * ordering slot. `tx.to == ZERO`; `tx.value` = the bond
+   * (`requiredBond(valueCeiling)`); `tx.data = borsh(CommitPayload)` =
+   * `{commitment, valueCeiling}`. The commitment reserves the slot; the
+   * bond is refunded when the matching `Reveal` lands and burned if it
+   * never does. See `./private-tx`.
+   */
+  Commit: 0x11,
+  /**
+   * `0x12` (18) — Commit-reveal private mempool, phase 2: open a
+   * commitment. `tx.to == ZERO`; `tx.value == 0`;
+   * `tx.data = borsh(RevealPayload)` = `{commitment, nonce, innerTx}`
+   * embedding the hidden, fully-signed inner tx. May be signed by ANY
+   * account (relay-friendly) — the preimage is the authorization. The
+   * inner tx executes in the reveal wave's resolution pass, in commit
+   * order. See `./private-tx`.
+   */
+  Reveal: 0x12,
 } as const;
 
 export type TxTypeDiscriminant = (typeof TxType)[keyof typeof TxType];
@@ -438,9 +457,8 @@ export interface TransactionInfo {
   nonce: bigint;
   chainId: number;
   txType: number;
-  /** Wave the tx was included in (omitted if pending — though Pyde has
-   *  no pending state for encrypted-mempool txs; this is for plaintext
-   *  paths and historical lookups). */
+  /** Wave the tx was included in (omitted if pending — for historical
+   *  lookups). */
   waveId?: Wave;
 }
 
@@ -457,25 +475,6 @@ export interface FeeData {
   gasPrice: bigint;
   /** Base fee per gas unit. */
   baseFee: bigint;
-}
-
-/** Per-epoch threshold-decryption pubkey returned by
- *  `pyde_getThresholdPublicKey`. v1 ships with a deterministic mock
- *  (`scheme: "mock"`); real Kyber-768 swaps in via one feature flag
- *  with no wire change. The engine may suffix the scheme with a
- *  parameter-set tag (e.g. `"kyber-768-goldilocks"` for the
- *  Goldilocks-prime accelerated build); the SDK treats any
- *  `"kyber-768…"` value as "real DKG live". Anything else (including
- *  `"mock"`) means encrypted submissions sit unprocessed — clients
- *  should fall back to plaintext for real MEV protection. */
-export interface ThresholdPublicKey {
-  /** Wave-epoch the pubkey is valid for. */
-  epoch: bigint;
-  /** Crypto scheme — `"mock"` (boot default), `"kyber-768"`, or
-   *  parameter-tagged variants like `"kyber-768-goldilocks"`. */
-  scheme: string;
-  /** `0x`-prefixed hex of the encryption pubkey. */
-  publicKey: string;
 }
 
 /** Mainnet metrics snapshot from `pyde_getMetrics`. Schema mirrors
