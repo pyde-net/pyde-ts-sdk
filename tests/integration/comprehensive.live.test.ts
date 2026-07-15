@@ -43,6 +43,13 @@ const seedHex = (b: Uint8Array): string =>
 
 const DEV0_ADDR = "0xf07856fdf4796baa6d477ddfe926774d367b25c20e8c7d9d337b63034c9e0cfa";
 
+// Devnet genesis prefund, mirrored from the engine so a future
+// `--prefund-amount` tweak is a one-line edit here. 1 PYDE = 10^9 quanta.
+//   DEFAULT_PREFUND_AMOUNT — engine/crates/node/src/devnet/runner.rs
+//   MIN_VALIDATOR_STAKE_QUANTA — engine/crates/types/src/genesis.rs
+const DEVNET_PREFUND_QUANTA = 10_000_000_000_000_000n; // 10^16 = 10,000,000 PYDE
+const MIN_VALIDATOR_STAKE_QUANTA = 10_000_000_000_000n; // 10^13 = 10,000 PYDE
+
 let devnet: DevnetHandle;
 
 beforeAll(async () => {
@@ -88,15 +95,18 @@ describe("Provider — chain info", () => {
 // §2 — Account queries
 // --------------------------------------------------------------------------
 describe("Provider — account queries", () => {
-  it("getBalance — devnet-0 prefunded with ≤ 10 PYDE", async () => {
-    // Devnet-0 starts at exactly 10 PYDE but the live-test suite
-    // shares state across files (sequential vitest run, single
-    // devnet per file). Phase-2 tests in this suite may spend a
-    // fraction of the prefund on tx fees + transfers — assert
-    // upper-bound + non-empty rather than strict equality.
+  it("getBalance — devnet-0 generously prefunded (≥ min stake, ≤ genesis prefund)", async () => {
+    // Devnet-0 is credited DEFAULT_PREFUND_AMOUNT = 10^16 quanta
+    // (10M PYDE) at genesis. The live-test suite shares one devnet
+    // per file and tests here may spend a fraction on fees/transfers,
+    // so assert a semantic range keyed to real constants rather than
+    // strict equality: lower bound = the 10K-PYDE validator-stake
+    // floor (proves it's still generously funded after modest spend);
+    // upper bound = the genesis prefund (catches a future accidental
+    // 10^18-scale decimals regression).
     const b = await devnet.provider.getBalance(DEV0_ADDR);
-    expect(b).toBeGreaterThan(0n);
-    expect(b).toBeLessThanOrEqual(10_000_000_000n);
+    expect(b).toBeGreaterThanOrEqual(MIN_VALIDATOR_STAKE_QUANTA);
+    expect(b).toBeLessThanOrEqual(DEVNET_PREFUND_QUANTA);
   });
 
   it("getBalance — random address returns 0n", async () => {
@@ -113,8 +123,8 @@ describe("Provider — account queries", () => {
     const a = await devnet.provider.getAccount(DEV0_ADDR);
     expect(a).not.toBeNull();
     expect(a!.address).toBe(DEV0_ADDR);
-    expect(a!.balance).toBeGreaterThan(0n);
-    expect(a!.balance).toBeLessThanOrEqual(10_000_000_000n);
+    expect(a!.balance).toBeGreaterThanOrEqual(MIN_VALIDATOR_STAKE_QUANTA);
+    expect(a!.balance).toBeLessThanOrEqual(DEVNET_PREFUND_QUANTA);
   });
 
   it("getAccount — never-touched address returns a zeroed EOA stub (engine implicit-materialisation)", async () => {

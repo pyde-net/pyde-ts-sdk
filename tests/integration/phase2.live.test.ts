@@ -3,8 +3,9 @@
  * the checklist's Phase 2 section under
  * `/tmp/pyde-ts-sdk-LIVE_TEST_CHECKLIST.md`.
  *
- * Strategy: build a wallet from the devnet-0 deterministic seed (10
- * PYDE prefunded), register the pubkey if needed, then exercise:
+ * Strategy: build a wallet from the devnet-0 deterministic seed
+ * (generously prefunded at genesis), register the pubkey if needed,
+ * then exercise:
  *   - Sign + send + receipt poll (plain tx)
  *   - Tx lookup by committed hash
  *   - waitForReceipt with explicit timeout
