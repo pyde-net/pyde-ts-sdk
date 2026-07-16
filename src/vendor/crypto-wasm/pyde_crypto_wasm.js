@@ -5,5 +5,5 @@ import { __wbg_set_wasm } from "./pyde_crypto_wasm_bg.js";
 __wbg_set_wasm(wasm);
 wasm.__wbindgen_start();
 export {
-    buildRawEncryptedTx, buildRawEncryptedTxWithHandle, combineShares, computeSelector, deriveAddress, dropKeypair, encodeRegisterPubkeyTx, generateDecryptionShare, generateKeypair, generateKeypairHandle, hashTransaction, keypairFromSeed, poseidon2Hash, signMessage, signMessageWithHandle, signTransaction, signTransactionWithHandle, thresholdEncrypt, thresholdKeygen, verifySignature
+    computeSelector, deriveAddress, dropKeypair, encodeRegisterPubkeyTx, generateKeypair, generateKeypairHandle, hashTransaction, keypairFromSeed, poseidon2Hash, signMessage, signMessageWithHandle, signTransaction, signTransactionWithHandle, verifySignature
 } from "./pyde_crypto_wasm_bg.js";
