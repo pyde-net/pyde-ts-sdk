@@ -491,7 +491,7 @@ The internal `scrubError` helper cleans up exception messages so long hex runs d
 
 - 897-byte FALCON public keys (1,794 hex chars).
 - 1,281-byte FALCON SK (2,562 hex chars).
-- Tx wire bytes that may contain encrypted payloads.
+- Tx wire bytes and calldata that may embed sensitive values.
 
 You don't usually call `scrubError` directly — it's applied automatically to error messages traversing the `Provider` layer.
 

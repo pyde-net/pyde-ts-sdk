@@ -357,7 +357,7 @@ Tied to the latest Pyde Book (`book.pyde.network`):
 | `CallPayload` shape                      | `pyde_engine_types::CallPayload`                |
 | Function attribute bits                  | `HOST_FN_ABI_SPEC.md §3.5`                      |
 | Wave-header dual-hash state root         | `hash_strategy_and_validation` memo             |
-| Threshold encryption flow                | Pyde Book Chapter 8.5 + Chapter 9               |
+| Private transactions (commit-reveal)     | Pyde Book Chapter 9                             |
 | Event encoding (Borsh-default)           | `HOST_FN_ABI_SPEC.md §14`                       |
 | Address = full Poseidon2 (no truncation) | Pyde Book Chapter 6                             |
 | u64 nonce + 16-slot sliding window       | Pyde Book Chapter 11                            |

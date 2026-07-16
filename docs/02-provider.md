@@ -32,8 +32,6 @@ HTTP JSON-RPC client for a Pyde node. **Use this when you need to read chain sta
   - [`simulateTransaction(signedTxHex)`](#simulatetransactionsignedtxhex)
 - Write surface
   - [`sendRawTransaction(signedTxHex)`](#sendrawtransactionsignedtxhex)
-  - [`sendRawEncryptedTransaction(encTxHex)`](#sendrawencryptedtransactionenctxhex)
-  - [`getThresholdPublicKey()`](#getthresholdpublickey)
 - Receipts + waiting
   - [`getTransaction(txHash)`](#gettransactiontxhash)
   - [`getTransactionReceipt(txHash)`](#gettransactionreceipttxhash)
@@ -931,56 +929,6 @@ included: true
 
 ---
 
-## `sendRawEncryptedTransaction(encTxHex)`
-
-Submit a threshold-encrypted tx (MEV-protected).
-
-**Spec:** Chapter 8.5 · RPC method `pyde_sendRawEncryptedTransaction`
-
-**Signature:**
-
-```ts
-provider.sendRawEncryptedTransaction(encTxHex: string): Promise<TransactionResponse>
-```
-
-See [Chapter 09 — encrypted mempool](./09-encrypted-mempool.md) for the construction flow. Most callers use `wallet.sendEncrypted` rather than calling this directly.
-
----
-
-## `getThresholdPublicKey()`
-
-Get the current committee's threshold encryption public key.
-
-**Spec:** Engine RPC catalog v0.1 §20 · RPC method `pyde_getThresholdPublicKey`
-
-**Signature:**
-
-```ts
-provider.getThresholdPublicKey(): Promise<ThresholdPublicKey | null>
-```
-
-**Returns:** `Promise<ThresholdPublicKey | null>`:
-
-```ts
-interface ThresholdPublicKey {
-  epoch: bigint;     // u64 — epoch this key belongs to
-  scheme: string;    // "mock" | "kyber-768" | "kyber-768-goldilocks" | …
-  publicKey: string; // 0x-prefixed hex of the public key
-}
-```
-
-- `null` if no DKG ceremony has run yet (chain at boot, no bootstrap, no real DKG epochs).
-- `scheme: "mock"` is the v1 boot default — a deterministic mock pubkey under `epoch: 0` so the encrypted-mempool path is reachable from the first wave.
-- `scheme: "kyber-768…"` (with optional parameter-set tag, e.g. `"kyber-768-goldilocks"` for the Goldilocks-prime accelerated build) means real DKG state is live and encrypted submissions will decrypt at wave-commit.
-
-**Notes:**
-
-- The key **rotates per epoch**. SDK refetches on every encrypted submission rather than caching.
-- Used internally by `wallet.sendEncrypted` / `transferEncrypted`; rarely called directly.
-- `wallet.sendEncrypted` warns when the scheme does **not** start with `"kyber-768"` — anything else (including `"mock"`) means submissions sit unprocessed on chain.
-
----
-
 ## `getTransaction(txHash)`
 
 Look up a committed transaction by hash.
@@ -1469,5 +1417,4 @@ See [Chapter 10 — Errors](./10-errors.md) for the full hierarchy + type guards
 - **`getLogs` wave span is capped at 5,000.** Larger queries return an RPC error; page via `cursor`.
 - **`http://` URLs throw.** Devnet local dev: pass `allowInsecureTransport: true`. Anywhere else: use `https://`.
 - **Chain-id is cached.** First `getChainId()` hits the network; subsequent reads from the cache. Rebuild the Provider for a fresh fetch.
-- **`getThresholdPublicKey` rotates per epoch.** Don't cache it client-side.
 - **The chain dispatches by function name**, not by 4-byte selector. `provider.call(to, data)` expects `data` to be a borsh-encoded `CallPayload`, not raw calldata + selector. Use `Contract.encodeCall` to build it.

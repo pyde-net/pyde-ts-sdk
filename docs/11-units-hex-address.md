@@ -481,7 +481,7 @@ Useful when working at the wire level.
 | **FALCON-512 signature size**   | ~666 bytes (compact-encoded)  | Variable; 690 is the max.                        |
 | **Poseidon2 hash output**       | 32 bytes                      | Address derivation + state root (Poseidon2 leg). |
 | **Blake3 hash output**          | 32 bytes                      | State root (Blake3 leg) + general digests.       |
-| **Kyber-768 ciphertext size**   | 1,088 bytes                   | Encrypted-mempool envelope.                      |
+| **Commit bond floor**           | 1 PYDE (10⁹ quanta)           | `MIN_COMMIT_BOND` — commit-reveal private-tx bond floor. |
 | **Address byte length**         | 32                            | All Pyde addresses.                              |
 | **Nonce window size**           | 16                            | Concurrent unconfirmed txs per sender.           |
 | **Min tx gas**                  | 21,000                        | Structural validator floor (`MIN_GAS_LIMIT`).    |

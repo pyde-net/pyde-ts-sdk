@@ -2,7 +2,7 @@
 
 All notable changes to `pyde-ts-sdk` ship here. Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html) once we hit 1.0; pre-1.0 we ship `0.x.y-beta.N` and break liberally between minors. Each entry calls out wire-format / behavior-altering changes explicitly.
 
-## Unreleased
+## 0.2.0 — 2026-07-16
 
 ### Breaking — MEV protection is now commit-reveal, not threshold encryption
 
@@ -11,6 +11,7 @@ All notable changes to `pyde-ts-sdk` ship here. Versioning follows [Semantic Ver
 - **New tx types.** `TxType.Commit = 0x11`, `TxType.Reveal = 0x12` (with matching PascalCase RPC tag parsing). Wire-parity verified byte-for-byte against `otigen_commit_reveal_vectors_v1.json`.
 - Blake3 for the commitment comes from `@noble/hashes` (already a dependency); no new deps. The vendored `pyde-crypto-wasm`'s threshold/encrypted exports are now unused and can be dropped on its next rebuild.
 - **Guarantee framing:** commit-reveal prevents content-targeted front-running; it is not a total ordering lock against unrelated txs arriving in the reveal→execute window.
+- **Docs + metadata.** The handbook is rewritten for commit-reveal; the former "Encrypted mempool" chapter is now [`docs/09-private-transactions.md`](./docs/09-private-transactions.md), and stale threshold/Kyber references across the docs, `README`, and `SECURITY.md` are gone. `package.json` keywords drop `kyber-768` / `ml-kem` and add `commit-reveal`.
 
 ## 0.1.0 — 2026-06-24
 

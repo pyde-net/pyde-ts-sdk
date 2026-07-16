@@ -191,8 +191,6 @@ ordering lock against unrelated txs that arrive in the reveal→execute window.
 For value-only sends there's `wallet.transferPrivate(to, amount)`; for relays,
 low-level `buildCommit` / `buildReveal` (reveal-on-behalf is allowed).
 
-The (to, value, calldata) tuple is threshold-encrypted against the committee pubkey before submission. No validator or RPC operator can read the call before the wave commits. Spec: Chapter 8.5 + Chapter 9.
-
 ## Contracts
 
 ```ts

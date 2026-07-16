@@ -1,6 +1,6 @@
 # 03 — Wallet
 
-FALCON-512 signing + keystore I/O + high-level transfer / sendCall / deploy / encrypted-send.
+FALCON-512 signing + keystore I/O + high-level transfer / sendCall / deploy / private (commit-reveal) send.
 
 [← TOC](./README.md)
 
@@ -36,8 +36,12 @@ FALCON-512 signing + keystore I/O + high-level transfer / sendCall / deploy / en
   - [`wallet.transfer(to, amount, optsOrProvider?)`](#wallettransferto-amount-optsorprovider)
   - [`wallet.sendCall(to, data, opts?)`](#walletsendcallto-data-opts)
   - [`wallet.deploy(...)`](#walletdeploy)
-  - [`wallet.sendEncrypted(to, calldata, opts?)`](#walletsendencryptedto-calldata-opts)
-  - [`wallet.transferEncrypted(to, amount, opts?)`](#wallettransferencryptedto-amount-opts)
+- Private (commit-reveal) write paths
+  - [`wallet.sendPrivate(inner)`](#walletsendprivateinner)
+  - [`wallet.transferPrivate(to, amount, opts?)`](#wallettransferprivateto-amount-opts)
+  - [`wallet.buildCommit(args, opts?)`](#walletbuildcommitargs-opts)
+  - [`wallet.buildReveal(args, opts?)`](#walletbuildrevealargs-opts)
+  - [`PrivateSendHandle`](#privatesendhandle)
 - Staking helpers
   - [`wallet.stakeDeposit(falconPubkey, amount, opts?)`](#walletstakedepositfalconpubkey-amount-opts)
   - [`wallet.stakeWithdraw(opts?)`](#walletstakewithdrawopts)
@@ -61,7 +65,7 @@ The same `Wallet` class wraps two different secret-key holdings:
 | Where the SK lives         | WASM linear memory                                 | JS heap (as a hex string)                                                                       |
 | Survives a JS heap dump?   | ✅ yes                                             | ❌ no — visible as a string                                                                     |
 | Can `toKeystore` export?   | ❌ no (no hex to encrypt)                          | ✅ yes                                                                                          |
-| Encrypted `sendEncrypted`? | ❌ not yet (needs `buildRawEncryptedTxWithHandle`) | ✅ yes                                                                                          |
+| Private `sendPrivate`?     | ✅ yes                                             | ✅ yes                                                                                          |
 
 **Recommendation:** use `generate()` and `fromEncrypted()` for everything except keystore export. When you need to export, use `generateUnsafe()`, immediately `toKeystore` + write, and `destroy()` the wallet.
 
@@ -129,7 +133,6 @@ wallet.destroy();
 
 - You need `toKeystore` / `saveKeystoreFile` to persist the wallet.
 - You're integrating with code that requires the hex SK.
-- You're using `sendEncrypted` (handle-backed not yet supported).
 
 **Otherwise:** prefer `Wallet.generate()`.
 
@@ -717,45 +720,208 @@ wallet.deploy(
 
 ---
 
-## `wallet.sendEncrypted(to, calldata, opts?)`
+## `wallet.sendPrivate(inner)`
 
-Threshold-encrypts `(to, value, calldata)` against the committee pubkey before submission. **MEV-protected.**
+One-call private send through **commit-reveal** — Pyde's front-running protection. The wallet publishes a salted Blake3 commitment (a `Commit`, which reserves the ordering slot and posts a refundable bond), waits for it to be included, then opens it with a `Reveal` that discloses the hidden inner tx. There is **no committee, no shared secret, nothing to decrypt** — the commitment alone fixes the ordering position before the contents are visible. This one call runs the whole dance and auto-reveals the moment the commit is included (~1-2 s), so it feels like a single send.
+
+**Guarantee (be honest about scope):** content-targeted front-running is prevented; this is **NOT** a total ordering lock against unrelated txs arriving in the reveal→execute window.
 
 **Signature:**
 
 ```ts
-wallet.sendEncrypted(
-  to: string,
-  calldata: string,
-  opts?: {
-    gasLimit?: number;
-    value?: bigint | number | string;
-    deadline?: number;
-    accessList?: AccessEntry[];
-    provider?: Provider;
-  },
-): Promise<{ envelopeHash: string; plaintextHash: string }>
+wallet.sendPrivate(inner: {
+  to: string;
+  data?: string;                          // "0x" for a value-only send
+  value?: bigint | number | string;       // quanta
+  gasLimit?: number;
+  valueCeiling?: bigint | number | string; // must be >= value; drives the bond
+  accessList?: AccessEntry[];
+  provider?: Provider;
+  timeoutMs?: number;
+}): Promise<PrivateSendHandle>
 ```
 
-Returns `{ envelopeHash, plaintextHash }`. `envelopeHash` is what the chain echoes back from `pyde_sendRawEncryptedTransaction` (Blake3 of the ciphertext envelope). `plaintextHash` is the Poseidon2 hash of the inner Tx the chain reconstructs after threshold-decryption — receipts key on this hash, so poll `provider.waitForReceipt(plaintextHash)` to wait for commit. `plaintextHash` is computed locally from the same `(sender, to, value, calldata, gasLimit, nonce, chainId, accessList)` projection the wasm side feeds into `buildRawEncryptedTx`.
+**Args:**
 
-See [Chapter 09 — encrypted mempool](./09-encrypted-mempool.md) for the full flow, when to use it, and the `accessList` privacy considerations.
+| Name           | Type                       | Description                                                                                                          |
+| -------------- | -------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| `to`           | `string`                   | Recipient / contract address of the hidden inner tx.                                                               |
+| `data`         | `string`                   | Calldata hex. `"0x"` for a value-only transfer. Default `"0x"`.                                                    |
+| `value`        | bigint / number / string   | Quanta attached to the inner tx. Default `0`.                                                                       |
+| `gasLimit`     | `number`                   | Inner-tx gas. Defaults to `100_000` for a value-only send, `5_000_000` for a call.                                 |
+| `valueCeiling` | bigint / number / string   | Declared upper bound on the hidden value. Must be `>= value`. Drives the bond; over-declare to hide the true amount. Defaults to `value`. |
+| `accessList`   | `AccessEntry[]`            | Optional prefetch hints for the inner tx.                                                                           |
+| `provider`     | `Provider`                 | Override the bound provider.                                                                                        |
+| `timeoutMs`    | `number`                   | Applied to both the commit-inclusion wait and the inner-tx receipt wait.                                            |
+
+**The bond:** `requiredBond(valueCeiling) = max(MIN_COMMIT_BOND, valueCeiling × COMMIT_BOND_BPS / 10_000)` — a `1` PYDE (`MIN_COMMIT_BOND`) flat floor or `1 %` (`COMMIT_BOND_BPS`) of the ceiling, whichever is larger. It is debited at commit, refunded when the reveal is accepted, and **burned** if the commitment is never revealed within `COMMIT_REVEAL_WINDOW_WAVES` (`120n` waves, ~60 s — a censorship cushion, not the expected latency).
+
+**Returns:** `Promise<PrivateSendHandle>` — see [`PrivateSendHandle`](#privatesendhandle). Its `waitForReceipt()` resolves on the **inner** tx's receipt, which executes in the reveal wave's resolution pass, in commit order.
+
+**Example:**
+
+```ts
+import { Wallet, parseQuanta } from "pyde-ts-sdk";
+
+const wallet = Wallet.generate();
+wallet.connect(provider);
+
+// Private contract call; over-declare the ceiling to hide the true amount.
+const handle = await wallet.sendPrivate({
+  to: contractAddr,
+  data: counter.encodeCall("deposit"),
+  value: parseQuanta("2"),
+  valueCeiling: parseQuanta("10"),
+});
+
+console.log("commit:", handle.commitHash);
+console.log("reveal:", handle.revealHash);
+
+// waitForReceipt resolves on the INNER tx — the real outcome.
+const receipt = await handle.waitForReceipt();
+console.log("inner tx:", receipt.txHash, "ok:", receipt.success);
+```
+
+**Notes:**
+
+- Works with **any** wallet — handle-backed (`generate()`) or hex-backed. No hex-SK constraint.
+- The inner tx is signed **once** and those exact bytes are reused for both the commitment and the reveal (FALCON-512 is non-deterministic — re-signing would break the commitment match).
+- The commit, reveal, and inner tx consume three consecutive nonces from the sender's account.
+
+See [Chapter 09 — Private transactions (commit-reveal)](./09-private-transactions.md) for the full protocol, the reveal-window semantics, and `accessList` privacy considerations.
 
 ---
 
-## `wallet.transferEncrypted(to, amount, opts?)`
+## `wallet.transferPrivate(to, amount, opts?)`
 
-Encrypted variant of `transfer`. Value-only send through the MEV-protected mempool. Same hex-SK constraint.
+Value-only convenience over [`sendPrivate`](#walletsendprivateinner) (`data = "0x"`). Same commit-reveal flow and guarantee.
 
 **Signature:**
 
 ```ts
-wallet.transferEncrypted(
+wallet.transferPrivate(
   to: string,
   amount: bigint | number,
-  opts?: { deadline?: number; provider?: Provider },
-): Promise<{ envelopeHash: string; plaintextHash: string }>
+  opts?: { valueCeiling?: bigint; provider?: Provider; timeoutMs?: number },
+): Promise<PrivateSendHandle>
 ```
+
+**Example:**
+
+```ts
+import { Wallet, parseQuanta } from "pyde-ts-sdk";
+
+const wallet = Wallet.generate();
+wallet.connect(provider);
+
+const handle = await wallet.transferPrivate("0xrecipient...", parseQuanta("5"));
+const receipt = await handle.waitForReceipt();
+console.log("private transfer ok:", receipt.success);
+```
+
+---
+
+## `wallet.buildCommit(args, opts?)`
+
+Low-level: build + sign a `Commit` tx. Returns the signed wire, its tx hash, and the bond posted. Most callers want [`sendPrivate`](#walletsendprivateinner) — this exists for relays / advanced flows that manage the commit and reveal separately.
+
+**Signature:**
+
+```ts
+wallet.buildCommit(
+  args: { commitment: Uint8Array; valueCeiling: bigint },
+  opts?: { gasLimit?: number; provider?: Provider },
+): Promise<{ wire: string; hash: string; bond: bigint }>
+```
+
+**Args:**
+
+| Name                | Type         | Description                                                                              |
+| ------------------- | ------------ | ---------------------------------------------------------------------------------------- |
+| `args.commitment`   | `Uint8Array` | 32-byte `commitmentHash(innerTxBytes, nonce)`.                                            |
+| `args.valueCeiling` | `bigint`     | Declared upper bound on the hidden value; drives `bond = requiredBond(valueCeiling)`.    |
+| `opts.gasLimit`     | `number`     | Commit-tx gas. Default `200_000`.                                                        |
+| `opts.provider`     | `Provider`   | Override the bound provider (needed for the nonce + chain-id lookup).                    |
+
+**Returns:** `{ wire, hash, bond }` — submit `wire` via `provider.sendRawTransaction` (the Commit's `to` is the zero address and its `value` is `bond`).
+
+---
+
+## `wallet.buildReveal(args, opts?)`
+
+Low-level: build + sign a `Reveal` tx that opens an already-published commitment. **Any** wallet may reveal on behalf of the committer — the disclosed preimage is the authorization.
+
+**Signature:**
+
+```ts
+wallet.buildReveal(
+  args: { commitment: Uint8Array; nonce: Uint8Array; innerTx: Uint8Array | string },
+  opts?: { gasLimit?: number; provider?: Provider },
+): Promise<{ wire: string; hash: string }>
+```
+
+**Args:**
+
+| Name              | Type                   | Description                                                                                   |
+| ----------------- | ---------------------- | -------------------------------------------------------------------------------------------- |
+| `args.commitment` | `Uint8Array`           | The 32-byte commitment being opened (must equal the committed hash).                          |
+| `args.nonce`      | `Uint8Array`           | The 32-byte salt drawn at commit time.                                                        |
+| `args.innerTx`    | `Uint8Array \| string` | The signed inner-tx wire (hex or bytes) that was hashed into the commitment — reuse verbatim. |
+| `opts.gasLimit`   | `number`               | Reveal-tx gas. Default `5_000_000`.                                                           |
+| `opts.provider`   | `Provider`             | Override the bound provider.                                                                  |
+
+**Example — manual commit → reveal:**
+
+```ts
+import { Wallet, commitmentHash, getBytes, parseQuanta, TxType } from "pyde-ts-sdk";
+import { randomBytes } from "node:crypto";
+
+const wallet = Wallet.generate();
+wallet.connect(provider);
+
+const [base, chainId] = await provider.getNonceAndChainId(wallet.address);
+
+// 1. Sign the hidden inner tx ONCE — reuse these exact bytes everywhere.
+const innerWire = wallet.signTransaction({
+  from: wallet.address,
+  to: "0xrecipient...",
+  value: parseQuanta("5").toString(),
+  data: "0x",
+  gasLimit: 100_000,
+  nonce: base + 2n,
+  chainId,
+  txType: TxType.Standard,
+});
+const innerBytes = getBytes(innerWire);
+
+// 2. Commit to it under a fresh 32-byte salt, then await inclusion.
+const salt = randomBytes(32);
+const commitment = commitmentHash(innerBytes, salt);
+const commit = await wallet.buildCommit({ commitment, valueCeiling: parseQuanta("5") });
+await provider.sendAndWait(commit.wire); // reserves the slot, posts commit.bond
+
+// 3. Once the commit is included, open it.
+const reveal = await wallet.buildReveal({ commitment, nonce: salt, innerTx: innerBytes });
+await provider.sendRawTransaction(reveal.wire);
+```
+
+---
+
+## `PrivateSendHandle`
+
+The handle returned by [`sendPrivate`](#walletsendprivateinner) / [`transferPrivate`](#wallettransferprivateto-amount-opts). The commit and reveal are plumbing; the outcome that matters is the **inner** tx receipt, which `waitForReceipt` resolves.
+
+```ts
+interface PrivateSendHandle {
+  commitHash: string;   // Commit tx hash (reserved the slot, posted the bond)
+  revealHash: string;   // Reveal tx hash (opened the commitment; bond refunded on accept)
+  innerHash: string;    // hidden inner tx hash — the receipt key for the REAL outcome
+  commitReceipt: Receipt; // the Commit tx's own receipt (already resolved)
+  waitForReceipt(timeoutMs?: number): Promise<Receipt>;
+}
+```
+
+`waitForReceipt(timeoutMs?)` resolves on the inner tx's receipt — it executes in the reveal wave's resolution pass, in commit order, so allow a few waves. Throws `TimeoutError` if not seen by `timeoutMs`.
 
 ---
 
@@ -881,5 +1047,5 @@ See [Chapter 10 — Errors](./10-errors.md).
 - **Nonces are bigint.** `wallet.getNonce()` returns `bigint` — don't `Number()` it.
 - **`provider` argument is optional after `connect()`.** Bind once, use everywhere.
 - **`saveKeystoreFile` is Node-only.** Browsers can use `toKeystore` + `localStorage` / `IndexedDB`.
-- **`transferEncrypted` / `sendEncrypted` require a hex-backed wallet.** Plain `Wallet.generate()` won't work for encrypted send today.
+- **`sendPrivate` / `transferPrivate` work with any wallet.** Handle-backed (`Wallet.generate()`) or hex-backed — no special constraint. Reveal within `COMMIT_REVEAL_WINDOW_WAVES` (120 waves) or the bond is burned; the one-call flow auto-reveals on commit inclusion, so this only bites manual `buildCommit` / `buildReveal` flows.
 - **`Wallet.sendCall` round-trips to the chain for gas + access list.** Each invocation does a probe-sign + `simulateTransaction` before the real submit. Pin `opts.gasLimit` when you've already got a bound and want to skip the extra RPC. `Wallet.transfer` stays cheap (fixed 100k, no simulate).
