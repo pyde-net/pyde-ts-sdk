@@ -175,37 +175,47 @@ Decrypt a `Keystore` object into a hex-backed wallet.
 **Signature:**
 
 ```ts
-Wallet.fromEncrypted(keystore: Keystore, password: string): Promise<Wallet>
+Wallet.fromEncrypted(
+  keystore: Keystore | LegacyFlatKeystore,
+  password: string,
+  opts?: { name?: string },   // pick an account from a multi-account envelope
+): Promise<Wallet>
 ```
 
 **Args:**
 
-| Name       | Type       | Description                            |
-| ---------- | ---------- | -------------------------------------- |
-| `keystore` | `Keystore` | Argon2id + AES-256-GCM envelope.       |
-| `password` | `string`   | Decryption passphrase.                 |
+| Name       | Type                          | Description                                                     |
+| ---------- | ----------------------------- | -------------------------------------------------------------- |
+| `keystore` | `Keystore \| LegacyFlatKeystore` | Canonical envelope, or a legacy flat keystore (read-only).  |
+| `password` | `string`                      | Decryption passphrase.                                         |
+| `opts.name`| `string?`                     | Account to open; optional for a single-entry file.             |
 
 **Returns:** `Promise<Wallet>` — hex-backed wallet with SK in JS heap.
 
 **`Keystore` shape:**
 
 ```ts
+// Canonical multi-account envelope — byte-identical to `otigen wallet`, the
+// playground, and pyde-book §8.7. One file opens everywhere.
 interface Keystore {
-  address: string;       // 32-byte address hex
-  publicKey: string;     // FALCON-512 pubkey hex (897 bytes)
-  kdf: "argon2id";
-  kdfParams: {
-    m: number;           // memory cost in KiB (default 65,536 = 64 MiB)
-    t: number;           // iterations (default 3)
-    p: number;           // parallelism (default 4)
-    salt: string;        // 16-byte salt hex
-  };
-  cipher: "aes-256-gcm" | "chacha20-poly1305";
-  nonce: string;         // 12-byte AEAD nonce hex
-  ciphertext: string;    // encrypted SK + AEAD tag, hex
   version: 1;
+  accounts: Record<string, KeystoreEntry>;
+}
+
+interface KeystoreEntry {
+  address: string;     // 0x + 64 hex (32-byte address)
+  pubkey: string;      // 0x + hex (897-byte FALCON-512 pubkey) — field is `pubkey`
+  ciphertext: string;  // 0x + hex of AES-256-GCM(sk) with the 16-byte tag appended
+  salt: string;        // 0x + hex, 16 bytes
+  nonce: string;       // 0x + hex, 12 bytes
+  cipher?: "aes-256-gcm" | "chacha20-poly1305"; // absent ⇒ aes-256-gcm; chacha never written
+  kdf: { name: "argon2id"; memory_kb: number; iterations: number; parallelism: number };
 }
 ```
+
+`fromEncrypted` also accepts a **`LegacyFlatKeystore`** on read — the flat,
+single-account shape (`publicKey`, bare hex, nested `kdfParams`) written by
+pyde-ts-sdk ≤ 0.2.x. It is never written; new keystores always use the envelope.
 
 **Example:**
 
@@ -491,17 +501,18 @@ Encrypt the wallet's SK with `password` and return the keystore object. **Hex-ba
 ```ts
 wallet.toKeystore(
   password: string,
-  params?: Partial<KdfParams>,
-): Promise<Keystore>
+  opts?: { name?: string; m?: number; t?: number; p?: number },
+): Promise<Keystore>   // canonical envelope with one entry keyed by `name`
 ```
 
-**`KdfParams` (defaults):**
+**`opts` (all optional):**
 
-| Param         | Default              | Notes                                                              |
-| ------------- | -------------------- | ------------------------------------------------------------------ |
-| `memory`      | `64 * 1024` (64 MiB) | Argon2id memory cost. Tunable down to ~16 MiB for low-end devices. |
-| `iterations`  | `3`                  | Argon2id iterations.                                               |
-| `parallelism` | `4`                  | Argon2id parallelism.                                              |
+| Field  | Default       | Notes                                                              |
+| ------ | ------------- | ------------------------------------------------------------------ |
+| `name` | `"default"`   | The account key for the single entry in the envelope.              |
+| `m`    | `65536` (KiB) | Argon2id memory cost (64 MiB). The written floor; readers tolerate lower. |
+| `t`    | `3`           | Argon2id iterations.                                               |
+| `p`    | `4`           | Argon2id parallelism.                                              |
 
 **AEAD:** AES-256-GCM (12-byte nonce). ChaCha20-Poly1305 keystores written by older SDK versions are still accepted on read.
 
@@ -518,14 +529,14 @@ wallet.toKeystore(
 
 ```ts
 const wallet = Wallet.generateUnsafe();
-const keystore = await wallet.toKeystore("strong-passphrase");
-console.log("ciphertext size:", (keystore.ciphertext.length - 2) / 2, "bytes");
+const keystore = await wallet.toKeystore("strong-passphrase", { name: "alice" });
+console.log("account:", Object.keys(keystore.accounts)[0]); // "alice"
 ```
 
 **Expected output:**
 
 ```
-ciphertext size: 1281 bytes
+account: alice
 ```
 
 ---
@@ -540,7 +551,7 @@ Node-only: encrypt + write to disk with mode `0600`.
 wallet.saveKeystoreFile(
   path: string,
   password: string,
-  params?: Partial<KdfParams>,
+  opts?: { name?: string; m?: number; t?: number; p?: number },
 ): Promise<void>
 ```
 

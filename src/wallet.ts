@@ -62,39 +62,59 @@ export interface PrivateSendHandle {
 }
 
 // ============================================================================
-// Keystore format (matches `pyde keys generate`, per Chapter 17)
+// Keystore format — the canonical multi-account envelope.
+//
+// One file opens everywhere: this is byte-for-byte the container written by
+// `otigen wallet`, the playground, and pyde-book §8.7. A keystore written by
+// any conformant impl decrypts in every other, because AES-256-GCM is
+// authenticated. Single-account tools (like this SDK) still write the envelope
+// with one entry.
 // ============================================================================
 
-/** On-disk encrypted-keystore JSON shape.
- *  KDF: Argon2id. AEAD: AES-256-GCM (write default) or ChaCha20-Poly1305
- *  (legacy, still readable). The `cipher` field selects the read path. */
-export interface Keystore {
-  /** 32-byte address hex. */
+/** One encrypted account inside a {@link Keystore}. All binary fields are
+ *  lowercase, `0x`-prefixed hex. Only the FALCON-512 secret key is encrypted;
+ *  `address` and `pubkey` are stored in the clear. */
+export interface KeystoreEntry {
+  /** 32-byte account address — `0x` + 64 hex. */
   address: string;
-  /** FALCON-512 public key hex (897 bytes). */
-  publicKey: string;
-  /** KDF identifier — `"argon2id"` in v1. */
-  kdf: "argon2id";
-  kdfParams: {
-    /** Memory cost in KB (default 65,536 = 64 MiB). */
-    m: number;
-    /** Iterations (default 3). */
-    t: number;
-    /** Parallelism (default 4). */
-    p: number;
-    /** Salt hex (16 bytes). */
-    salt: string;
-  };
-  /** AEAD identifier. `"aes-256-gcm"` is the ecosystem-standard write
-   *  default (matches otigen-wallet / pyde-rust-sdk / pyde-book §8.7);
-   *  `"chacha20-poly1305"` is accepted on read for keystores written by
-   *  older SDK versions. */
-  cipher: "aes-256-gcm" | "chacha20-poly1305";
-  /** Cipher nonce hex (12 bytes). */
-  nonce: string;
-  /** Encrypted secret-key bytes (hex). Tag is appended; AEAD shape. */
+  /** FALCON-512 public key (897 bytes) — `0x` + hex. Field name is `pubkey`. */
+  pubkey: string;
+  /** `0x` + hex of `AES-256-GCM(secret_key)` with the 16-byte tag appended. */
   ciphertext: string;
-  /** Schema version. */
+  /** Argon2id salt — `0x` + hex (16 bytes). */
+  salt: string;
+  /** AEAD nonce — `0x` + hex (12 bytes). */
+  nonce: string;
+  /** AEAD suite. Absent ⇒ `"aes-256-gcm"`. `"chacha20-poly1305"` is accepted on
+   *  read for entries written by older tools; it is never written. */
+  cipher?: "aes-256-gcm" | "chacha20-poly1305";
+  /** KDF descriptor. Flat — the salt lives at the entry level, not nested here. */
+  kdf: {
+    name: "argon2id";
+    memory_kb: number;
+    iterations: number;
+    parallelism: number;
+  };
+}
+
+/** On-disk keystore: a versioned container of named accounts. This is the
+ *  canonical, cross-impl format (CLI ↔ SDKs ↔ playground ↔ wallet). */
+export interface Keystore {
+  version: 1;
+  accounts: Record<string, KeystoreEntry>;
+}
+
+/** Legacy single-account keystore written by pyde-ts-sdk ≤ 0.2.x (flat shape,
+ *  bare hex, `publicKey`, nested `kdfParams`). Accepted on READ only — never
+ *  written. Superseded by the {@link Keystore} envelope. */
+export interface LegacyFlatKeystore {
+  address: string;
+  publicKey: string;
+  kdf: "argon2id";
+  kdfParams: { m: number; t: number; p: number; salt: string };
+  cipher?: "aes-256-gcm" | "chacha20-poly1305";
+  nonce: string;
+  ciphertext: string;
   version: 1;
 }
 
@@ -105,6 +125,14 @@ const KDF_DEFAULTS = { m: 65_536, t: 3, p: 4 } as const;
 const KDF_KEY_LEN = 32; // 256-bit key (AES-256-GCM / ChaCha20-Poly1305)
 const SALT_LEN = 16;
 const NONCE_LEN = 12;
+
+/** Upper bounds on KDF params read from an untrusted keystore file. A crafted
+ *  or bit-flipped file must not be able to wedge the process with an unbounded
+ *  memory or iteration cost. Mirrors the playground's accepted ranges. There is
+ *  deliberately NO lower "floor" reject — that would brick a legitimately-owned
+ *  legacy vault, and the password + GCM auth tag are the real gate. Writers
+ *  always emit the OWASP-2024 floor (64 MiB / 3 / 4). */
+const KDF_MAX = { memory_kb: 1_048_576, iterations: 16, parallelism: 16 } as const;
 
 // ============================================================================
 // Wallet
@@ -165,46 +193,67 @@ export class Wallet extends AbstractSigner {
     return new Wallet(address, publicKey, { hex: secretKey });
   }
 
-  /** Restore from an encrypted Keystore + password. The decrypted SK
-   *  lives in the JS heap until `destroy()` is called. */
-  static async fromEncrypted(keystore: Keystore, password: string): Promise<Wallet> {
-    validateKeystore(keystore);
-    const secret = await decryptKeystore(keystore, password);
-    return new Wallet(keystore.address, keystore.publicKey, { hex: secret });
+  /** Restore from an encrypted keystore + password. Accepts the canonical
+   *  multi-account {@link Keystore} envelope (from any conformant impl — the
+   *  CLI, playground, or this SDK) OR a {@link LegacyFlatKeystore} written by
+   *  pyde-ts-sdk ≤ 0.2.x. For a multi-account envelope pass `opts.name` to pick
+   *  the account (a single-entry file needs no name). The decrypted SK lives in
+   *  the JS heap until `destroy()` is called. */
+  static async fromEncrypted(
+    keystore: Keystore | LegacyFlatKeystore,
+    password: string,
+    opts?: { name?: string },
+  ): Promise<Wallet> {
+    const entry = resolveEntry(keystore, opts?.name);
+    const secret = await decryptEntry(entry, password);
+    return new Wallet(entry.address, entry.pubkey, { hex: secret });
   }
 
-  /** Node-only convenience: read a keystore JSON file from disk and decrypt. */
-  static async fromKeystoreFile(path: string, password: string): Promise<Wallet> {
+  /** Node-only convenience: read a keystore JSON file from disk and decrypt.
+   *  Pass `opts.name` to pick an account from a multi-account file. */
+  static async fromKeystoreFile(
+    path: string,
+    password: string,
+    opts?: { name?: string },
+  ): Promise<Wallet> {
     const fs = await loadFsOrThrow("fromKeystoreFile");
     const content = fs.readFileSync(path, "utf-8");
-    const keystore = JSON.parse(content) as Keystore;
-    return Wallet.fromEncrypted(keystore, password);
+    const keystore = JSON.parse(content) as Keystore | LegacyFlatKeystore;
+    return Wallet.fromEncrypted(keystore, password, opts);
   }
 
   // ==========================================================================
   // Keystore export
   // ==========================================================================
 
-  /** Encrypt the wallet's SK with `password` and return the keystore.
-   *  Throws on handle-only wallets (no hex SK to encrypt). */
-  async toKeystore(password: string, params?: Partial<typeof KDF_DEFAULTS>): Promise<Keystore> {
+  /** Encrypt the wallet's SK with `password` and return the canonical
+   *  multi-account {@link Keystore} envelope with this account as its single
+   *  entry (keyed by `opts.name`, default `"default"`). The file this produces
+   *  opens in the CLI, playground, and Rust SDK. Throws on handle-only wallets
+   *  (no hex SK to encrypt). */
+  async toKeystore(
+    password: string,
+    opts?: { name?: string } & Partial<typeof KDF_DEFAULTS>,
+  ): Promise<Keystore> {
     if ("destroyed" in this.key) throw new WalletDestroyedError();
     if (!("hex" in this.key)) {
       throw new SigningError(
         "Cannot export keystore from a handle-only wallet. Use Wallet.generateUnsafe() if you need a hex SK.",
       );
     }
-    return encryptKeystore(this.address, this.publicKey, this.key.hex, password, params);
+    const name = opts?.name ?? "default";
+    const entry = await encryptEntry(this.address, this.publicKey, this.key.hex, password, opts);
+    return { version: 1, accounts: { [name]: entry } };
   }
 
   /** Node-only convenience: encrypt + write to disk with mode 0600. */
   async saveKeystoreFile(
     path: string,
     password: string,
-    params?: Partial<typeof KDF_DEFAULTS>,
+    opts?: { name?: string } & Partial<typeof KDF_DEFAULTS>,
   ): Promise<void> {
     const fs = await loadFsOrThrow("saveKeystoreFile");
-    const keystore = await this.toKeystore(password, params);
+    const keystore = await this.toKeystore(password, opts);
     fs.mkdirSync(dirnameOf(path), { recursive: true });
     fs.writeFileSync(path, JSON.stringify(keystore, null, 2));
     try {
@@ -768,42 +817,130 @@ export class Wallet extends AbstractSigner {
 
 const ZERO_ADDR = "0x" + "00".repeat(32);
 
-function validateKeystore(k: Keystore): void {
+/** A keystore entry normalized from either on-disk form, ready to decrypt. */
+type NormalizedEntry = {
+  address: string;
+  pubkey: string;
+  salt: string;
+  nonce: string;
+  ciphertext: string;
+  cipher: "aes-256-gcm" | "chacha20-poly1305";
+  kdf: { memory_kb: number; iterations: number; parallelism: number };
+};
+
+/** Validate + normalize either keystore form (canonical envelope or legacy
+ *  flat) into a single decryptable entry. Enforces version, argon2id-only, the
+ *  cipher allowlist, and an UPPER bound on KDF params (anti-DoS). It does NOT
+ *  floor-reject weak params — matching otigen / the playground, which decrypt
+ *  below-floor vaults rather than lock the owner out (the password + GCM tag
+ *  are the real gate). */
+function resolveEntry(k: Keystore | LegacyFlatKeystore, name?: string): NormalizedEntry {
+  if (k === null || typeof k !== "object") throw new SigningError("invalid keystore");
   if (k.version !== 1) throw new SigningError(`unsupported keystore version: ${k.version}`);
-  if (k.kdf !== "argon2id") throw new SigningError(`unsupported KDF: ${k.kdf}`);
-  // Cipher-agile read, bounded to two strong 256-bit AEADs. AES-256-GCM is the
-  // write default; ChaCha20-Poly1305 is accepted for keystores written by older
-  // SDK versions. Anything outside this allowlist is rejected — an
-  // unauthenticated `cipher` field must never select a weak or unknown suite
-  // (downgrade-attack hygiene).
-  if (k.cipher !== "aes-256-gcm" && k.cipher !== "chacha20-poly1305") {
-    throw new SigningError(`unsupported cipher: ${k.cipher}`);
+
+  let e: NormalizedEntry;
+  if ("accounts" in k && k.accounts && typeof k.accounts === "object") {
+    // Canonical multi-account envelope.
+    const names = Object.keys(k.accounts);
+    const chosen = name ?? (names.length === 1 ? names[0] : undefined);
+    if (chosen === undefined) {
+      throw new SigningError(
+        `keystore holds ${names.length} accounts — pass { name } (one of: ${names.join(", ")})`,
+      );
+    }
+    // `hasOwnProperty` guard: a name like "toString"/"constructor" would
+    // otherwise resolve to an inherited Object.prototype member instead of
+    // undefined, defeating the not-found check (no pollution risk — JSON.parse
+    // makes __proto__ an own property — but this yields a clean error).
+    const acct = k.accounts[chosen];
+    if (!Object.prototype.hasOwnProperty.call(k.accounts, chosen) || !acct) {
+      throw new SigningError(`account not found in keystore: ${chosen}`);
+    }
+    e = {
+      address: acct.address,
+      pubkey: acct.pubkey,
+      salt: acct.salt,
+      nonce: acct.nonce,
+      ciphertext: acct.ciphertext,
+      cipher: acct.cipher ?? "aes-256-gcm",
+      kdf: normalizeKdf(acct.kdf?.name, acct.kdf?.memory_kb, acct.kdf?.iterations, acct.kdf?.parallelism),
+    };
+  } else if ("ciphertext" in k && "kdfParams" in k) {
+    // Legacy flat form (pyde-ts-sdk ≤ 0.2.x). `name` is ignored — single account.
+    e = {
+      address: k.address,
+      pubkey: k.publicKey,
+      salt: k.kdfParams.salt,
+      nonce: k.nonce,
+      ciphertext: k.ciphertext,
+      // ≤0.2.x wrote ChaCha20-Poly1305 and always set the field; default to it
+      // for a pre-cipher-field file.
+      cipher: k.cipher ?? "chacha20-poly1305",
+      kdf: normalizeKdf(k.kdf, k.kdfParams.m, k.kdfParams.t, k.kdfParams.p),
+    };
+  } else {
+    throw new SigningError(
+      "unrecognized keystore shape (neither multi-account envelope nor legacy flat)",
+    );
   }
+
+  if (e.cipher !== "aes-256-gcm" && e.cipher !== "chacha20-poly1305") {
+    throw new SigningError(`unsupported cipher: ${e.cipher}`);
+  }
+  return e;
 }
 
-/** Build the AEAD instance for a keystore cipher. Bounded to the two strong
- *  256-bit AEADs the ecosystem writes/reads — a defense-in-depth mirror of the
- *  `validateKeystore` allowlist so a decrypt is never reached with an unknown
- *  suite. Both use a 32-byte key + 12-byte nonce and append a 16-byte tag, so
- *  the on-disk schema is identical regardless of which is selected. */
-function aeadFor(cipher: Keystore["cipher"], key: Uint8Array, nonce: Uint8Array) {
+/** Argon2id-only + upper-bound (anti-DoS) validation of KDF params. */
+function normalizeKdf(
+  name: unknown,
+  memory_kb: unknown,
+  iterations: unknown,
+  parallelism: unknown,
+): { memory_kb: number; iterations: number; parallelism: number } {
+  if (name !== "argon2id") throw new SigningError(`unsupported KDF: ${String(name)}`);
+  const bounded = (n: unknown, max: number): number => {
+    if (typeof n !== "number" || !Number.isInteger(n) || n < 1 || n > max) {
+      throw new SigningError("keystore KDF params out of accepted range");
+    }
+    return n;
+  };
+  return {
+    memory_kb: bounded(memory_kb, KDF_MAX.memory_kb),
+    iterations: bounded(iterations, KDF_MAX.iterations),
+    parallelism: bounded(parallelism, KDF_MAX.parallelism),
+  };
+}
+
+/** Build the AEAD for a keystore cipher — the single decrypt dispatch point,
+ *  bounded to the two strong 256-bit AEADs the ecosystem reads. Both use a
+ *  32-byte key + 12-byte nonce and append a 16-byte tag, so the on-disk shape
+ *  is identical regardless of which is selected. */
+function aeadFor(cipher: "aes-256-gcm" | "chacha20-poly1305", key: Uint8Array, nonce: Uint8Array) {
   switch (cipher) {
     case "aes-256-gcm":
       return gcm(key, nonce);
     case "chacha20-poly1305":
       return chacha20poly1305(key, nonce);
     default:
-      throw new SigningError(`unsupported cipher: ${cipher}`);
+      throw new SigningError(`unsupported cipher: ${cipher as string}`);
   }
 }
 
-async function encryptKeystore(
+/** Ensure a single lowercase `0x` prefix. Idempotent — `address` / `pubkey`
+ *  already carry `0x` from the crypto layer; salt / nonce / ciphertext come
+ *  from `bytesToHex` (bare). */
+function hex0x(hex: string): string {
+  const h = hex.startsWith("0x") || hex.startsWith("0X") ? hex.slice(2) : hex;
+  return "0x" + h.toLowerCase();
+}
+
+async function encryptEntry(
   address: string,
   publicKey: string,
   secretKeyHex: string,
   password: string,
   params?: Partial<typeof KDF_DEFAULTS>,
-): Promise<Keystore> {
+): Promise<KeystoreEntry> {
   const m = params?.m ?? KDF_DEFAULTS.m;
   const t = params?.t ?? KDF_DEFAULTS.t;
   const p = params?.p ?? KDF_DEFAULTS.p;
@@ -814,37 +951,31 @@ async function encryptKeystore(
 
   const sk = hexToBytes(secretKeyHex);
   // Write default is AES-256-GCM — the ecosystem-standard keystore cipher
-  // (otigen-wallet, pyde-rust-sdk, pyde-book §8.7). Legacy ChaCha20-Poly1305
-  // keystores remain readable via the agile decrypt path below.
-  const aead = aeadFor("aes-256-gcm", key, nonce);
-  const ciphertext = aead.encrypt(sk);
+  // (otigen-wallet, playground, pyde-book §8.7).
+  const ciphertext = aeadFor("aes-256-gcm", key, nonce).encrypt(sk);
 
   return {
-    address,
-    publicKey,
-    kdf: "argon2id",
-    kdfParams: { m, t, p, salt: bytesToHex(salt) },
+    address: hex0x(address),
+    pubkey: hex0x(publicKey),
+    ciphertext: hex0x(bytesToHex(ciphertext)),
+    salt: hex0x(bytesToHex(salt)),
+    nonce: hex0x(bytesToHex(nonce)),
     cipher: "aes-256-gcm",
-    nonce: bytesToHex(nonce),
-    ciphertext: bytesToHex(ciphertext),
-    version: 1,
+    kdf: { name: "argon2id", memory_kb: m, iterations: t, parallelism: p },
   };
 }
 
-async function decryptKeystore(k: Keystore, password: string): Promise<string> {
-  const salt = hexToBytes(k.kdfParams.salt);
-  const nonce = hexToBytes(k.nonce);
-  const ciphertext = hexToBytes(k.ciphertext);
+async function decryptEntry(e: NormalizedEntry, password: string): Promise<string> {
+  const salt = hexToBytes(e.salt);
+  const nonce = hexToBytes(e.nonce);
+  const ciphertext = hexToBytes(e.ciphertext);
   const key = argon2id(utf8ToBytes(password), salt, {
-    t: k.kdfParams.t,
-    m: k.kdfParams.m,
-    p: k.kdfParams.p,
+    t: e.kdf.iterations,
+    m: e.kdf.memory_kb,
+    p: e.kdf.parallelism,
     dkLen: KDF_KEY_LEN,
   });
-  // Agile read: dispatch on the keystore's declared cipher (already bounded to
-  // the allowlist by validateKeystore). AES-256-GCM for current keystores,
-  // ChaCha20-Poly1305 for legacy ones.
-  const aead = aeadFor(k.cipher, key, nonce);
+  const aead = aeadFor(e.cipher, key, nonce);
   let plaintext: Uint8Array;
   try {
     plaintext = aead.decrypt(ciphertext);

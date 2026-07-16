@@ -4,12 +4,15 @@ All notable changes to `pyde-ts-sdk` ship here. Versioning follows [Semantic Ver
 
 ## 0.3.0 — 2026-07-16
 
-### Keystore cipher standardized on AES-256-GCM
+### Keystore standardized on the canonical cross-impl format
 
-- **`toKeystore` now writes Argon2id + AES-256-GCM** (behavior change), matching the ecosystem-canonical keystore (`otigen-wallet`, `pyde-rust-sdk`, Pyde Book §8.7). `0.1.0`–`0.2.0` wrote ChaCha20-Poly1305 — the lone outlier in the ecosystem. New AES-256-GCM keystores are interoperable with the CLI and Rust SDK. **A keystore written by ≥0.3.0 will not decrypt on ≤0.2.0** (whose reader only accepts ChaCha20-Poly1305); the reverse direction is fine.
-- **Reads are cipher-agile.** `fromEncrypted` / `fromKeystoreFile` dispatch on the keystore's `cipher` field and still decrypt legacy `chacha20-poly1305` keystores written by `0.1.0`–`0.2.0`. The `cipher` allowlist is bounded to these two strong 256-bit AEADs — an unknown or weak suite is rejected before decryption (downgrade-attack hygiene).
-- **Type change:** `Keystore.cipher` widens from `"chacha20-poly1305"` to `"aes-256-gcm" | "chacha20-poly1305"` (additive — non-breaking for consumers reading the field). The on-disk schema (`version: 1`, `kdfParams`, `nonce`, `ciphertext`, 16-byte appended tag) is byte-identical across both ciphers, so the schema `version` is unchanged.
-- No new dependencies — `gcm` comes from the already-present `@noble/ciphers/aes`.
+The keystore is now byte-identical to `otigen wallet`, the playground, and pyde-book §8.7 — **one file opens everywhere**. Both the cipher and the on-disk envelope changed.
+
+- **Cipher → Argon2id + AES-256-GCM (write default).** `0.1.0`–`0.2.0` wrote ChaCha20-Poly1305, the lone ecosystem outlier. New keystores are AES-256-GCM.
+- **On-disk format → the canonical multi-account envelope.** `toKeystore` now returns `{ version: 1, accounts: { <name>: KeystoreEntry } }` with `0x`-prefixed hex fields, the `pubkey` field name, and a flat `kdf: { name, memory_kb, iterations, parallelism }`. `toKeystore(password, { name })` sets the entry key (default `"default"`); `fromEncrypted(ks, password, { name })` selects an account (optional for a single-entry file). A committed golden-fixture test decrypts a real `otigen wallet` keystore, proving cross-impl parity.
+- **Reads are format- and cipher-agile.** `fromEncrypted` / `fromKeystoreFile` accept the canonical envelope AND the legacy flat single-account shape written by pyde-ts-sdk ≤ 0.2.x, and decrypt both AES-256-GCM and legacy `chacha20-poly1305` entries (cipher absent ⇒ aes-256-gcm). The cipher allowlist is bounded to those two strong 256-bit AEADs; the KDF is argon2id-only with an upper-bound (anti-DoS) clamp on params. Weak-but-valid params are decrypted rather than rejected (matching otigen/the playground — never brick a legitimately-owned vault).
+- **Types:** `Keystore` is now the envelope; new `KeystoreEntry` and (read-only) `LegacyFlatKeystore` are exported.
+- **Compat:** a keystore written by ≥0.3.0 will not decrypt on ≤0.2.0 (old flat/ChaCha-only reader); ≥0.3.0 reads everything older. No new dependencies — `gcm` comes from the already-present `@noble/ciphers/aes`.
 
 ## 0.2.0 — 2026-07-16
 
