@@ -14,7 +14,11 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { Wallet, WalletDestroyedError } from "../src/index";
+import { Wallet, WalletDestroyedError, type Keystore } from "../src/index";
+import { argon2id } from "@noble/hashes/argon2";
+import { chacha20poly1305 } from "@noble/ciphers/chacha";
+import { randomBytes } from "@noble/ciphers/webcrypto";
+import { utf8ToBytes, hexToBytes, bytesToHex } from "@noble/hashes/utils";
 import {
   verifySignature,
   hashTransaction,
@@ -288,6 +292,52 @@ describe("Wallet keystore round-trip", () => {
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
+  });
+});
+
+// --------------------------------------------------------------------------
+// Keystore — cipher agility. AES-256-GCM is the write default; legacy
+// ChaCha20-Poly1305 keystores stay readable; unknown ciphers are rejected.
+// --------------------------------------------------------------------------
+describe("Keystore — cipher agility", () => {
+  it("toKeystore writes the AES-256-GCM cipher by default", async () => {
+    const ks = await Wallet.generateUnsafe().toKeystore("pw");
+    expect(ks.cipher).toBe("aes-256-gcm");
+  });
+
+  it("fromEncrypted still decrypts a legacy ChaCha20-Poly1305 keystore", async () => {
+    // Hand-build a keystore in the OLD ChaCha20-Poly1305 format a prior SDK
+    // version would have written, then prove the agile reader still opens it.
+    const kp = generateKeypair();
+    const password = "legacy-pw";
+    const salt = randomBytes(16);
+    const nonce = randomBytes(12);
+    const key = argon2id(utf8ToBytes(password), salt, { t: 3, m: 65_536, p: 4, dkLen: 32 });
+    const skBytes = hexToBytes(kp.secretKey.replace(/^0x/, ""));
+    const ciphertext = chacha20poly1305(key, nonce).encrypt(skBytes);
+    const legacy: Keystore = {
+      address: kp.address,
+      publicKey: kp.publicKey,
+      kdf: "argon2id",
+      kdfParams: { m: 65_536, t: 3, p: 4, salt: bytesToHex(salt) },
+      cipher: "chacha20-poly1305",
+      nonce: bytesToHex(nonce),
+      ciphertext: bytesToHex(ciphertext),
+      version: 1,
+    };
+
+    const restored = await Wallet.fromEncrypted(legacy, password);
+    expect(restored.address).toBe(kp.address);
+    // Signing parity confirms the SK was actually recovered from the legacy blob.
+    const sig = restored.sign("0xfeed");
+    expect(verifySignature(kp.publicKey, "0xfeed", sig)).toBe(true);
+  });
+
+  it("fromEncrypted rejects an unknown cipher (downgrade-attack hygiene)", async () => {
+    const ks = await Wallet.generateUnsafe().toKeystore("pw");
+    const bad = JSON.parse(JSON.stringify(ks)) as Keystore;
+    (bad as { cipher: string }).cipher = "aes-128-ecb";
+    await expect(Wallet.fromEncrypted(bad, "pw")).rejects.toThrow(/unsupported cipher/i);
   });
 });
 

@@ -182,7 +182,7 @@ Wallet.fromEncrypted(keystore: Keystore, password: string): Promise<Wallet>
 
 | Name       | Type       | Description                            |
 | ---------- | ---------- | -------------------------------------- |
-| `keystore` | `Keystore` | Argon2id + ChaCha20-Poly1305 envelope. |
+| `keystore` | `Keystore` | Argon2id + AES-256-GCM envelope.       |
 | `password` | `string`   | Decryption passphrase.                 |
 
 **Returns:** `Promise<Wallet>` — hex-backed wallet with SK in JS heap.
@@ -200,7 +200,7 @@ interface Keystore {
     p: number;           // parallelism (default 4)
     salt: string;        // 16-byte salt hex
   };
-  cipher: "chacha20-poly1305";
+  cipher: "aes-256-gcm" | "chacha20-poly1305";
   nonce: string;         // 12-byte AEAD nonce hex
   ciphertext: string;    // encrypted SK + AEAD tag, hex
   version: 1;
@@ -503,7 +503,7 @@ wallet.toKeystore(
 | `iterations`  | `3`                  | Argon2id iterations.                                               |
 | `parallelism` | `4`                  | Argon2id parallelism.                                              |
 
-**AEAD:** ChaCha20-Poly1305 (24-byte nonce).
+**AEAD:** AES-256-GCM (12-byte nonce). ChaCha20-Poly1305 keystores written by older SDK versions are still accepted on read.
 
 **Defaults take ~250 ms on a 2024 laptop** — matches `pyde keys generate` (Chapter 17).
 

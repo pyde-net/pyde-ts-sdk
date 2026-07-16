@@ -361,4 +361,4 @@ Tied to the latest Pyde Book (`book.pyde.network`):
 | Event encoding (Borsh-default)           | `HOST_FN_ABI_SPEC.md §14`                       |
 | Address = full Poseidon2 (no truncation) | Pyde Book Chapter 6                             |
 | u64 nonce + 16-slot sliding window       | Pyde Book Chapter 11                            |
-| Keystore (Argon2id + ChaCha20-Poly1305)  | Pyde Book Chapter 17                            |
+| Keystore (Argon2id + AES-256-GCM)        | Pyde Book Chapter 17                            |

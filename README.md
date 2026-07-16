@@ -158,7 +158,7 @@ const txReceipt = await wallet.sendCall(contractAddr, calldataHex);
 wallet.destroy();
 ```
 
-Keystore format matches `pyde keys generate` (Chapter 17): Argon2id KDF (default m=64MiB, t=3, p=4) + ChaCha20-Poly1305 AEAD. Defaults are tuned for ~250ms on a modern laptop.
+Keystore format matches `pyde keys generate` (Chapter 17): Argon2id KDF (default m=64MiB, t=3, p=4) + AES-256-GCM AEAD. Defaults are tuned for ~250ms on a modern laptop. Legacy ChaCha20-Poly1305 keystores from older SDK versions still decrypt.
 
 ## Private (front-running-resistant) submission
 
@@ -335,7 +335,7 @@ The pre-pivot SDK targeted a different consensus + execution layer. Most APIs su
 - **`LogFilter.fromBlock / toBlock` → `fromWave / toWave`**, plus `cursor` and `limit` for HOST_FN_ABI §15.4 cursor pagination.
 - **`provider.getLogs` now returns `GetLogsResponse`** (not `Log[]`) — `.events` + optional `.nextCursor`.
 - **`Wallet.fromPrivateKey` / `exportPrivateKey` are gone** — the combined-key hex format was pre-pivot. Use `Wallet.fromKeys(pk, sk)` for restoration.
-- **`Wallet.fromKeystore(path)` → `Wallet.fromKeystoreFile(path)`** (now async; returns `Promise<Wallet>`). The keystore format itself swapped Poseidon2-derived AES-256-GCM for Argon2id + ChaCha20-Poly1305 to match `pyde keys generate`.
+- **`Wallet.fromKeystore(path)` → `Wallet.fromKeystoreFile(path)`** (now async; returns `Promise<Wallet>`). The keystore format swapped the pre-pivot Poseidon2-derived combined-key file for the `pyde keys generate` keystore (Argon2id + AES-256-GCM).
 - **TxType**: id 0 is now `Standard` (covers transfers + contract calls); id 2 is vacant (was `Batch`, removed pre-mainnet); add 11 other variants documented in Chapter 11 §11.8.
 - **Wallet methods** moved to opts-object style:
   ```ts

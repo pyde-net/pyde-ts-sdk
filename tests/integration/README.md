@@ -42,4 +42,4 @@ The runner is configured for serial execution (one devnet on `127.0.0.1:9933` at
 
 The devnet's pre-funded accounts are recovered into the otigen keystore by `otigen wallet import --from-devnet`. The funding pattern then uses `otigen wallet transfer` (or falls back to a `Standard` tx via `otigen call` with the zero address) to send PYDE from `devnet-0` to an SDK-generated handle-backed wallet. The SDK then calls `registerPubkey` against the now-funded address and proceeds with the actual test logic.
 
-This indirection through `otigen` (rather than loading the otigen keystore directly) is deliberate — the otigen + SDK keystores use different AEADs (Argon2id+AES-256-GCM vs Argon2id+ChaCha20-Poly1305) and the transfer pattern mirrors how a dapp user actually acquires funds.
+This indirection through `otigen` (rather than loading the otigen keystore directly) is deliberate — the transfer pattern mirrors how a dapp user actually acquires funds. (Both keystores now use Argon2id + AES-256-GCM, so they're format-compatible; the indirection reflects the funding flow, not a cipher mismatch.)

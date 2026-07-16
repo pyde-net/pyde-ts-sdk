@@ -2,6 +2,15 @@
 
 All notable changes to `pyde-ts-sdk` ship here. Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html) once we hit 1.0; pre-1.0 we ship `0.x.y-beta.N` and break liberally between minors. Each entry calls out wire-format / behavior-altering changes explicitly.
 
+## 0.3.0 — 2026-07-16
+
+### Keystore cipher standardized on AES-256-GCM
+
+- **`toKeystore` now writes Argon2id + AES-256-GCM** (behavior change), matching the ecosystem-canonical keystore (`otigen-wallet`, `pyde-rust-sdk`, Pyde Book §8.7). `0.1.0`–`0.2.0` wrote ChaCha20-Poly1305 — the lone outlier in the ecosystem. New AES-256-GCM keystores are interoperable with the CLI and Rust SDK. **A keystore written by ≥0.3.0 will not decrypt on ≤0.2.0** (whose reader only accepts ChaCha20-Poly1305); the reverse direction is fine.
+- **Reads are cipher-agile.** `fromEncrypted` / `fromKeystoreFile` dispatch on the keystore's `cipher` field and still decrypt legacy `chacha20-poly1305` keystores written by `0.1.0`–`0.2.0`. The `cipher` allowlist is bounded to these two strong 256-bit AEADs — an unknown or weak suite is rejected before decryption (downgrade-attack hygiene).
+- **Type change:** `Keystore.cipher` widens from `"chacha20-poly1305"` to `"aes-256-gcm" | "chacha20-poly1305"` (additive — non-breaking for consumers reading the field). The on-disk schema (`version: 1`, `kdfParams`, `nonce`, `ciphertext`, 16-byte appended tag) is byte-identical across both ciphers, so the schema `version` is unchanged.
+- No new dependencies — `gcm` comes from the already-present `@noble/ciphers/aes`.
+
 ## 0.2.0 — 2026-07-16
 
 ### Breaking — MEV protection is now commit-reveal, not threshold encryption
