@@ -1,133 +1,4 @@
 /**
- * One-shot client-side EncryptedTx builder. Does everything a
- * wallet needs for the MEV-protected flow in a single call:
- *   1. Threshold-encrypt `(to || value_le || calldata)` with the
- *      committee pubkey.
- *   2. Assemble the EncryptedTx wire frame with `signature = []`.
- *   3. Compute `EncryptedTx::hash` (same formula the node uses).
- *   4. FALCON-sign the hash with the sender's secret key.
- *   5. Serialize the full wire frame.
- * `params_json` shape (all strings are `0x`-prefixed hex unless
- * noted):
- * ```ignore
- * {
- *   "thresholdPk": "0x...",          // wire bytes from pyde_getThresholdPublicKey
- *   "sender": "0x...",               // 32-byte address
- *   "nonce": 0,                      // u64
- *   "gasLimit": 100000,              // u64
- *   "accessList": [                  // optional
- *     { "address":     "0x...",
- *       "storageKeys": ["0x..."],
- *       "accessType":  0 }           // 0 = Read, 1 = ReadWrite
- *   ],
- *   "deadline": null,                // optional u64
- *   "chainId": 31337,                // u64
- *   "to": "0x...",                   // 32-byte address
- *   "value": "1000",                 // u128 decimal string
- *   "calldata": "0x..."              // hex bytes
- * }
- * ```
- * Returns hex of the wire-encoded EncryptedTx, ready to submit via
- * `pyde_sendRawEncryptedTransaction`.
- * @param {string} params_json
- * @param {string} sk_hex
- * @returns {string}
- */
-export function buildRawEncryptedTx(params_json, sk_hex) {
-    let deferred4_0;
-    let deferred4_1;
-    try {
-        const ptr0 = passStringToWasm0(params_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ptr1 = passStringToWasm0(sk_hex, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len1 = WASM_VECTOR_LEN;
-        const ret = wasm.buildRawEncryptedTx(ptr0, len0, ptr1, len1);
-        var ptr3 = ret[0];
-        var len3 = ret[1];
-        if (ret[3]) {
-            ptr3 = 0; len3 = 0;
-            throw takeFromExternrefTable0(ret[2]);
-        }
-        deferred4_0 = ptr3;
-        deferred4_1 = len3;
-        return getStringFromWasm0(ptr3, len3);
-    } finally {
-        wasm.__wbindgen_free(deferred4_0, deferred4_1, 1);
-    }
-}
-
-/**
- * Handle-based variant of `buildRawEncryptedTx`. Same `params_json`
- * shape + same wire-format output, but signs using a key retained in
- * the handle table — the FALCON secret key never leaves this crate's
- * WASM heap. Use with the keypair from `generateKeypairHandle`.
- *
- * Mirrors the signing handle pattern of `signMessageWithHandle` and
- * `signTransactionWithHandle`.
- * @param {string} params_json
- * @param {number} handle
- * @returns {string}
- */
-export function buildRawEncryptedTxWithHandle(params_json, handle) {
-    let deferred3_0;
-    let deferred3_1;
-    try {
-        const ptr0 = passStringToWasm0(params_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.buildRawEncryptedTxWithHandle(ptr0, len0, handle);
-        var ptr2 = ret[0];
-        var len2 = ret[1];
-        if (ret[3]) {
-            ptr2 = 0; len2 = 0;
-            throw takeFromExternrefTable0(ret[2]);
-        }
-        deferred3_0 = ptr2;
-        deferred3_1 = len2;
-        return getStringFromWasm0(ptr2, len2);
-    } finally {
-        wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
-    }
-}
-
-/**
- * Combine a threshold of decryption shares to recover the plaintext.
- * `shares_json` = JSON array of hex `DecryptionShare`s; `ciphertext_hex` = the
- * same `ThresholdCiphertext` wire bytes; `committee_pks_json` = JSON array of
- * hex FALCON public keys, positioned so `committee_pks[i]` is the member with
- * key-share index `i + 1` (shares are FALCON-verified against this table).
- * Returns hex of the recovered plaintext.
- * @param {string} shares_json
- * @param {number} threshold
- * @param {string} ciphertext_hex
- * @param {string} committee_pks_json
- * @returns {string}
- */
-export function combineShares(shares_json, threshold, ciphertext_hex, committee_pks_json) {
-    let deferred5_0;
-    let deferred5_1;
-    try {
-        const ptr0 = passStringToWasm0(shares_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ptr1 = passStringToWasm0(ciphertext_hex, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len1 = WASM_VECTOR_LEN;
-        const ptr2 = passStringToWasm0(committee_pks_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len2 = WASM_VECTOR_LEN;
-        const ret = wasm.combineShares(ptr0, len0, threshold, ptr1, len1, ptr2, len2);
-        var ptr4 = ret[0];
-        var len4 = ret[1];
-        if (ret[3]) {
-            ptr4 = 0; len4 = 0;
-            throw takeFromExternrefTable0(ret[2]);
-        }
-        deferred5_0 = ptr4;
-        deferred5_1 = len4;
-        return getStringFromWasm0(ptr4, len4);
-    } finally {
-        wasm.__wbindgen_free(deferred5_0, deferred5_1, 1);
-    }
-}
-
-/**
  * Compute FNV-1a function selector (same as Otigen codegen).
  * @param {string} name
  * @returns {number}
@@ -167,7 +38,7 @@ export function deriveAddress(pk_hex) {
 }
 
 /**
- * : drop a retained keypair. The `FalconSecretKey`'s
+ * drop a retained keypair. The `FalconSecretKey`'s
  * `ZeroizeOnDrop` impl () overwrites the secret bytes in
  * place when removed from the table. Returns `true` if a key was
  * actually removed, `false` if the handle was already dropped.
@@ -214,42 +85,6 @@ export function encodeRegisterPubkeyTx(tx_json) {
 }
 
 /**
- * One committee member's partial decryption of a ciphertext. `key_share_hex`
- * is one entry from `thresholdKeygen`; `ciphertext_hex` is the
- * `ThresholdCiphertext` wire bytes (exactly what `thresholdEncrypt` returns);
- * `falcon_sk_hex` is THAT member's FALCON secret key (each share is signed).
- * Returns hex of the `DecryptionShare` wire bytes.
- * @param {string} key_share_hex
- * @param {string} ciphertext_hex
- * @param {string} falcon_sk_hex
- * @returns {string}
- */
-export function generateDecryptionShare(key_share_hex, ciphertext_hex, falcon_sk_hex) {
-    let deferred5_0;
-    let deferred5_1;
-    try {
-        const ptr0 = passStringToWasm0(key_share_hex, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ptr1 = passStringToWasm0(ciphertext_hex, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len1 = WASM_VECTOR_LEN;
-        const ptr2 = passStringToWasm0(falcon_sk_hex, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len2 = WASM_VECTOR_LEN;
-        const ret = wasm.generateDecryptionShare(ptr0, len0, ptr1, len1, ptr2, len2);
-        var ptr4 = ret[0];
-        var len4 = ret[1];
-        if (ret[3]) {
-            ptr4 = 0; len4 = 0;
-            throw takeFromExternrefTable0(ret[2]);
-        }
-        deferred5_0 = ptr4;
-        deferred5_1 = len4;
-        return getStringFromWasm0(ptr4, len4);
-    } finally {
-        wasm.__wbindgen_free(deferred5_0, deferred5_1, 1);
-    }
-}
-
-/**
  * Generate a FALCON-512 keypair.
  * Returns JSON: { "publicKey": "0x...", "secretKey": "0x...", "address": "0x..." }
  * **security warning**: this function returns the
@@ -265,7 +100,7 @@ export function generateDecryptionShare(key_share_hex, ciphertext_hex, falcon_sk
  * inside this crate's WASM heap and return only an opaque `u32`
  * handle to JS — the SK bytes never enter the JS heap at all. For
  * wallets that need to encrypt the SK to disk before discarding
- * the in-memory copy (the typical `pyde-ts-sdk` / `wright`
+ * the in-memory copy (the typical `pyde-ts-sdk` / `otigen`
  * keystore flow), this hex-string return is unavoidable, but
  * callers MUST encrypt the value at the earliest opportunity and
  * must NEVER let it survive across renders or get serialized.
@@ -291,7 +126,7 @@ export function generateKeypair() {
 }
 
 /**
- * : opaque-handle variant of `generateKeypair`. Generates
+ * opaque-handle variant of `generateKeypair`. Generates
  * a FALCON-512 keypair, retains the secret key inside this crate's
  * WASM heap, and returns JSON with only the `publicKey`, `address`,
  * and an opaque `handle: u32` to JS. The SK bytes never enter the
@@ -441,7 +276,7 @@ export function signMessage(sk_hex, message_hex) {
 }
 
 /**
- * : sign a message using a key retained by handle. The
+ * sign a message using a key retained by handle. The
  * SK bytes never leave this crate's WASM heap.
  * Returns the signature as a `0x`-prefixed hex string.
  * @param {number} handle
@@ -500,7 +335,7 @@ export function signTransaction(tx_json, sk_hex) {
 }
 
 /**
- * : sign a transaction (same JSON shape as
+ * sign a transaction (same JSON shape as
  * `signTransaction`) using a key retained by handle. Returns the
  * signed wire bytes as `0x`-prefixed hex.
  * @param {string} tx_json
@@ -525,68 +360,6 @@ export function signTransactionWithHandle(tx_json, handle) {
         return getStringFromWasm0(ptr2, len2);
     } finally {
         wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
-    }
-}
-
-/**
- * Threshold-encrypt a payload against the committee's public key.
- * `pk_hex` is the hex-encoded wire bytes from
- * `pyde_getThresholdPublicKey`. `payload_hex` is the bytes to
- * encrypt — typically `to (32) || value_le (16) || calldata`.
- * Returns hex of `ThresholdCiphertext::to_wire_bytes()` ready to
- * embed in an `EncryptedTx`.
- * @param {string} pk_hex
- * @param {string} payload_hex
- * @returns {string}
- */
-export function thresholdEncrypt(pk_hex, payload_hex) {
-    let deferred4_0;
-    let deferred4_1;
-    try {
-        const ptr0 = passStringToWasm0(pk_hex, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ptr1 = passStringToWasm0(payload_hex, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len1 = WASM_VECTOR_LEN;
-        const ret = wasm.thresholdEncrypt(ptr0, len0, ptr1, len1);
-        var ptr3 = ret[0];
-        var len3 = ret[1];
-        if (ret[3]) {
-            ptr3 = 0; len3 = 0;
-            throw takeFromExternrefTable0(ret[2]);
-        }
-        deferred4_0 = ptr3;
-        deferred4_1 = len3;
-        return getStringFromWasm0(ptr3, len3);
-    } finally {
-        wasm.__wbindgen_free(deferred4_0, deferred4_1, 1);
-    }
-}
-
-/**
- * Generate a threshold committee of `n` members with reconstruction
- * `threshold`. Returns JSON `{ "thresholdPk": "0x..", "keyShares": ["0x..", ..] }`.
- * `thresholdPk` is what clients encrypt against; each key share is a member's
- * secret decryption material. The sandbox calls `thresholdKeygen(1, 1)`.
- * @param {number} n
- * @param {number} threshold
- * @returns {string}
- */
-export function thresholdKeygen(n, threshold) {
-    let deferred2_0;
-    let deferred2_1;
-    try {
-        const ret = wasm.thresholdKeygen(n, threshold);
-        var ptr1 = ret[0];
-        var len1 = ret[1];
-        if (ret[3]) {
-            ptr1 = 0; len1 = 0;
-            throw takeFromExternrefTable0(ret[2]);
-        }
-        deferred2_0 = ptr1;
-        deferred2_1 = len1;
-        return getStringFromWasm0(ptr1, len1);
-    } finally {
-        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
     }
 }
 
@@ -638,9 +411,6 @@ export function __wbg_crypto_38df2bab126b63dc(arg0) {
     const ret = arg0.crypto;
     return ret;
 }
-export function __wbg_getRandomValues_76dfc69825c9c552() { return handleError(function (arg0, arg1) {
-    globalThis.crypto.getRandomValues(getArrayU8FromWasm0(arg0, arg1));
-}, arguments); }
 export function __wbg_getRandomValues_c44a50d8cfdaebeb() { return handleError(function (arg0, arg1) {
     arg0.getRandomValues(arg1);
 }, arguments); }

@@ -1,5 +1,5 @@
 # Vendored from sibling pyde-crypto-wasm — DO NOT edit by hand.
 # Re-vendor via: npm run vendor:crypto-wasm
-# Vendored: 2026-07-07T09:12:22Z
+# Vendored: 2026-07-16T09:34:21Z
 # Source git ref:
-160d6969169152e56661cb95047876beb361b97c
+3ee8f2ff2d5fe9489d1830bc458432aca4b41573
