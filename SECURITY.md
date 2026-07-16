@@ -38,9 +38,8 @@ This SDK can hold and sign with secret keys. Callers must:
 The SDK does not implement primitives — every signature, encryption, hash, and KDF is delegated to [`pyde-crypto-wasm`](https://github.com/pyde-net/pyde-crypto-wasm), which is a wasm-bindgen wrapper around the same Rust crate the Pyde node uses. The primitives are:
 
 - **FALCON-512** — post-quantum signatures (NIST PQC final-round)
-- **Kyber-768 (ML-KEM)** — post-quantum key encapsulation, used for the threshold-encrypted MEV-protected transaction envelope
 - **Poseidon2** — ZK-friendly hash, used for address derivation and the JMT state tree
-- **Blake3** — fast hash, used in parallel with Poseidon2 for ZK-light-client verification
+- **Blake3** — fast hash, used in parallel with Poseidon2 for ZK-light-client verification, and for the commit-reveal MEV-protection commitment (Blake3 commitment)
 
 ## Keystore format
 

@@ -230,7 +230,7 @@ await adapter.sendTransaction(tx, provider);
 
 See [Chapter 07](./07-wallet-adapters.md) for the full adapter contract.
 
-## 13. Encrypted (MEV-protected) send
+## 13. Private (commit-reveal) send
 
 ```ts
 import { Provider, Wallet, parseQuanta } from "pyde-ts-sdk";
@@ -240,12 +240,30 @@ const wallet = Wallet.generateUnsafe(); // hex SK required
 wallet.connect(provider);
 await wallet.registerPubkey();
 
-const receipt = await wallet.transferEncrypted("0xrecipient...", parseQuanta("1"), {
-  deadline: 999_999n,
+// A salted commit reserves the ordering slot; the auto-reveal opens it a wave
+// or two later, and the inner transfer executes in commit order.
+const handle = await wallet.transferPrivate("0xrecipient...", parseQuanta("1"), {
+  valueCeiling: parseQuanta("5"), // over-declare to hide the true amount; drives the bond
 });
+
+// waitForReceipt resolves on the INNER tx — the real outcome.
+const receipt = await handle.waitForReceipt();
+console.log(receipt.success ? "ok" : "reverted");
 ```
 
-See [Chapter 09](./09-encrypted-mempool.md).
+For a contract call (calldata, not a bare transfer), reach for `sendPrivate`:
+
+```ts
+const handle = await wallet.sendPrivate({
+  to: "0xcontract...",
+  data: "0x...", // ABI-encoded call
+  value: 0n,
+  valueCeiling: 0n,
+});
+const receipt = await handle.waitForReceipt();
+```
+
+See [Chapter 09](./09-private-transactions.md).
 
 ## 14. Batch RPC
 

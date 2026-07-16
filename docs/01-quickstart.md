@@ -157,4 +157,4 @@ See [Chapter 04](./04-contract.md) for the full Contract API and [Chapter 05](./
 | Keystore + load encrypted SK from disk    | [03 — Wallet](./03-wallet.md)                       |
 | Encode complex args (`Vec<Order>`, enums) | [04 — Contract](./04-contract.md)                   |
 | Subscribe to new waves / events live      | [08 — WebSocket](./08-websocket.md)                 |
-| MEV-protected (encrypted) submission      | [09 — Encrypted mempool](./09-encrypted-mempool.md) |
+| MEV-protected (commit-reveal / private) submission | [09 — Private transactions](./09-private-transactions.md) |

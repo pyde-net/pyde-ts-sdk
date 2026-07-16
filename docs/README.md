@@ -21,7 +21,6 @@ What works today (verified live against `otigen devnet`):
 Still gated on engine work — surfaces exist, but the chain hasn't shipped the RPC yet:
 
 - `pyde_subscribe` / `pyde_unsubscribe` — WS subscriptions
-- `pyde_sendRawEncryptedTransaction` + `pyde_getThresholdPublicKey` — encrypted (MEV-protected) submission
 - **Tier-2 catalog alignment** — wrap `pyde_simulateTransaction` so `Wallet.transfer` / `sendCall` / `Contract.estimateGas` pick up real chain estimates instead of fixed 100k / 5M defaults, and access lists can be inferred. Same `pyde_simulateTransaction` returns the receipt + access list together. (Today the SDK uses hardcoded defaults and the chain serializes against missing access lists.)
 
 Still gated on tooling — code path is built, no funded test:
@@ -47,10 +46,10 @@ Requires Node ≥ 20 (Node 22 recommended). The browser bundle is ESM via `dist/
 | [05 — Codegen (`pyde-tsgen`)](./05-codegen.md)      | ABI → TS bindings, type-safe `<Name>Abi` shape                    |
 | [07 — Wallet adapters](./07-wallet-adapters.md)     | `WalletAdapter` interface, `InMemory` + `Browser` + custom        |
 | [08 — WebSocket](./08-websocket.md)                 | `WebSocketProvider` — subscriptions, cursor resume, terminalError |
-| [09 — Encrypted mempool](./09-encrypted-mempool.md) | MEV-protected submission, threshold encryption flow               |
+| [09 — Private transactions (commit-reveal)](./09-private-transactions.md) | MEV-protected submission via salted commit → reveal flow           |
 | [10 — Errors](./10-errors.md)                       | Error hierarchy, `isError`, `scrubError`, retry semantics         |
 | [11 — Utility surface](./11-units-hex-address.md)   | `parseQuanta` / `hexlify` / `Address`                             |
-| [12 — Examples / recipes](./12-examples.md)         | Read · Send · Index · Deploy · Encrypted                          |
+| [12 — Examples / recipes](./12-examples.md)         | Read · Send · Index · Deploy · Private (commit-reveal)            |
 | [13 — Migration](./13-migration.md)                 | Upgrade notes between SDK versions                                |
 | [14 — Internals](./14-internals.md)                 | Borsh wire format · `CallPayload` · ABI normalisation             |
 
@@ -92,8 +91,23 @@ import {
   hashTransaction,
   poseidon2Hash,
   computeSelector,
-  thresholdEncrypt,
-  buildRawEncryptedTx,
+} from "pyde-ts-sdk";
+```
+
+Private transactions (commit-reveal MEV protection — `Wallet.sendPrivate` is the one-call path; these low-level helpers are for relays / advanced flows):
+
+```ts
+import {
+  requiredBond,
+  commitmentHash,
+  encodeCommitPayload,
+  encodeRevealPayload,
+  COMMIT_REVEAL_WINDOW_WAVES,
+  MIN_COMMIT_BOND,
+  COMMIT_BOND_BPS,
+  COMMITMENT_DOMAIN_TAG,
+  type CommitPayload,
+  type RevealPayload,
 } from "pyde-ts-sdk";
 ```
 
@@ -155,7 +169,7 @@ import { generateTypes } from "pyde-ts-sdk/codegen";
 | RPC surface                             | Pyde Book Chapter 17.4                               |
 | Transaction wire                        | Pyde Book Chapter 11                                 |
 | Wave header / state root hybrid         | Pyde Book Chapter 6 + `hash_strategy_and_validation` |
-| Encrypted mempool                       | Pyde Book Chapter 8.5 + Chapter 9                    |
+| Private transactions (commit-reveal)    | Pyde Book Chapter 9                                  |
 | Host fn ABI                             | `HOST_FN_ABI_SPEC.md`                                |
 | Event encoding (Borsh)                  | `HOST_FN_ABI_SPEC.md §14`                            |
 | Keystore (Argon2id + ChaCha20-Poly1305) | Pyde Book Chapter 17                                 |
@@ -165,7 +179,7 @@ import { generateTypes } from "pyde-ts-sdk/codegen";
 - All wave / nonce / `u64` wire fields are `bigint` end-to-end. Use `bigint` literals (`0n`, `42n`) at call sites.
 - Addresses are `0x`-prefixed 64 hex chars (32 bytes, full Poseidon2 — no truncation).
 - Receipt success is `receipt.success === true`. `txHash` is the canonical Poseidon2 hash.
-- Encrypted send is opt-in (`Wallet.sendEncrypted`) and uses a separate path; standard send is plain.
+- Private send via commit-reveal is opt-in (`Wallet.sendPrivate`) and uses a separate path; standard send is plain.
 - HTTP / WSS are required by default; pass `allowInsecureTransport: true` on the provider when targeting a local devnet.
 
 ## Getting help

@@ -1,6 +1,6 @@
 {
   "name": "pyde-ts-sdk",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "TypeScript SDK for Pyde — the blockchain network. Connects dapps, wallets, indexers, and backend services to a Pyde node. Post-quantum crypto via pyde-crypto-wasm; type-safe ABI; wallet adapter pattern.",
   "type": "module",
   "license": "Apache-2.0",
@@ -21,9 +21,8 @@
     "layer-1",
     "post-quantum",
     "falcon-512",
-    "kyber-768",
-    "ml-kem",
     "mev-resistant",
+    "commit-reveal",
     "mysticeti",
     "wasmtime",
     "webassembly",

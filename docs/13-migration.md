@@ -45,10 +45,12 @@ New methods added in the same pass (catalog v0.1 §8/§12/§13/§16–§21/§25)
 | `provider.getReceiptArchival(hash)`                   | `pyde_getReceipt`            | Archival raw serde-derived shape (byte arrays, JSON numbers, PascalCase status). Different wire shape from `getTransactionReceipt`; SDK passes it through as `unknown` for explorers / indexers that consume canonical borsh-shape data. |
 | `provider.getSnapshot()`                              | `pyde_getSnapshot`           | Standard-base64 (RFC 4648 §4 — not URL-safe) encoding the borsh-encoded `SnapshotBundle { manifest, chunks }`. Multi-MB on populated chains; consumers base64-decode → borsh-decode → `SnapshotLoader::apply`.                           |
 
-Encrypted-mempool path is now wired (catalog v0.1 §8/§20):
+MEV protection — threshold-encryption lane **removed**, replaced by commit-reveal:
 
-- `provider.getThresholdPublicKey()` return shape changed from `Promise<string>` to `Promise<ThresholdPublicKey | null>` (`{epoch, scheme, publicKey}`). The catalog's `scheme: "mock"` boot default means encrypted submissions sit unprocessed until real Kyber-768 DKG lands — `Wallet.sendEncrypted` warns on `scheme !== "kyber-768"` so dapps can fall back to plaintext for real MEV protection.
-- `Wallet.sendEncrypted` / `transferEncrypted` return `{envelopeHash, plaintextHash}` instead of `Receipt`. `envelopeHash` (Blake3 of `version ‖ ciphertext_len ‖ ciphertext`) is what the chain echoes back from `pyde_sendRawEncryptedTransaction`. `plaintextHash` (Poseidon2 of the inner Tx the chain reconstructs after threshold-decryption) is the key receipts are stored under post-commit — it is computed locally on the SDK side from the same `(sender, to, value, calldata, gasLimit, nonce, chainId, accessList)` projection the wasm side feeds into `buildRawEncryptedTx`, so callers can poll `provider.waitForReceipt(plaintextHash)` to wait for commit without a wasm-side round-trip. Also exported standalone as `plaintextHashFromEncryptedParams(params)` for callers that build envelopes directly.
+The old encrypted-mempool / threshold-decryption path is gone. There is no committee, no shared secret, no Kyber-768 / ML-KEM ciphertext, no DKG, no threshold decryption. MEV protection is now a salted Blake3 **commit-reveal ("private transactions")**: a commit reserves a tx's ordering slot before its contents are visible, and a later reveal opens it so the inner tx executes in the reveal wave's resolution pass, in commit order. This prevents content-targeted front-running; it is **not** a total ordering lock against unrelated txs arriving in the reveal→execute window. See [Chapter 09 → Private transactions (commit-reveal)](./09-private-transactions.md).
+
+- **New API.** `Wallet.sendPrivate(inner)` is the one-call flow (commit → auto-reveal as soon as the commit is included); `Wallet.transferPrivate(to, amount, opts?)` is the value-only convenience over it. Both return a `PrivateSendHandle` whose `waitForReceipt()` resolves on the **inner** tx receipt — the real outcome. Low-level `Wallet.buildCommit` / `Wallet.buildReveal` back relay / advanced flows (any wallet may reveal on behalf of the committer — the disclosed preimage is the authorization). Constants + helpers live in `./private-tx` (re-exported from the package root): `requiredBond`, `commitmentHash`, `encodeCommitPayload`, `encodeRevealPayload`, `COMMIT_REVEAL_WINDOW_WAVES` (`120n`), `MIN_COMMIT_BOND` (`1_000_000_000n`, 1 PYDE), `COMMIT_BOND_BPS` (`100n`), `COMMITMENT_DOMAIN_TAG`, and the `CommitPayload` / `RevealPayload` types. Wire tags are `TxType.Commit` (`0x11`) / `TxType.Reveal` (`0x12`).
+- **Removed symbols** — delete these call sites (there is no plaintext-fallback shim): `provider.getThresholdPublicKey` + the `ThresholdPublicKey` type, `Wallet.sendEncrypted` / `Wallet.transferEncrypted`, the `EncryptedTxParams` type, `plaintextHashFromEncryptedParams`, `buildRawEncryptedTx`, and `provider.sendRawEncryptedTransaction`. Replace `sendEncrypted` / `transferEncrypted` with `sendPrivate` / `transferPrivate`; the `{envelopeHash, plaintextHash}` return shape is gone — poll the `PrivateSendHandle` (its `waitForReceipt`) instead.
 
 What this still doesn't do (genuine engine / wasm gaps):
 
@@ -87,7 +89,7 @@ Live-verified against `otigen/examples/borsh-coverage` — struct + enum + Vec l
 **Breaking.** Every `u64` wire field changed from `number` to `bigint`.
 
 - `Wave` (the wave-id type) is now `bigint`.
-- `Account.nonce`, `TxFields.nonce`, `TransactionInfo.nonce`, `EncryptedTxParams.nonce` are now `bigint`.
+- `Account.nonce`, `TxFields.nonce`, `TransactionInfo.nonce` are now `bigint`.
 - `Provider.getNonce`, `Provider.getNonceAndChainId`, `Wallet.getNonce` return `bigint` / `[bigint, number]`.
 - `Provider.getWave(waveId?)` takes `Wave` (bigint).
 - `Provider.latestWaveId()` returns `Wave` (bigint).
