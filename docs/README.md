@@ -14,7 +14,7 @@ What works today (verified live against `otigen devnet`):
 - Borsh-canonical contract codec — primitives, `String`, `Bytes`, `Vec<T>`, `Option<T>`, tuple, fixed array, struct, enum
 - Contract round-trips through deployed `otigen/examples/borsh-coverage` (struct + enum + Vec live-verified)
 - Handle-based wallet (FALCON-512 SK stays in the WASM heap)
-- Argon2id + ChaCha20-Poly1305 keystore (Node-only file helpers)
+- Argon2id + AES-256-GCM keystore (Node-only file helpers)
 - Type-safe `Contract<TAbi>` narrowing via `pyde-tsgen`-emitted ABI shapes
 - Wallet adapter pattern (`InMemoryWalletAdapter` + `BrowserWalletAdapter`) for dapp ↔ wallet wiring
 
@@ -172,7 +172,7 @@ import { generateTypes } from "pyde-ts-sdk/codegen";
 | Private transactions (commit-reveal)    | Pyde Book Chapter 9                                  |
 | Host fn ABI                             | `HOST_FN_ABI_SPEC.md`                                |
 | Event encoding (Borsh)                  | `HOST_FN_ABI_SPEC.md §14`                            |
-| Keystore (Argon2id + ChaCha20-Poly1305) | Pyde Book Chapter 17                                 |
+| Keystore (Argon2id + AES-256-GCM)       | Pyde Book Chapter 17                                 |
 
 ## Conventions
 

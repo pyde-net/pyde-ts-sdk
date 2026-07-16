@@ -5,7 +5,8 @@
  *   - Chapter 8.2   — FALCON-512 signatures
  *   - Chapter 11    — account model, tx types, RegisterPubkey flow
  *   - Chapter 17    — `pyde keys generate` keystore format
- *                     (Argon2id KDF + ChaCha20-Poly1305 AEAD)
+ *                     (Argon2id KDF + AES-256-GCM AEAD; ChaCha20-Poly1305
+ *                      accepted on read for legacy keystores)
  *
  * Default signing path: handle-based. `Wallet.generate()` retains the
  * FALCON-512 secret key inside `pyde-crypto-wasm`'s WASM heap; the SK
@@ -22,6 +23,7 @@
  */
 
 import { argon2id } from "@noble/hashes/argon2";
+import { gcm } from "@noble/ciphers/aes";
 import { chacha20poly1305 } from "@noble/ciphers/chacha";
 import { randomBytes } from "@noble/ciphers/webcrypto";
 import { utf8ToBytes } from "@noble/hashes/utils";
@@ -64,7 +66,8 @@ export interface PrivateSendHandle {
 // ============================================================================
 
 /** On-disk encrypted-keystore JSON shape.
- *  KDF: Argon2id. AEAD: ChaCha20-Poly1305. */
+ *  KDF: Argon2id. AEAD: AES-256-GCM (write default) or ChaCha20-Poly1305
+ *  (legacy, still readable). The `cipher` field selects the read path. */
 export interface Keystore {
   /** 32-byte address hex. */
   address: string;
@@ -82,8 +85,11 @@ export interface Keystore {
     /** Salt hex (16 bytes). */
     salt: string;
   };
-  /** Cipher identifier — `"chacha20-poly1305"` in v1. */
-  cipher: "chacha20-poly1305";
+  /** AEAD identifier. `"aes-256-gcm"` is the ecosystem-standard write
+   *  default (matches otigen-wallet / pyde-rust-sdk / pyde-book §8.7);
+   *  `"chacha20-poly1305"` is accepted on read for keystores written by
+   *  older SDK versions. */
+  cipher: "aes-256-gcm" | "chacha20-poly1305";
   /** Cipher nonce hex (12 bytes). */
   nonce: string;
   /** Encrypted secret-key bytes (hex). Tag is appended; AEAD shape. */
@@ -96,7 +102,7 @@ export interface Keystore {
  *  (Chapter 17 `pyde keys generate` reference). */
 const KDF_DEFAULTS = { m: 65_536, t: 3, p: 4 } as const;
 
-const KDF_KEY_LEN = 32; // 256-bit key for ChaCha20-Poly1305
+const KDF_KEY_LEN = 32; // 256-bit key (AES-256-GCM / ChaCha20-Poly1305)
 const SALT_LEN = 16;
 const NONCE_LEN = 12;
 
@@ -765,7 +771,30 @@ const ZERO_ADDR = "0x" + "00".repeat(32);
 function validateKeystore(k: Keystore): void {
   if (k.version !== 1) throw new SigningError(`unsupported keystore version: ${k.version}`);
   if (k.kdf !== "argon2id") throw new SigningError(`unsupported KDF: ${k.kdf}`);
-  if (k.cipher !== "chacha20-poly1305") throw new SigningError(`unsupported cipher: ${k.cipher}`);
+  // Cipher-agile read, bounded to two strong 256-bit AEADs. AES-256-GCM is the
+  // write default; ChaCha20-Poly1305 is accepted for keystores written by older
+  // SDK versions. Anything outside this allowlist is rejected — an
+  // unauthenticated `cipher` field must never select a weak or unknown suite
+  // (downgrade-attack hygiene).
+  if (k.cipher !== "aes-256-gcm" && k.cipher !== "chacha20-poly1305") {
+    throw new SigningError(`unsupported cipher: ${k.cipher}`);
+  }
+}
+
+/** Build the AEAD instance for a keystore cipher. Bounded to the two strong
+ *  256-bit AEADs the ecosystem writes/reads — a defense-in-depth mirror of the
+ *  `validateKeystore` allowlist so a decrypt is never reached with an unknown
+ *  suite. Both use a 32-byte key + 12-byte nonce and append a 16-byte tag, so
+ *  the on-disk schema is identical regardless of which is selected. */
+function aeadFor(cipher: Keystore["cipher"], key: Uint8Array, nonce: Uint8Array) {
+  switch (cipher) {
+    case "aes-256-gcm":
+      return gcm(key, nonce);
+    case "chacha20-poly1305":
+      return chacha20poly1305(key, nonce);
+    default:
+      throw new SigningError(`unsupported cipher: ${cipher}`);
+  }
 }
 
 async function encryptKeystore(
@@ -784,7 +813,10 @@ async function encryptKeystore(
   const key = argon2id(utf8ToBytes(password), salt, { t, m, p, dkLen: KDF_KEY_LEN });
 
   const sk = hexToBytes(secretKeyHex);
-  const aead = chacha20poly1305(key, nonce);
+  // Write default is AES-256-GCM — the ecosystem-standard keystore cipher
+  // (otigen-wallet, pyde-rust-sdk, pyde-book §8.7). Legacy ChaCha20-Poly1305
+  // keystores remain readable via the agile decrypt path below.
+  const aead = aeadFor("aes-256-gcm", key, nonce);
   const ciphertext = aead.encrypt(sk);
 
   return {
@@ -792,7 +824,7 @@ async function encryptKeystore(
     publicKey,
     kdf: "argon2id",
     kdfParams: { m, t, p, salt: bytesToHex(salt) },
-    cipher: "chacha20-poly1305",
+    cipher: "aes-256-gcm",
     nonce: bytesToHex(nonce),
     ciphertext: bytesToHex(ciphertext),
     version: 1,
@@ -809,7 +841,10 @@ async function decryptKeystore(k: Keystore, password: string): Promise<string> {
     p: k.kdfParams.p,
     dkLen: KDF_KEY_LEN,
   });
-  const aead = chacha20poly1305(key, nonce);
+  // Agile read: dispatch on the keystore's declared cipher (already bounded to
+  // the allowlist by validateKeystore). AES-256-GCM for current keystores,
+  // ChaCha20-Poly1305 for legacy ones.
+  const aead = aeadFor(k.cipher, key, nonce);
   let plaintext: Uint8Array;
   try {
     plaintext = aead.decrypt(ciphertext);

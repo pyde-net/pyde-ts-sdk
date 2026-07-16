@@ -46,8 +46,8 @@ The SDK does not implement primitives — every signature, encryption, hash, and
 The encrypted keystore mirrors the format used by `pyde keys generate` (per Pyde Book Chapter 17):
 
 - **KDF:** Argon2id, default parameters tuned for ~250 ms on a modern laptop CPU
-- **AEAD:** ChaCha20-Poly1305 over the encoded secret key
-- **At-rest layout:** JSON file with `kdf`, `kdf_params`, `nonce`, `ciphertext`, `mac`
+- **AEAD:** AES-256-GCM over the encoded secret key (ChaCha20-Poly1305 accepted on read for keystores written by older SDK versions)
+- **At-rest layout:** JSON file with `kdf`, `kdfParams`, `cipher`, `nonce`, `ciphertext` (the AEAD tag is appended to `ciphertext`), `version`
 
 Parameters are documented in the keystore module's TSDoc and surfaced in errors when a keystore fails to decrypt.
 
