@@ -46,8 +46,8 @@ The SDK does not implement primitives — every signature, encryption, hash, and
 The encrypted keystore mirrors the format used by `pyde keys generate` (per Pyde Book Chapter 17):
 
 - **KDF:** Argon2id, default parameters tuned for ~250 ms on a modern laptop CPU
-- **AEAD:** AES-256-GCM over the encoded secret key (ChaCha20-Poly1305 accepted on read for keystores written by older SDK versions)
-- **At-rest layout:** JSON file with `kdf`, `kdfParams`, `cipher`, `nonce`, `ciphertext` (the AEAD tag is appended to `ciphertext`), `version`
+- **AEAD:** AES-256-GCM over the encoded secret key (ChaCha20-Poly1305 accepted on read for keystores written by pyde-ts-sdk ≤ 0.2.x)
+- **At-rest layout:** the canonical multi-account envelope — `{ version: 1, accounts: { <name>: { address, pubkey, ciphertext, salt, nonce, cipher?, kdf: { name, memory_kb, iterations, parallelism } } } }`, all binary fields `0x`-prefixed hex, the AEAD tag appended to `ciphertext`. Byte-identical to `otigen wallet` and the playground, so one file opens across the whole ecosystem.
 
 Parameters are documented in the keystore module's TSDoc and surfaced in errors when a keystore fails to decrypt.
 

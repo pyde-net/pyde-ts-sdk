@@ -158,7 +158,7 @@ const txReceipt = await wallet.sendCall(contractAddr, calldataHex);
 wallet.destroy();
 ```
 
-Keystore format matches `pyde keys generate` (Chapter 17): Argon2id KDF (default m=64MiB, t=3, p=4) + AES-256-GCM AEAD. Defaults are tuned for ~250ms on a modern laptop. Legacy ChaCha20-Poly1305 keystores from older SDK versions still decrypt.
+Keystore format is the canonical multi-account envelope (`{ version, accounts: { <name>: … } }`) written by `pyde keys generate` (Chapter 17): Argon2id KDF (default m=64MiB, t=3, p=4) + AES-256-GCM AEAD, `0x`-prefixed hex fields. A keystore written here opens in the CLI, playground, and Rust SDK, and vice-versa. Defaults are tuned for ~250ms on a modern laptop. Legacy flat ChaCha20-Poly1305 keystores from pyde-ts-sdk ≤ 0.2.x still decrypt on read.
 
 ## Private (front-running-resistant) submission
 

@@ -23,7 +23,7 @@ export {
   type PreviewOptions,
 } from "./simulate";
 export { Wallet } from "./wallet";
-export type { Keystore, PrivateSendHandle } from "./wallet";
+export type { Keystore, KeystoreEntry, LegacyFlatKeystore, PrivateSendHandle } from "./wallet";
 export {
   requiredBond,
   commitmentHash,

@@ -14,11 +14,12 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { Wallet, WalletDestroyedError, type Keystore } from "../src/index";
+import { Wallet, WalletDestroyedError, type Keystore, type LegacyFlatKeystore } from "../src/index";
 import { argon2id } from "@noble/hashes/argon2";
 import { chacha20poly1305 } from "@noble/ciphers/chacha";
 import { randomBytes } from "@noble/ciphers/webcrypto";
 import { utf8ToBytes, hexToBytes, bytesToHex } from "@noble/hashes/utils";
+import golden from "./__fixtures__/cli-keystore.golden.json";
 import {
   verifySignature,
   hashTransaction,
@@ -241,8 +242,15 @@ describe("Wallet keystore round-trip", () => {
   it("toKeystore + fromEncrypted preserves address + sign capability", async () => {
     const original = Wallet.generateUnsafe();
     const ks = await original.toKeystore("strong-passphrase");
-    expect(ks.address).toBe(original.address);
-    expect(ks.publicKey).toBe(original.publicKey);
+    const entry = ks.accounts["default"]!;
+    expect(entry.address).toBe(original.address.toLowerCase());
+    expect(entry.pubkey).toBe(original.publicKey.toLowerCase());
+    // Interop invariants: canonical envelope + 0x-prefixed hex on every field.
+    expect(ks.version).toBe(1);
+    expect(entry.salt.startsWith("0x")).toBe(true);
+    expect(entry.nonce.startsWith("0x")).toBe(true);
+    expect(entry.ciphertext.startsWith("0x")).toBe(true);
+    expect(entry.kdf).toEqual({ name: "argon2id", memory_kb: 65_536, iterations: 3, parallelism: 4 });
 
     const restored = await Wallet.fromEncrypted(ks, "strong-passphrase");
     expect(restored.address).toBe(original.address);
@@ -300,9 +308,40 @@ describe("Wallet keystore round-trip", () => {
 // ChaCha20-Poly1305 keystores stay readable; unknown ciphers are rejected.
 // --------------------------------------------------------------------------
 describe("Keystore — cipher agility", () => {
-  it("toKeystore writes the AES-256-GCM cipher by default", async () => {
+  it("toKeystore writes the canonical envelope with AES-256-GCM by default", async () => {
     const ks = await Wallet.generateUnsafe().toKeystore("pw");
-    expect(ks.cipher).toBe("aes-256-gcm");
+    expect(ks.version).toBe(1);
+    expect(Object.keys(ks.accounts)).toEqual(["default"]);
+    expect(ks.accounts["default"]!.cipher).toBe("aes-256-gcm");
+  });
+
+  it("toKeystore + fromEncrypted round-trips a named entry", async () => {
+    const original = Wallet.generateUnsafe();
+    const ks = await original.toKeystore("pw", { name: "deployer" });
+    expect(Object.keys(ks.accounts)).toEqual(["deployer"]);
+    const restored = await Wallet.fromEncrypted(ks, "pw", { name: "deployer" });
+    expect(restored.address).toBe(original.address);
+    const sig = restored.sign("0xfeed");
+    expect(verifySignature(original.publicKey, "0xfeed", sig)).toBe(true);
+  });
+
+  it("fromEncrypted requires a name when the envelope holds multiple accounts", async () => {
+    const a = await Wallet.generateUnsafe().toKeystore("pw", { name: "a" });
+    const b = await Wallet.generateUnsafe().toKeystore("pw", { name: "b" });
+    const merged: Keystore = { version: 1, accounts: { ...a.accounts, ...b.accounts } };
+    await expect(Wallet.fromEncrypted(merged, "pw")).rejects.toThrow(/accounts/i);
+    // ...but selecting one by name works.
+    const w = await Wallet.fromEncrypted(merged, "pw", { name: "a" });
+    expect(typeof w.address).toBe("string");
+  });
+
+  it("rejects an inherited-property account name with a clean not-found error", async () => {
+    const ks = await Wallet.generateUnsafe().toKeystore("pw", { name: "real" });
+    // "toString"/"constructor" resolve to Object.prototype members via [] access;
+    // the hasOwnProperty guard must still report account-not-found.
+    for (const name of ["toString", "constructor", "__proto__"]) {
+      await expect(Wallet.fromEncrypted(ks, "pw", { name })).rejects.toThrow(/account not found/i);
+    }
   });
 
   it("fromEncrypted still decrypts a legacy ChaCha20-Poly1305 keystore", async () => {
@@ -315,7 +354,7 @@ describe("Keystore — cipher agility", () => {
     const key = argon2id(utf8ToBytes(password), salt, { t: 3, m: 65_536, p: 4, dkLen: 32 });
     const skBytes = hexToBytes(kp.secretKey.replace(/^0x/, ""));
     const ciphertext = chacha20poly1305(key, nonce).encrypt(skBytes);
-    const legacy: Keystore = {
+    const legacy: LegacyFlatKeystore = {
       address: kp.address,
       publicKey: kp.publicKey,
       kdf: "argon2id",
@@ -336,8 +375,52 @@ describe("Keystore — cipher agility", () => {
   it("fromEncrypted rejects an unknown cipher (downgrade-attack hygiene)", async () => {
     const ks = await Wallet.generateUnsafe().toKeystore("pw");
     const bad = JSON.parse(JSON.stringify(ks)) as Keystore;
-    (bad as { cipher: string }).cipher = "aes-128-ecb";
+    (bad.accounts["default"] as { cipher: string }).cipher = "aes-128-ecb";
     await expect(Wallet.fromEncrypted(bad, "pw")).rejects.toThrow(/unsupported cipher/i);
+  });
+
+  it("fromEncrypted rejects a non-argon2id KDF and out-of-range params", async () => {
+    const base = await Wallet.generateUnsafe().toKeystore("pw");
+
+    const badKdf = JSON.parse(JSON.stringify(base)) as Keystore;
+    (badKdf.accounts["default"]!.kdf as { name: string }).name = "pbkdf2";
+    await expect(Wallet.fromEncrypted(badKdf, "pw")).rejects.toThrow(/unsupported KDF/i);
+
+    const badParams = JSON.parse(JSON.stringify(base)) as Keystore;
+    badParams.accounts["default"]!.kdf.memory_kb = 2_000_000_000; // > 1 GiB anti-DoS cap
+    await expect(Wallet.fromEncrypted(badParams, "pw")).rejects.toThrow(/out of accepted range/i);
+  });
+});
+
+// --------------------------------------------------------------------------
+// Cross-impl interop — decrypt a REAL keystore minted by `otigen wallet`.
+// The §8 acceptance gate: AES-256-GCM is authenticated, so a non-throwing
+// decrypt to the exact FALCON key proves the derived key matched byte-for-byte
+// across the CLI and this SDK. Fixture cipher field is ABSENT ⇒ AES-256-GCM.
+// --------------------------------------------------------------------------
+describe("Keystore — CLI cross-impl interop (golden fixture)", () => {
+  const PASSWORD = "golden-fixture-passphrase";
+  const ks = golden as unknown as Keystore;
+  const entry = ks.accounts["parity-fixture"]!;
+
+  it("fromEncrypted opens an otigen-wallet keystore (absent cipher ⇒ AES-256-GCM)", async () => {
+    const restored = await Wallet.fromEncrypted(ks, PASSWORD, { name: "parity-fixture" });
+    expect(restored.address).toBe(entry.address);
+    expect(restored.publicKey).toBe(entry.pubkey);
+    // Signing parity proves the FALCON secret key was recovered intact.
+    const sig = restored.sign("0xfeed");
+    expect(verifySignature(entry.pubkey, "0xfeed", sig)).toBe(true);
+  });
+
+  it("single-entry file needs no name", async () => {
+    const restored = await Wallet.fromEncrypted(ks, PASSWORD);
+    expect(restored.address).toBe(entry.address);
+  });
+
+  it("rejects a wrong password with the single generic error", async () => {
+    await expect(
+      Wallet.fromEncrypted(ks, "not-the-password", { name: "parity-fixture" }),
+    ).rejects.toThrow(/wrong password or corrupt/i);
   });
 });
 
@@ -420,11 +503,12 @@ describe("Keystore — edge cases", () => {
     // Flip one nibble in the encrypted ciphertext. AES-GCM is an AEAD
     // mode — any single-bit modification to ciphertext / nonce / tag
     // must cause the tag check to fail and decryption to error.
-    const tampered = JSON.parse(JSON.stringify(ks));
-    const ct = tampered.ciphertext as string;
-    const firstChar = ct[0]!;
-    const flipped = firstChar === "0" ? "1" : "0";
-    tampered.ciphertext = flipped + ct.slice(1);
+    const tampered = JSON.parse(JSON.stringify(ks)) as Keystore;
+    const e = tampered.accounts["default"]!;
+    const ct = e.ciphertext; // "0x…"
+    const i = 2; // first hex nibble after the 0x prefix — keep it valid hex
+    const flipped = ct[i] === "0" ? "1" : "0";
+    e.ciphertext = ct.slice(0, i) + flipped + ct.slice(i + 1);
     await expect(Wallet.fromEncrypted(tampered, "right-pw")).rejects.toThrow();
   });
 });
