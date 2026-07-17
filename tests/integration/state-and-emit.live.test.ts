@@ -61,10 +61,7 @@ async function exec(
     child.on("exit", (code) => {
       if (timer) clearTimeout(timer);
       if (code === 0) resolve_({ stdout, stderr });
-      else
-        reject(
-          Object.assign(new Error(`${cmd} exited ${code}`), { stdout, stderr }),
-        );
+      else reject(Object.assign(new Error(`${cmd} exited ${code}`), { stdout, stderr }));
     });
   });
 }
@@ -174,7 +171,6 @@ function devnet1Wallet(): Wallet {
   w.connect(devnet.provider);
   return w;
 }
-
 
 // --------------------------------------------------------------------------
 // Lifecycle

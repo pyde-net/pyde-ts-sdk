@@ -468,13 +468,13 @@ type ErrorCode =
 
 ## Retry semantics
 
-| Layer                                  | Retries?                        | When                                                   | Backoff                                      |
-| -------------------------------------- | ------------------------------- | ------------------------------------------------------ | -------------------------------------------- |
-| `Provider.options.retries`             | configurable                    | Transport errors (5xx, ECONNRESET, abort).             | exponential, capped                          |
-| `Provider.callWithFallback` (internal) | per fallback list               | `method not found` → try next method name.             | none                                         |
-| `WebSocketProvider` reconnect          | per `reconnectMaxAttempts`      | Socket dropped.                                        | exponential, capped at `reconnectMaxDelayMs` |
-| `Wallet.sendCall` simulate fallback    | once                            | `simulateTransaction` fails → fall back to 5M default + no access list. | none                  |
-| `waitForReceipt` polling               | every ~500 ms until `timeoutMs` | Receipt not yet available.                             | linear                                       |
+| Layer                                  | Retries?                        | When                                                                    | Backoff                                      |
+| -------------------------------------- | ------------------------------- | ----------------------------------------------------------------------- | -------------------------------------------- |
+| `Provider.options.retries`             | configurable                    | Transport errors (5xx, ECONNRESET, abort).                              | exponential, capped                          |
+| `Provider.callWithFallback` (internal) | per fallback list               | `method not found` → try next method name.                              | none                                         |
+| `WebSocketProvider` reconnect          | per `reconnectMaxAttempts`      | Socket dropped.                                                         | exponential, capped at `reconnectMaxDelayMs` |
+| `Wallet.sendCall` simulate fallback    | once                            | `simulateTransaction` fails → fall back to 5M default + no access list. | none                                         |
+| `waitForReceipt` polling               | every ~500 ms until `timeoutMs` | Receipt not yet available.                                              | linear                                       |
 
 **The SDK never retries on `RpcError` or `CallExceptionError`** — the chain answered, the answer is "no", the caller decides what to do.
 

@@ -611,7 +611,8 @@ export class Wallet extends AbstractSigner {
       from: this.address,
       to: ZERO_ADDR,
       value: "0",
-      data: "0x" + bytesToHex(encodeRevealPayload({ commitment, nonce: salt, innerTx: innerBytes })),
+      data:
+        "0x" + bytesToHex(encodeRevealPayload({ commitment, nonce: salt, innerTx: innerBytes })),
       gasLimit: 5_000_000,
       nonce: revealNonce,
       chainId,
@@ -624,7 +625,8 @@ export class Wallet extends AbstractSigner {
       revealHash: revealResp.hash,
       innerHash,
       commitReceipt,
-      waitForReceipt: (timeoutMs = inner.timeoutMs ?? 30_000) => p.waitForReceipt(innerHash, timeoutMs),
+      waitForReceipt: (timeoutMs = inner.timeoutMs ?? 30_000) =>
+        p.waitForReceipt(innerHash, timeoutMs),
     };
   }
 
@@ -663,7 +665,11 @@ export class Wallet extends AbstractSigner {
       from: this.address,
       to: ZERO_ADDR,
       value: bond.toString(),
-      data: "0x" + bytesToHex(encodeCommitPayload({ commitment: args.commitment, valueCeiling: args.valueCeiling })),
+      data:
+        "0x" +
+        bytesToHex(
+          encodeCommitPayload({ commitment: args.commitment, valueCeiling: args.valueCeiling }),
+        ),
       gasLimit: opts?.gasLimit ?? 200_000,
       nonce,
       chainId,
@@ -692,7 +698,13 @@ export class Wallet extends AbstractSigner {
       value: "0",
       data:
         "0x" +
-        bytesToHex(encodeRevealPayload({ commitment: args.commitment, nonce: args.nonce, innerTx: innerBytes })),
+        bytesToHex(
+          encodeRevealPayload({
+            commitment: args.commitment,
+            nonce: args.nonce,
+            innerTx: innerBytes,
+          }),
+        ),
       gasLimit: opts?.gasLimit ?? 5_000_000,
       nonce,
       chainId,
@@ -863,7 +875,12 @@ function resolveEntry(k: Keystore | LegacyFlatKeystore, name?: string): Normaliz
       nonce: acct.nonce,
       ciphertext: acct.ciphertext,
       cipher: acct.cipher ?? "aes-256-gcm",
-      kdf: normalizeKdf(acct.kdf?.name, acct.kdf?.memory_kb, acct.kdf?.iterations, acct.kdf?.parallelism),
+      kdf: normalizeKdf(
+        acct.kdf?.name,
+        acct.kdf?.memory_kb,
+        acct.kdf?.iterations,
+        acct.kdf?.parallelism,
+      ),
     };
   } else if ("ciphertext" in k && "kdfParams" in k) {
     // Legacy flat form (pyde-ts-sdk ≤ 0.2.x). `name` is ignored — single account.

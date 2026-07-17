@@ -128,7 +128,9 @@ describe("getTransaction — archival wire shape (catalog §22)", () => {
       tx_type: "FreshlyInvented",
     });
     const provider = new Provider("https://rpc.example.com");
-    await expect(provider.getTransaction(TX_HASH)).rejects.toThrow(/unknown enum variant.*FreshlyInvented/);
+    await expect(provider.getTransaction(TX_HASH)).rejects.toThrow(
+      /unknown enum variant.*FreshlyInvented/,
+    );
   });
 
   it("returns null when the wire result is null (tx not on chain)", async () => {
@@ -410,11 +412,26 @@ describe("getNodeInfo — agentVersion vs protocolVersion", () => {
 describe("HTTP 429 retry with native backoff", () => {
   it("retries on 429 then succeeds on a subsequent 200", async () => {
     const responses = [
-      { ok: false, status: 429, statusText: "Too Many Requests", headers: new Headers([["retry-after", "1"]]), json: async () => null },
-      { ok: true, status: 200, statusText: "OK", headers: new Headers(), json: async () => ({ jsonrpc: "2.0", id: 1, result: "0x7a69" }) },
+      {
+        ok: false,
+        status: 429,
+        statusText: "Too Many Requests",
+        headers: new Headers([["retry-after", "1"]]),
+        json: async () => null,
+      },
+      {
+        ok: true,
+        status: 200,
+        statusText: "OK",
+        headers: new Headers(),
+        json: async () => ({ jsonrpc: "2.0", id: 1, result: "0x7a69" }),
+      },
     ];
     let i = 0;
-    vi.stubGlobal("fetch", vi.fn().mockImplementation(async () => responses[i++]!));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockImplementation(async () => responses[i++]!),
+    );
     const provider = new Provider("https://rpc.example.com");
     expect(await provider.getChainId()).toBe(31337);
     expect(i).toBe(2); // first 429, then success

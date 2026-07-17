@@ -96,7 +96,8 @@ export function requiredBond(valueCeiling: bigint): bigint {
  * the reveal is rejected. Sign the inner tx once; reuse those exact bytes.
  */
 export function commitmentHash(innerTxBytes: Uint8Array, nonce: Uint8Array): Uint8Array {
-  if (nonce.length !== 32) throw new Error(`commit-reveal nonce must be 32 bytes, got ${nonce.length}`);
+  if (nonce.length !== 32)
+    throw new Error(`commit-reveal nonce must be 32 bytes, got ${nonce.length}`);
   const buf = new Uint8Array(DOMAIN_TAG_BYTES.length + innerTxBytes.length + nonce.length);
   buf.set(DOMAIN_TAG_BYTES, 0);
   buf.set(innerTxBytes, DOMAIN_TAG_BYTES.length);
@@ -151,7 +152,8 @@ function u128LE(v: bigint): Uint8Array {
 
 /** borsh `Vec<u8>` length prefix → u32 little-endian. */
 function u32LE(n: number): Uint8Array {
-  if (!Number.isInteger(n) || n < 0 || n > 0xffffffff) throw new Error(`length out of u32 range: ${n}`);
+  if (!Number.isInteger(n) || n < 0 || n > 0xffffffff)
+    throw new Error(`length out of u32 range: ${n}`);
   const out = new Uint8Array(4);
   out[0] = n & 0xff;
   out[1] = (n >>> 8) & 0xff;

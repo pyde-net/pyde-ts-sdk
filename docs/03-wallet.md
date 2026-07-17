@@ -59,13 +59,13 @@ FALCON-512 signing + keystore I/O + high-level transfer / sendCall / deploy / pr
 
 The same `Wallet` class wraps two different secret-key holdings:
 
-|                            | Handle-backed (default)                            | Hex-backed                                                                                      |
-| -------------------------- | -------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
-| Constructor                | `Wallet.generate()`                                | `Wallet.generateUnsafe()`, `Wallet.fromKeys`, `Wallet.fromEncrypted`, `Wallet.fromKeystoreFile` |
-| Where the SK lives         | WASM linear memory                                 | JS heap (as a hex string)                                                                       |
-| Survives a JS heap dump?   | ✅ yes                                             | ❌ no — visible as a string                                                                     |
-| Can `toKeystore` export?   | ❌ no (no hex to encrypt)                          | ✅ yes                                                                                          |
-| Private `sendPrivate`?     | ✅ yes                                             | ✅ yes                                                                                          |
+|                          | Handle-backed (default)   | Hex-backed                                                                                      |
+| ------------------------ | ------------------------- | ----------------------------------------------------------------------------------------------- |
+| Constructor              | `Wallet.generate()`       | `Wallet.generateUnsafe()`, `Wallet.fromKeys`, `Wallet.fromEncrypted`, `Wallet.fromKeystoreFile` |
+| Where the SK lives       | WASM linear memory        | JS heap (as a hex string)                                                                       |
+| Survives a JS heap dump? | ✅ yes                    | ❌ no — visible as a string                                                                     |
+| Can `toKeystore` export? | ❌ no (no hex to encrypt) | ✅ yes                                                                                          |
+| Private `sendPrivate`?   | ✅ yes                    | ✅ yes                                                                                          |
 
 **Recommendation:** use `generate()` and `fromEncrypted()` for everything except keystore export. When you need to export, use `generateUnsafe()`, immediately `toKeystore` + write, and `destroy()` the wallet.
 
@@ -184,11 +184,11 @@ Wallet.fromEncrypted(
 
 **Args:**
 
-| Name       | Type                          | Description                                                     |
-| ---------- | ----------------------------- | -------------------------------------------------------------- |
-| `keystore` | `Keystore \| LegacyFlatKeystore` | Canonical envelope, or a legacy flat keystore (read-only).  |
-| `password` | `string`                      | Decryption passphrase.                                         |
-| `opts.name`| `string?`                     | Account to open; optional for a single-entry file.             |
+| Name        | Type                             | Description                                                |
+| ----------- | -------------------------------- | ---------------------------------------------------------- |
+| `keystore`  | `Keystore \| LegacyFlatKeystore` | Canonical envelope, or a legacy flat keystore (read-only). |
+| `password`  | `string`                         | Decryption passphrase.                                     |
+| `opts.name` | `string?`                        | Account to open; optional for a single-entry file.         |
 
 **Returns:** `Promise<Wallet>` — hex-backed wallet with SK in JS heap.
 
@@ -203,11 +203,11 @@ interface Keystore {
 }
 
 interface KeystoreEntry {
-  address: string;     // 0x + 64 hex (32-byte address)
-  pubkey: string;      // 0x + hex (897-byte FALCON-512 pubkey) — field is `pubkey`
-  ciphertext: string;  // 0x + hex of AES-256-GCM(sk) with the 16-byte tag appended
-  salt: string;        // 0x + hex, 16 bytes
-  nonce: string;       // 0x + hex, 12 bytes
+  address: string; // 0x + 64 hex (32-byte address)
+  pubkey: string; // 0x + hex (897-byte FALCON-512 pubkey) — field is `pubkey`
+  ciphertext: string; // 0x + hex of AES-256-GCM(sk) with the 16-byte tag appended
+  salt: string; // 0x + hex, 16 bytes
+  nonce: string; // 0x + hex, 12 bytes
   cipher?: "aes-256-gcm" | "chacha20-poly1305"; // absent ⇒ aes-256-gcm; chacha never written
   kdf: { name: "argon2id"; memory_kb: number; iterations: number; parallelism: number };
 }
@@ -507,12 +507,12 @@ wallet.toKeystore(
 
 **`opts` (all optional):**
 
-| Field  | Default       | Notes                                                              |
-| ------ | ------------- | ------------------------------------------------------------------ |
-| `name` | `"default"`   | The account key for the single entry in the envelope.              |
+| Field  | Default       | Notes                                                                     |
+| ------ | ------------- | ------------------------------------------------------------------------- |
+| `name` | `"default"`   | The account key for the single entry in the envelope.                     |
 | `m`    | `65536` (KiB) | Argon2id memory cost (64 MiB). The written floor; readers tolerate lower. |
-| `t`    | `3`           | Argon2id iterations.                                               |
-| `p`    | `4`           | Argon2id parallelism.                                              |
+| `t`    | `3`           | Argon2id iterations.                                                      |
+| `p`    | `4`           | Argon2id parallelism.                                                     |
 
 **AEAD:** AES-256-GCM (12-byte nonce). ChaCha20-Poly1305 keystores written by older SDK versions are still accepted on read.
 
@@ -693,14 +693,14 @@ wallet.sendCall(
 
 **Args:**
 
-| Name                 | Type                     | Description                                                           |
-| -------------------- | ------------------------ | --------------------------------------------------------------------- |
-| `to`                 | `string`                 | Contract address.                                                     |
-| `data`               | `string`                 | Borsh-encoded `CallPayload`, usually built via `Contract.encodeCall`. |
-| `opts.gasLimit`      | `number`                 | Pin gas (skip auto-estimate).                                         |
+| Name                 | Type                     | Description                                                                   |
+| -------------------- | ------------------------ | ----------------------------------------------------------------------------- |
+| `to`                 | `string`                 | Contract address.                                                             |
+| `data`               | `string`                 | Borsh-encoded `CallPayload`, usually built via `Contract.encodeCall`.         |
+| `opts.gasLimit`      | `number`                 | Pin gas (skip auto-estimate).                                                 |
 | `opts.gasMultiplier` | `number`                 | Safety multiplier applied to the simulate-reported `gas_used`. Default `1.2`. |
-| `opts.value`         | bigint / number / string | PYDE quanta attached to the call.                                     |
-| `opts.provider`      | `Provider`               | Override the bound provider.                                          |
+| `opts.value`         | bigint / number / string | PYDE quanta attached to the call.                                             |
+| `opts.provider`      | `Provider`               | Override the bound provider.                                                  |
 
 **Returns:** `Promise<Receipt>`.
 
@@ -754,16 +754,16 @@ wallet.sendPrivate(inner: {
 
 **Args:**
 
-| Name           | Type                       | Description                                                                                                          |
-| -------------- | -------------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| `to`           | `string`                   | Recipient / contract address of the hidden inner tx.                                                               |
-| `data`         | `string`                   | Calldata hex. `"0x"` for a value-only transfer. Default `"0x"`.                                                    |
-| `value`        | bigint / number / string   | Quanta attached to the inner tx. Default `0`.                                                                       |
-| `gasLimit`     | `number`                   | Inner-tx gas. Defaults to `100_000` for a value-only send, `5_000_000` for a call.                                 |
-| `valueCeiling` | bigint / number / string   | Declared upper bound on the hidden value. Must be `>= value`. Drives the bond; over-declare to hide the true amount. Defaults to `value`. |
-| `accessList`   | `AccessEntry[]`            | Optional prefetch hints for the inner tx.                                                                           |
-| `provider`     | `Provider`                 | Override the bound provider.                                                                                        |
-| `timeoutMs`    | `number`                   | Applied to both the commit-inclusion wait and the inner-tx receipt wait.                                            |
+| Name           | Type                     | Description                                                                                                                               |
+| -------------- | ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| `to`           | `string`                 | Recipient / contract address of the hidden inner tx.                                                                                      |
+| `data`         | `string`                 | Calldata hex. `"0x"` for a value-only transfer. Default `"0x"`.                                                                           |
+| `value`        | bigint / number / string | Quanta attached to the inner tx. Default `0`.                                                                                             |
+| `gasLimit`     | `number`                 | Inner-tx gas. Defaults to `100_000` for a value-only send, `5_000_000` for a call.                                                        |
+| `valueCeiling` | bigint / number / string | Declared upper bound on the hidden value. Must be `>= value`. Drives the bond; over-declare to hide the true amount. Defaults to `value`. |
+| `accessList`   | `AccessEntry[]`          | Optional prefetch hints for the inner tx.                                                                                                 |
+| `provider`     | `Provider`               | Override the bound provider.                                                                                                              |
+| `timeoutMs`    | `number`                 | Applied to both the commit-inclusion wait and the inner-tx receipt wait.                                                                  |
 
 **The bond:** `requiredBond(valueCeiling) = max(MIN_COMMIT_BOND, valueCeiling × COMMIT_BOND_BPS / 10_000)` — a `1` PYDE (`MIN_COMMIT_BOND`) flat floor or `1 %` (`COMMIT_BOND_BPS`) of the ceiling, whichever is larger. It is debited at commit, refunded when the reveal is accepted, and **burned** if the commitment is never revealed within `COMMIT_REVEAL_WINDOW_WAVES` (`120n` waves, ~60 s — a censorship cushion, not the expected latency).
 
@@ -847,12 +847,12 @@ wallet.buildCommit(
 
 **Args:**
 
-| Name                | Type         | Description                                                                              |
-| ------------------- | ------------ | ---------------------------------------------------------------------------------------- |
-| `args.commitment`   | `Uint8Array` | 32-byte `commitmentHash(innerTxBytes, nonce)`.                                            |
-| `args.valueCeiling` | `bigint`     | Declared upper bound on the hidden value; drives `bond = requiredBond(valueCeiling)`.    |
-| `opts.gasLimit`     | `number`     | Commit-tx gas. Default `200_000`.                                                        |
-| `opts.provider`     | `Provider`   | Override the bound provider (needed for the nonce + chain-id lookup).                    |
+| Name                | Type         | Description                                                                           |
+| ------------------- | ------------ | ------------------------------------------------------------------------------------- |
+| `args.commitment`   | `Uint8Array` | 32-byte `commitmentHash(innerTxBytes, nonce)`.                                        |
+| `args.valueCeiling` | `bigint`     | Declared upper bound on the hidden value; drives `bond = requiredBond(valueCeiling)`. |
+| `opts.gasLimit`     | `number`     | Commit-tx gas. Default `200_000`.                                                     |
+| `opts.provider`     | `Provider`   | Override the bound provider (needed for the nonce + chain-id lookup).                 |
 
 **Returns:** `{ wire, hash, bond }` — submit `wire` via `provider.sendRawTransaction` (the Commit's `to` is the zero address and its `value` is `bond`).
 
@@ -874,7 +874,7 @@ wallet.buildReveal(
 **Args:**
 
 | Name              | Type                   | Description                                                                                   |
-| ----------------- | ---------------------- | -------------------------------------------------------------------------------------------- |
+| ----------------- | ---------------------- | --------------------------------------------------------------------------------------------- |
 | `args.commitment` | `Uint8Array`           | The 32-byte commitment being opened (must equal the committed hash).                          |
 | `args.nonce`      | `Uint8Array`           | The 32-byte salt drawn at commit time.                                                        |
 | `args.innerTx`    | `Uint8Array \| string` | The signed inner-tx wire (hex or bytes) that was hashed into the commitment — reuse verbatim. |
@@ -924,9 +924,9 @@ The handle returned by [`sendPrivate`](#walletsendprivateinner) / [`transferPriv
 
 ```ts
 interface PrivateSendHandle {
-  commitHash: string;   // Commit tx hash (reserved the slot, posted the bond)
-  revealHash: string;   // Reveal tx hash (opened the commitment; bond refunded on accept)
-  innerHash: string;    // hidden inner tx hash — the receipt key for the REAL outcome
+  commitHash: string; // Commit tx hash (reserved the slot, posted the bond)
+  revealHash: string; // Reveal tx hash (opened the commitment; bond refunded on accept)
+  innerHash: string; // hidden inner tx hash — the receipt key for the REAL outcome
   commitReceipt: Receipt; // the Commit tx's own receipt (already resolved)
   waitForReceipt(timeoutMs?: number): Promise<Receipt>;
 }

@@ -37,21 +37,21 @@ Requires Node ≥ 20 (Node 22 recommended). The browser bundle is ESM via `dist/
 
 ## TOC
 
-| Chapter                                             | Topic                                                             |
-| --------------------------------------------------- | ----------------------------------------------------------------- |
-| [01 — Quickstart](./01-quickstart.md)               | Read a balance · Send a transfer · Deploy + call a contract       |
-| [02 — Provider](./02-provider.md)                   | HTTP RPC client: every method, options, retries, errors           |
-| [03 — Wallet](./03-wallet.md)                       | Handle vs hex SK, keystore, sign, gas auto-estimate               |
-| [04 — Contract](./04-contract.md)                   | `Contract.read` / `write` / `queryFilter` + `Contract<TAbi>`      |
-| [05 — Codegen (`pyde-tsgen`)](./05-codegen.md)      | ABI → TS bindings, type-safe `<Name>Abi` shape                    |
-| [07 — Wallet adapters](./07-wallet-adapters.md)     | `WalletAdapter` interface, `InMemory` + `Browser` + custom        |
-| [08 — WebSocket](./08-websocket.md)                 | `WebSocketProvider` — subscriptions, cursor resume, terminalError |
-| [09 — Private transactions (commit-reveal)](./09-private-transactions.md) | MEV-protected submission via salted commit → reveal flow           |
-| [10 — Errors](./10-errors.md)                       | Error hierarchy, `isError`, `scrubError`, retry semantics         |
-| [11 — Utility surface](./11-units-hex-address.md)   | `parseQuanta` / `hexlify` / `Address`                             |
-| [12 — Examples / recipes](./12-examples.md)         | Read · Send · Index · Deploy · Private (commit-reveal)            |
-| [13 — Migration](./13-migration.md)                 | Upgrade notes between SDK versions                                |
-| [14 — Internals](./14-internals.md)                 | Borsh wire format · `CallPayload` · ABI normalisation             |
+| Chapter                                                                   | Topic                                                             |
+| ------------------------------------------------------------------------- | ----------------------------------------------------------------- |
+| [01 — Quickstart](./01-quickstart.md)                                     | Read a balance · Send a transfer · Deploy + call a contract       |
+| [02 — Provider](./02-provider.md)                                         | HTTP RPC client: every method, options, retries, errors           |
+| [03 — Wallet](./03-wallet.md)                                             | Handle vs hex SK, keystore, sign, gas auto-estimate               |
+| [04 — Contract](./04-contract.md)                                         | `Contract.read` / `write` / `queryFilter` + `Contract<TAbi>`      |
+| [05 — Codegen (`pyde-tsgen`)](./05-codegen.md)                            | ABI → TS bindings, type-safe `<Name>Abi` shape                    |
+| [07 — Wallet adapters](./07-wallet-adapters.md)                           | `WalletAdapter` interface, `InMemory` + `Browser` + custom        |
+| [08 — WebSocket](./08-websocket.md)                                       | `WebSocketProvider` — subscriptions, cursor resume, terminalError |
+| [09 — Private transactions (commit-reveal)](./09-private-transactions.md) | MEV-protected submission via salted commit → reveal flow          |
+| [10 — Errors](./10-errors.md)                                             | Error hierarchy, `isError`, `scrubError`, retry semantics         |
+| [11 — Utility surface](./11-units-hex-address.md)                         | `parseQuanta` / `hexlify` / `Address`                             |
+| [12 — Examples / recipes](./12-examples.md)                               | Read · Send · Index · Deploy · Private (commit-reveal)            |
+| [13 — Migration](./13-migration.md)                                       | Upgrade notes between SDK versions                                |
+| [14 — Internals](./14-internals.md)                                       | Borsh wire format · `CallPayload` · ABI normalisation             |
 
 ## At a glance — the public surface
 
@@ -164,15 +164,15 @@ import { generateTypes } from "pyde-ts-sdk/codegen";
 
 ## Spec references
 
-| Topic                                   | Spec source                                          |
-| --------------------------------------- | ---------------------------------------------------- |
-| RPC surface                             | Pyde Book Chapter 17.4                               |
-| Transaction wire                        | Pyde Book Chapter 11                                 |
-| Wave header / state root hybrid         | Pyde Book Chapter 6 + `hash_strategy_and_validation` |
-| Private transactions (commit-reveal)    | Pyde Book Chapter 9                                  |
-| Host fn ABI                             | `HOST_FN_ABI_SPEC.md`                                |
-| Event encoding (Borsh)                  | `HOST_FN_ABI_SPEC.md §14`                            |
-| Keystore (Argon2id + AES-256-GCM)       | Pyde Book Chapter 17                                 |
+| Topic                                | Spec source                                          |
+| ------------------------------------ | ---------------------------------------------------- |
+| RPC surface                          | Pyde Book Chapter 17.4                               |
+| Transaction wire                     | Pyde Book Chapter 11                                 |
+| Wave header / state root hybrid      | Pyde Book Chapter 6 + `hash_strategy_and_validation` |
+| Private transactions (commit-reveal) | Pyde Book Chapter 9                                  |
+| Host fn ABI                          | `HOST_FN_ABI_SPEC.md`                                |
+| Event encoding (Borsh)               | `HOST_FN_ABI_SPEC.md §14`                            |
+| Keystore (Argon2id + AES-256-GCM)    | Pyde Book Chapter 17                                 |
 
 ## Conventions
 

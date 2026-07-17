@@ -140,10 +140,10 @@ new BrowserWalletAdapter(options?: {
 
 **Args:**
 
-| Name       | Type                   | Default        | Description                                                                            |
-| ---------- | ---------------------- | -------------- | -------------------------------------------------------------------------------------- |
-| `name`     | `string`               | `"browser"`    | Identifier surfaced via `adapter.name`. Useful when multiple adapters coexist in a UI. |
-| `injected` | `InjectedPydeProvider` | `window.pyde`  | Explicit injected provider. When omitted, reads `globalThis.pyde`.                     |
+| Name       | Type                   | Default       | Description                                                                            |
+| ---------- | ---------------------- | ------------- | -------------------------------------------------------------------------------------- |
+| `name`     | `string`               | `"browser"`   | Identifier surfaced via `adapter.name`. Useful when multiple adapters coexist in a UI. |
+| `injected` | `InjectedPydeProvider` | `window.pyde` | Explicit injected provider. When omitted, reads `globalThis.pyde`.                     |
 
 **Example:**
 
@@ -168,7 +168,7 @@ const receipt = await adapter.sendTransaction(tx, provider);
 
 **Throws:**
 
-- `SigningError("BrowserWalletAdapter: no \`window.pyde\` injected provider found. ...")` when no provider is on `window.pyde` and none was passed via `options.injected`.
+- `SigningError("BrowserWalletAdapter: no \`window.pyde\` injected provider found. ...")`when no provider is on`window.pyde`and none was passed via`options.injected`.
 - `SigningError` on user rejection or any signer failure.
 
 ---

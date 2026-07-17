@@ -22,8 +22,7 @@ function devnetSeed(i) {
   input.set(idx, prefix.length);
   return blake3(input);
 }
-const toHex = (b) =>
-  "0x" + Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
+const toHex = (b) => "0x" + Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
 
 const rpc = process.env.PYDE_RPC_URL ?? "http://127.0.0.1:9933";
 const provider = new Provider(rpc, { allowInsecureTransport: rpc.startsWith("http://") });

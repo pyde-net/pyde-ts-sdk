@@ -588,8 +588,8 @@ provider.getHardFinalityCert(waveId: number | bigint): Promise<HardFinalityCert 
 
 **Args:**
 
-| Name     | Type               | Description                                                     |
-| -------- | ------------------ | --------------------------------------------------------------- |
+| Name     | Type               | Description                                                      |
+| -------- | ------------------ | ---------------------------------------------------------------- |
 | `waveId` | `number \| bigint` | Wave id. Engine expects a bare u64 number on the wire (not hex). |
 
 **Returns:** `Promise<HardFinalityCert | null>` — certificate or `null` if the wave hasn't reached hard finality.
@@ -651,12 +651,12 @@ provider.getSnapshotManifest(): Promise<SnapshotManifest | null>
 
 ```ts
 interface SnapshotManifest {
-  waveId: bigint;        // wave the manifest was built at (last_flushed_wave)
-  stateRoot: string;     // Blake3 root of the snapshot at waveId
-  chunkSize: number;     // bytes per chunk
-  chunkCount: number;    // number of chunks comprising the snapshot
+  waveId: bigint; // wave the manifest was built at (last_flushed_wave)
+  stateRoot: string; // Blake3 root of the snapshot at waveId
+  chunkSize: number; // bytes per chunk
+  chunkCount: number; // number of chunks comprising the snapshot
   chunkHashes: string[]; // Blake3 hash per chunk, in positional order
-  totalKeys: number;     // total state keys captured
+  totalKeys: number; // total state keys captured
 }
 ```
 
@@ -841,8 +841,8 @@ provider.simulateTransaction(signedTxHex: string): Promise<SimulateTransactionRe
 ```ts
 interface SimulateTransactionResult {
   receipt: Receipt | null;
-  reads: string[];   // slot hashes the tx would read
-  writes: string[];  // slot hashes the tx would write
+  reads: string[]; // slot hashes the tx would read
+  writes: string[]; // slot hashes the tx would write
 }
 ```
 
@@ -860,11 +860,13 @@ const sim = await provider.simulateTransaction(probe);
 
 if (sim.receipt && sim.receipt.success) {
   const realGas = Math.ceil(parseInt(sim.receipt.gasUsed, 16) * 1.2);
-  const accessList = [{
-    address: tx.to,
-    reads: sim.reads,
-    writes: sim.writes,
-  }];
+  const accessList = [
+    {
+      address: tx.to,
+      reads: sim.reads,
+      writes: sim.writes,
+    },
+  ];
   const signed = wallet.signTransaction({ ...tx, gasLimit: realGas });
   await provider.sendRawTransaction(signed);
 }
@@ -1190,11 +1192,11 @@ provider.getEvents(filter?: {
 
 **Args:**
 
-| Name              | Type     | Description                                        |
-| ----------------- | -------- | -------------------------------------------------- |
-| `filter.fromWave` | `bigint` | Inclusive lower bound. Default 0.                  |
-| `filter.toWave`   | `bigint` | Inclusive upper bound. Default current head.       |
-| `filter.contract` | `string` | Restrict to a single contract.                     |
+| Name              | Type     | Description                                  |
+| ----------------- | -------- | -------------------------------------------- |
+| `filter.fromWave` | `bigint` | Inclusive lower bound. Default 0.            |
+| `filter.toWave`   | `bigint` | Inclusive upper bound. Default current head. |
+| `filter.contract` | `string` | Restrict to a single contract.               |
 
 **Returns:** `Promise<EventLog[]>` — flat array (no pagination cursor; use `getLogs` for strict / paginated semantics).
 
@@ -1281,20 +1283,20 @@ provider.getNodeInfo(): Promise<NodeInfo>
 
 ```ts
 interface NodeInfo {
-  peerId: string;              // libp2p peer id
+  peerId: string; // libp2p peer id
   falconPubkey: string | null; // signing key; null for full/archive nodes (can't sign)
-  listenAddrs: string[];       // libp2p multiaddrs
-  agentVersion: string;        // node software self-id, e.g. "pyde/0.1.0"
-  protocolVersion: string;     // wire protocol family + version, e.g. "pyde/1"
+  listenAddrs: string[]; // libp2p multiaddrs
+  agentVersion: string; // node software self-id, e.g. "pyde/0.1.0"
+  protocolVersion: string; // wire protocol family + version, e.g. "pyde/1"
 }
 ```
 
 `agentVersion` vs `protocolVersion` — different layers:
 
-| Field             | Catalog format       | What it answers                                            | Analogue                                            |
-| ----------------- | -------------------- | ---------------------------------------------------------- | --------------------------------------------------- |
-| `agentVersion`    | `"pyde/<semver>"`    | "What build of the node software am I talking to?"         | EVM `web3_clientVersion` (e.g. `Geth/v1.13.0`)      |
-| `protocolVersion` | `"pyde/<integer>"`   | "Which version of the Pyde wire protocol does this speak?" | EVM `eth_protocolVersion` (e.g. `65` for eth/65)    |
+| Field             | Catalog format     | What it answers                                            | Analogue                                         |
+| ----------------- | ------------------ | ---------------------------------------------------------- | ------------------------------------------------ |
+| `agentVersion`    | `"pyde/<semver>"`  | "What build of the node software am I talking to?"         | EVM `web3_clientVersion` (e.g. `Geth/v1.13.0`)   |
+| `protocolVersion` | `"pyde/<integer>"` | "Which version of the Pyde wire protocol does this speak?" | EVM `eth_protocolVersion` (e.g. `65` for eth/65) |
 
 Compatibility checks: gate `protocolVersion === "pyde/1"` for v1 wire calls; surface `agentVersion` in logs / telemetry to pin down "which build serves this RPC" during outages.
 
@@ -1381,13 +1383,13 @@ nonce: 0
 
 ## Retry semantics
 
-| Layer                            | What retries                              | When                      | Backoff                                      |
-| -------------------------------- | ----------------------------------------- | ------------------------- | -------------------------------------------- |
-| `options.retries`                | transport errors (5xx, ECONNRESET, abort) | `fetch` throws            | exponential, capped                          |
-| `callWithFallback` (internal)    | per-fallback-method-name list             | `method not found`        | none — try next                              |
-| `WebSocketProvider` reconnect    | socket dropped                            | `close` event             | exponential, capped at `reconnectMaxDelayMs` |
-| `Wallet.sendCall` simulate fallback | once                                   | `simulateTransaction` fails | fixed 5M default + no access list           |
-| `waitForReceipt`                 | every ~500 ms until `timeoutMs`           | receipt not yet available | linear                                       |
+| Layer                               | What retries                              | When                        | Backoff                                      |
+| ----------------------------------- | ----------------------------------------- | --------------------------- | -------------------------------------------- |
+| `options.retries`                   | transport errors (5xx, ECONNRESET, abort) | `fetch` throws              | exponential, capped                          |
+| `callWithFallback` (internal)       | per-fallback-method-name list             | `method not found`          | none — try next                              |
+| `WebSocketProvider` reconnect       | socket dropped                            | `close` event               | exponential, capped at `reconnectMaxDelayMs` |
+| `Wallet.sendCall` simulate fallback | once                                      | `simulateTransaction` fails | fixed 5M default + no access list            |
+| `waitForReceipt`                    | every ~500 ms until `timeoutMs`           | receipt not yet available   | linear                                       |
 
 **Never retries on:**
 

@@ -45,7 +45,9 @@ function bytesToHex(b: Uint8Array): string {
   return out;
 }
 function u32le(b: Uint8Array, off: number): number {
-  return (b[off] ?? 0) | ((b[off + 1] ?? 0) << 8) | ((b[off + 2] ?? 0) << 16) | ((b[off + 3] ?? 0) << 24);
+  return (
+    (b[off] ?? 0) | ((b[off + 1] ?? 0) << 8) | ((b[off + 2] ?? 0) << 16) | ((b[off + 3] ?? 0) << 24)
+  );
 }
 function concatBytes(...arrs: Uint8Array[]): Uint8Array {
   const out = new Uint8Array(arrs.reduce((n, a) => n + a.length, 0));
@@ -113,15 +115,23 @@ describe("commit-reveal primitives", () => {
   it("commitmentHash = Blake3(domain_tag || inner || nonce)", () => {
     const inner = new Uint8Array([1, 2, 3]);
     const nonce = new Uint8Array(32).fill(0x5a);
-    const expected = blake3(concatBytes(new TextEncoder().encode("pyde-commit-reveal-v1"), inner, nonce));
+    const expected = blake3(
+      concatBytes(new TextEncoder().encode("pyde-commit-reveal-v1"), inner, nonce),
+    );
     expect(bytesToHex(commitmentHash(inner, nonce))).toBe(bytesToHex(expected));
   });
 
   it("commitmentHash rejects a non-32-byte nonce; encoders reject bad lengths", () => {
     expect(() => commitmentHash(new Uint8Array(1), new Uint8Array(31))).toThrow();
-    expect(() => encodeCommitPayload({ commitment: new Uint8Array(31), valueCeiling: 0n })).toThrow();
     expect(() =>
-      encodeRevealPayload({ commitment: new Uint8Array(32), nonce: new Uint8Array(31), innerTx: new Uint8Array(0) }),
+      encodeCommitPayload({ commitment: new Uint8Array(31), valueCeiling: 0n }),
+    ).toThrow();
+    expect(() =>
+      encodeRevealPayload({
+        commitment: new Uint8Array(32),
+        nonce: new Uint8Array(31),
+        innerTx: new Uint8Array(0),
+      }),
     ).toThrow();
   });
 });
@@ -193,7 +203,10 @@ dfix("commit-reveal wire parity vs otigen_commit_reveal_vectors_v1.json", () => 
     let ceiling = 0n;
     for (let i = 0; i < 16; i++) ceiling |= BigInt(data[32 + i] ?? 0) << BigInt(i * 8);
 
-    const reenc = encodeCommitPayload({ commitment: new Uint8Array(commitment), valueCeiling: ceiling });
+    const reenc = encodeCommitPayload({
+      commitment: new Uint8Array(commitment),
+      valueCeiling: ceiling,
+    });
     expect(bytesToHex(reenc)).toBe(cv.input.data_hex.replace(/^0x/, ""));
     // The commit's value == required_bond(value_ceiling).
     expect(requiredBond(ceiling)).toBe(BigInt(cv.input.value_dec));

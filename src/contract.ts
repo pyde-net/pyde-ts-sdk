@@ -1829,11 +1829,19 @@ export class DeployData {
 
   /** Load a `<name>.bundle/` directory (Node-only): reads contract.wasm +
    *  abi.json, and takes the contract name from `name` or the dir. */
-  static async fromArtifact(bundleDir: string, args: Record<string, any> = {}): Promise<DeployData> {
+  static async fromArtifact(
+    bundleDir: string,
+    args: Record<string, any> = {},
+  ): Promise<DeployData> {
     const fs = await loadNodeFs("fromArtifact");
-    const wasmHex = bytesToHex(new Uint8Array(fs.readFileSync(`${bundleDir}/contract.wasm`) as any));
+    const wasmHex = bytesToHex(
+      new Uint8Array(fs.readFileSync(`${bundleDir}/contract.wasm`) as any),
+    );
     const abiJson = fs.readFileSync(`${bundleDir}/abi.json`, "utf-8");
-    const name = bundleDir.split("/").pop()!.replace(/\.bundle$/, "");
+    const name = bundleDir
+      .split("/")
+      .pop()!
+      .replace(/\.bundle$/, "");
     return DeployData.fromWasm(name, wasmHex, abiJson, args);
   }
 
@@ -1888,12 +1896,9 @@ function encodeConstructorArgs(
     if (val === undefined) {
       throw new Error(`constructor: missing arg '${p.name}' (${p.type})`);
     }
-    (temp as unknown as { encodeValue: (b: number[], v: unknown, t: string, path: string) => void }).encodeValue(
-      buf,
-      val,
-      p.type,
-      `constructor.${p.name}`,
-    );
+    (
+      temp as unknown as { encodeValue: (b: number[], v: unknown, t: string, path: string) => void }
+    ).encodeValue(buf, val, p.type, `constructor.${p.name}`);
   }
   return new Uint8Array(buf);
 }

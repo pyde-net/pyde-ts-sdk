@@ -177,7 +177,7 @@ describe("Phase 2 — structural-floor rejections", () => {
     // the high nibble there to bump value without changing length.
     const tampered =
       wire.slice(0, 2 + 64 * 2) +
-      ((parseInt(wire[2 + 64 * 2]!, 16) ^ 0x1).toString(16)) +
+      (parseInt(wire[2 + 64 * 2]!, 16) ^ 0x1).toString(16) +
       wire.slice(2 + 64 * 2 + 1);
     await expect(devnet.provider.sendRawTransaction(tampered)).rejects.toThrow(RpcError);
   });

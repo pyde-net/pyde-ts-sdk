@@ -35,7 +35,7 @@ Reserve a tx's ordering slot with a salted Blake3 commitment before its contents
 
 In a plain mempool, validators (and anyone watching gossip) see every pending tx's `to`, `value`, and `data` before its order is locked in. That's enough to **front-run** a swap, **sandwich** a high-value action, or **censor** a tx that hurts a validator's positions.
 
-Commit-reveal breaks the link between *seeing a tx's contents* and *placing it in the order*:
+Commit-reveal breaks the link between _seeing a tx's contents_ and _placing it in the order_:
 
 1. You publish a **Commit** — a salted `Blake3` hash of the fully-signed inner tx. The commit reserves an ordering slot in its wave; the contents stay hidden.
 2. Once the order is finalized, you publish a **Reveal** that discloses the salt + the inner tx bytes. The inner tx executes in the reveal wave's resolution pass, **in commit order**.
@@ -46,7 +46,7 @@ No secret key is involved anywhere. There is no committee, no shared secret, not
 
 > Content-targeted front-running is prevented. This is **not** a total ordering lock against unrelated txs that arrive in the reveal→execute window.
 
-An adversary can't read your swap and insert a targeted trade ahead of it, because your ordering slot was fixed before your bytes were visible. An adversary *can* still submit unrelated txs into the same wave — commit-reveal fixes *your* position relative to what was already committed, not the entire wave's composition.
+An adversary can't read your swap and insert a targeted trade ahead of it, because your ordering slot was fixed before your bytes were visible. An adversary _can_ still submit unrelated txs into the same wave — commit-reveal fixes _your_ position relative to what was already committed, not the entire wave's composition.
 
 **Spec:** Pyde Book Chapter 9.
 
@@ -117,16 +117,16 @@ wallet.sendPrivate(inner: {
 
 **Args:**
 
-| Name               | Type                     | Description                                                                                              |
-| ------------------ | ------------------------ | -------------------------------------------------------------------------------------------------------- |
-| `to`               | `string`                 | Target address of the hidden inner tx.                                                                   |
-| `data`             | `string`                 | Hex calldata. `"0x"` for a value-only send. Build via `Contract.encodeCall(...)`.                        |
-| `value`            | bigint / number / string | Quanta attached to the inner tx. Default `0`.                                                            |
-| `gasLimit`         | `number`                 | Inner-tx gas. Default `100_000` for `data === "0x"`, else `5_000_000`.                                   |
-| `valueCeiling`     | bigint / number / string | Declared upper bound on the hidden value. Must be `>= value`. Drives the bond. **Over-declare to hide the true amount.** Default = `value`. |
-| `accessList`       | `AccessEntry[]`          | Optional parallel-scheduler hint for the inner tx.                                                       |
-| `provider`         | `Provider`               | Override the bound provider.                                                                             |
-| `timeoutMs`        | `number`                 | Applied to both the commit-inclusion wait and the inner-tx receipt wait.                                 |
+| Name           | Type                     | Description                                                                                                                                 |
+| -------------- | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `to`           | `string`                 | Target address of the hidden inner tx.                                                                                                      |
+| `data`         | `string`                 | Hex calldata. `"0x"` for a value-only send. Build via `Contract.encodeCall(...)`.                                                           |
+| `value`        | bigint / number / string | Quanta attached to the inner tx. Default `0`.                                                                                               |
+| `gasLimit`     | `number`                 | Inner-tx gas. Default `100_000` for `data === "0x"`, else `5_000_000`.                                                                      |
+| `valueCeiling` | bigint / number / string | Declared upper bound on the hidden value. Must be `>= value`. Drives the bond. **Over-declare to hide the true amount.** Default = `value`. |
+| `accessList`   | `AccessEntry[]`          | Optional parallel-scheduler hint for the inner tx.                                                                                          |
+| `provider`     | `Provider`               | Override the bound provider.                                                                                                                |
+| `timeoutMs`    | `number`                 | Applied to both the commit-inclusion wait and the inner-tx receipt wait.                                                                    |
 
 **Returns:** `Promise<PrivateSendHandle>` — see [`PrivateSendHandle`](#privatesendhandle).
 
@@ -307,27 +307,27 @@ Everything below is exported both from `./private-tx` and from the package root 
 
 ### Constants
 
-| Symbol                       | Value                    | Meaning                                                                                          |
-| ---------------------------- | ------------------------ | ------------------------------------------------------------------------------------------------ |
-| `COMMIT_REVEAL_WINDOW_WAVES` | `120n`                   | Reveal window in waves (~60 s at 500 ms/wave). Miss it → bond forfeit. A censorship cushion, not the expected latency. |
-| `MIN_COMMIT_BOND`            | `1_000_000_000n`         | Flat bond floor: 1 PYDE (1 PYDE = 10⁹ quanta).                                                    |
-| `COMMIT_BOND_BPS`            | `100n`                   | Bond scaling in basis points of `valueCeiling` (100 bps = 1%).                                    |
-| `COMMITMENT_DOMAIN_TAG`      | `"pyde-commit-reveal-v1"`| Domain-separation tag hashed into every commitment. Wire-frozen.                                  |
-| `TxType.Commit`              | `0x11`                   | Commit tx type. `to` = zero address, `value` = bond.                                              |
-| `TxType.Reveal`              | `0x12`                   | Reveal tx type. `to` = zero address, `value` = 0.                                                 |
+| Symbol                       | Value                     | Meaning                                                                                                                |
+| ---------------------------- | ------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `COMMIT_REVEAL_WINDOW_WAVES` | `120n`                    | Reveal window in waves (~60 s at 500 ms/wave). Miss it → bond forfeit. A censorship cushion, not the expected latency. |
+| `MIN_COMMIT_BOND`            | `1_000_000_000n`          | Flat bond floor: 1 PYDE (1 PYDE = 10⁹ quanta).                                                                         |
+| `COMMIT_BOND_BPS`            | `100n`                    | Bond scaling in basis points of `valueCeiling` (100 bps = 1%).                                                         |
+| `COMMITMENT_DOMAIN_TAG`      | `"pyde-commit-reveal-v1"` | Domain-separation tag hashed into every commitment. Wire-frozen.                                                       |
+| `TxType.Commit`              | `0x11`                    | Commit tx type. `to` = zero address, `value` = bond.                                                                   |
+| `TxType.Reveal`              | `0x12`                    | Reveal tx type. `to` = zero address, `value` = 0.                                                                      |
 
 **Payload types:**
 
 ```ts
 interface CommitPayload {
-  commitment: Uint8Array;   // 32-byte commitmentHash(innerTxBytes, nonce)
-  valueCeiling: bigint;     // sender-declared upper bound on the hidden value (u128 quanta)
+  commitment: Uint8Array; // 32-byte commitmentHash(innerTxBytes, nonce)
+  valueCeiling: bigint; // sender-declared upper bound on the hidden value (u128 quanta)
 }
 
 interface RevealPayload {
-  commitment: Uint8Array;   // must equal the committed hash
-  nonce: Uint8Array;        // the 32-byte salt drawn at commit time
-  innerTx: Uint8Array;      // borsh(Tx) of the hidden, fully-signed tx — the SAME bytes hashed in
+  commitment: Uint8Array; // must equal the committed hash
+  nonce: Uint8Array; // the 32-byte salt drawn at commit time
+  innerTx: Uint8Array; // borsh(Tx) of the hidden, fully-signed tx — the SAME bytes hashed in
 }
 ```
 
@@ -343,8 +343,8 @@ The minimum bond a `Commit` must post for a declared `valueCeiling`. Debited at 
 ```ts
 import { requiredBond, parseQuanta } from "pyde-ts-sdk";
 
-requiredBond(parseQuanta("0.5"));  // 1_000_000_000n  (floor: 1 PYDE)
-requiredBond(parseQuanta("500"));  // 5_000_000_000n  (1% of 500 PYDE = 5 PYDE)
+requiredBond(parseQuanta("0.5")); // 1_000_000_000n  (floor: 1 PYDE)
+requiredBond(parseQuanta("500")); // 5_000_000_000n  (1% of 500 PYDE = 5 PYDE)
 ```
 
 ### `commitmentHash(innerTxBytes, nonce)`
@@ -374,12 +374,12 @@ These are the exact bytes that go in `tx.data` for a Commit (`0x11`) and Reveal 
 
 The bond prices commit-spam: reserving an ordering slot and never revealing forfeits real value.
 
-| Rule            | Detail                                                                                      |
-| --------------- | ------------------------------------------------------------------------------------------- |
-| **Amount**      | `max(1 PYDE, 1% of valueCeiling)` — the flat floor or 1% of the declared ceiling, whichever is larger. |
-| **Debited**     | At commit (it's the Commit tx's `value`).                                                    |
-| **Refunded**    | When the matching reveal is accepted inside the window.                                      |
-| **Burned**      | If the commitment is never revealed within `COMMIT_REVEAL_WINDOW_WAVES`.                     |
+| Rule         | Detail                                                                                                 |
+| ------------ | ------------------------------------------------------------------------------------------------------ |
+| **Amount**   | `max(1 PYDE, 1% of valueCeiling)` — the flat floor or 1% of the declared ceiling, whichever is larger. |
+| **Debited**  | At commit (it's the Commit tx's `value`).                                                              |
+| **Refunded** | When the matching reveal is accepted inside the window.                                                |
+| **Burned**   | If the commitment is never revealed within `COMMIT_REVEAL_WINDOW_WAVES`.                               |
 
 Because the bond scales with `valueCeiling`, **over-declaring the ceiling to hide your true amount costs more** — it's a deliberate privacy/cost trade-off. Declare only as high as your privacy needs require.
 
@@ -422,11 +422,11 @@ await wallet.buildReveal({
 
 ## Errors
 
-| Class                  | When                                                                                    |
-| ---------------------- | --------------------------------------------------------------------------------------- |
-| `WalletDestroyedError` | `destroy()` called before `sendPrivate` / `buildCommit` / `buildReveal`.                |
-| `SigningError`         | `valueCeiling < value`, malformed inner tx, or WASM signer failure.                     |
-| `RpcError`             | Chain rejected the commit or reveal (e.g. bond too low, commitment mismatch, window elapsed). |
+| Class                  | When                                                                                                                                       |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| `WalletDestroyedError` | `destroy()` called before `sendPrivate` / `buildCommit` / `buildReveal`.                                                                   |
+| `SigningError`         | `valueCeiling < value`, malformed inner tx, or WASM signer failure.                                                                        |
+| `RpcError`             | Chain rejected the commit or reveal (e.g. bond too low, commitment mismatch, window elapsed).                                              |
 | `TimeoutError`         | `waitForReceipt` didn't see the inner-tx receipt by `timeoutMs`. The tx may still commit — re-check with `provider.getTransactionReceipt`. |
 
 See [Chapter 10 — Errors](./10-errors.md).
@@ -435,9 +435,9 @@ See [Chapter 10 — Errors](./10-errors.md).
 
 ## Gotchas
 
-- **Commit-reveal hides *contents*, not *identity*.** `from`, `gas`, `nonce`, and `chainId` are cleartext on the commit and reveal txs (replay protection needs them). If you must hide the sender, route through a relayer.
+- **Commit-reveal hides _contents_, not _identity_.** `from`, `gas`, `nonce`, and `chainId` are cleartext on the commit and reveal txs (replay protection needs them). If you must hide the sender, route through a relayer.
 - **The guarantee is scoped.** Content-targeted front-running is prevented; it is **not** a total ordering lock against unrelated txs arriving in the reveal→execute window.
-- **`waitForReceipt` resolves on the *inner* tx**, not the commit or reveal. Poll `handle.innerHash` (which it does for you) — never `commitHash` / `revealHash` — for the real outcome.
+- **`waitForReceipt` resolves on the _inner_ tx**, not the commit or reveal. Poll `handle.innerHash` (which it does for you) — never `commitHash` / `revealHash` — for the real outcome.
 - **Sign the inner tx once.** FALCON-512 is non-deterministic; re-signing breaks the commitment match and burns your bond. See [above](#sign-the-inner-tx-once-falcon-non-determinism).
 - **The bond scales with `valueCeiling`.** Over-declaring hides your amount but costs 1% of the ceiling (min 1 PYDE). It's refunded on reveal-accept, burned on abandon.
 - **Reveal before the window closes.** Miss `COMMIT_REVEAL_WINDOW_WAVES` (120 waves, ~60 s) and the bond is forfeit. `sendPrivate` auto-reveals in ~1–2 s; the window only matters if a reveal is delayed or censored.

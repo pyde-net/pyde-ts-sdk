@@ -250,7 +250,12 @@ describe("Wallet keystore round-trip", () => {
     expect(entry.salt.startsWith("0x")).toBe(true);
     expect(entry.nonce.startsWith("0x")).toBe(true);
     expect(entry.ciphertext.startsWith("0x")).toBe(true);
-    expect(entry.kdf).toEqual({ name: "argon2id", memory_kb: 65_536, iterations: 3, parallelism: 4 });
+    expect(entry.kdf).toEqual({
+      name: "argon2id",
+      memory_kb: 65_536,
+      iterations: 3,
+      parallelism: 4,
+    });
 
     const restored = await Wallet.fromEncrypted(ks, "strong-passphrase");
     expect(restored.address).toBe(original.address);
@@ -567,4 +572,3 @@ describe("AbstractSigner — custom signer subclassing", () => {
     expect(wire).toMatch(/^0x[0-9a-fA-F]+$/);
   });
 });
-
