@@ -173,7 +173,7 @@ const wallet = Wallet.generate().connect(provider);
 
 const handle = await wallet.sendPrivate({
   to: contractAddr,
-  data: calldata,      // "0x" for a value-only transfer
+  data: calldata, // "0x" for a value-only transfer
   value: 0n,
   // gasLimit: 1_000_000,         // defaults by data shape
   // valueCeiling: 5_000_000n,    // over-declare to hide the exact amount; drives the bond
@@ -309,19 +309,19 @@ Everything routes to `pyde-crypto-wasm` — the SDK does not implement primitive
 
 Every public type and method carries a TSDoc reference to the spec section it implements. Quick map:
 
-| Surface                       | Spec                                |
-| ----------------------------- | ----------------------------------- |
-| Account record                | Chapter 11 §11.1                    |
-| TxType discriminants          | Chapter 11 §11.8                    |
-| Wave + HardFinalityCert       | Chapter 6                           |
-| Snapshot manifest             | STATE_SYNC.md                       |
-| Receipt + fee fields          | Chapter 10                          |
-| Log + EventCursor + LogFilter | HOST_FN_ABI §15.2 + §15.4           |
-| Subscription mechanics        | HOST_FN_ABI §15.5                   |
-| Keystore format               | Chapter 17 (`pyde keys generate`)   |
-| Cryptographic primitives      | Chapter 8.2 / 8.4                   |
-| ABI codec + selector          | SDK_AUTHOR_GUIDE + HOST_FN_ABI §3.7 |
-| Private submission (commit-reveal) | Chapter 9                      |
+| Surface                            | Spec                                |
+| ---------------------------------- | ----------------------------------- |
+| Account record                     | Chapter 11 §11.1                    |
+| TxType discriminants               | Chapter 11 §11.8                    |
+| Wave + HardFinalityCert            | Chapter 6                           |
+| Snapshot manifest                  | STATE_SYNC.md                       |
+| Receipt + fee fields               | Chapter 10                          |
+| Log + EventCursor + LogFilter      | HOST_FN_ABI §15.2 + §15.4           |
+| Subscription mechanics             | HOST_FN_ABI §15.5                   |
+| Keystore format                    | Chapter 17 (`pyde keys generate`)   |
+| Cryptographic primitives           | Chapter 8.2 / 8.4                   |
+| ABI codec + selector               | SDK_AUTHOR_GUIDE + HOST_FN_ABI §3.7 |
+| Private submission (commit-reveal) | Chapter 9                           |
 
 The full book lives at [book.pyde.network](https://book.pyde.network).
 

@@ -42,10 +42,7 @@ afterAll(async () => {
 describe("WebSocketProvider — subscribeLogs (live)", () => {
   it("H.2 subscribeLogs registers + returns a working unsubscribe handle", async () => {
     const events: unknown[] = [];
-    const unsubscribe = await ws.subscribeLogs(
-      { topics: [] },
-      (log) => events.push(log),
-    );
+    const unsubscribe = await ws.subscribeLogs({ topics: [] }, (log) => events.push(log));
     expect(typeof unsubscribe).toBe("function");
     // borsh-coverage isn't deployed in this suite + no events are
     // emitted; the subscription should stay alive but receive no
@@ -64,9 +61,8 @@ describe("WebSocketProvider — subscribeLogs (live)", () => {
     const a: unknown[] = [];
     const b: unknown[] = [];
     const unsubA = await ws.subscribeLogs({ topics: [] }, (l) => a.push(l));
-    const unsubB = await ws.subscribeLogs(
-      { topics: [], contract: "0x" + "ab".repeat(32) },
-      (l) => b.push(l),
+    const unsubB = await ws.subscribeLogs({ topics: [], contract: "0x" + "ab".repeat(32) }, (l) =>
+      b.push(l),
     );
     await delay(300);
     await unsubA();
@@ -90,9 +86,7 @@ describe("WebSocketProvider — subscribeLogs (live)", () => {
     local.destroy();
     // Subsequent operations against a destroyed provider should
     // surface a typed error rather than hang.
-    await expect(
-      local.subscribeLogs({ topics: [] }, () => undefined),
-    ).rejects.toThrow();
+    await expect(local.subscribeLogs({ topics: [] }, () => undefined)).rejects.toThrow();
   }, 30_000);
 });
 
@@ -101,9 +95,7 @@ describe("WebSocketProvider — subscribeLogs (live)", () => {
 // --------------------------------------------------------------------------
 describe("WebSocketProvider — engine-side stub topics throw 'logs only in v1'", () => {
   it("subscribeNewHeads throws a typed RpcError", async () => {
-    await expect(
-      ws.subscribeNewHeads(() => undefined),
-    ).rejects.toThrow(RpcError);
+    await expect(ws.subscribeNewHeads(() => undefined)).rejects.toThrow(RpcError);
   });
 
   it("subscribeAccountChanges throws a typed RpcError", async () => {

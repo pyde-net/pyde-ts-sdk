@@ -472,22 +472,22 @@ console.log(Address.isValidPrivateKey("0x" + "00".repeat(1024))); // → false (
 
 Useful when working at the wire level.
 
-| Constant                        | Value                         | What it is                                       |
-| ------------------------------- | ----------------------------- | ------------------------------------------------ |
-| **Zero address**                | `0x` + `00` × 32              | Used as `to` for envelope-style txs.             |
-| **Decimals per PYDE**           | `9`                           | 1 PYDE = 10⁹ quanta.                             |
-| **FALCON-512 pubkey size**      | 897 bytes (1,794 hex chars)   | The on-chain public key length.                  |
-| **FALCON-512 secret key size**  | 1,281 bytes (2,562 hex chars) | The full private key.                            |
-| **FALCON-512 signature size**   | ~666 bytes (compact-encoded)  | Variable; 690 is the max.                        |
-| **Poseidon2 hash output**       | 32 bytes                      | Address derivation + state root (Poseidon2 leg). |
-| **Blake3 hash output**          | 32 bytes                      | State root (Blake3 leg) + general digests.       |
+| Constant                        | Value                         | What it is                                               |
+| ------------------------------- | ----------------------------- | -------------------------------------------------------- |
+| **Zero address**                | `0x` + `00` × 32              | Used as `to` for envelope-style txs.                     |
+| **Decimals per PYDE**           | `9`                           | 1 PYDE = 10⁹ quanta.                                     |
+| **FALCON-512 pubkey size**      | 897 bytes (1,794 hex chars)   | The on-chain public key length.                          |
+| **FALCON-512 secret key size**  | 1,281 bytes (2,562 hex chars) | The full private key.                                    |
+| **FALCON-512 signature size**   | ~666 bytes (compact-encoded)  | Variable; 690 is the max.                                |
+| **Poseidon2 hash output**       | 32 bytes                      | Address derivation + state root (Poseidon2 leg).         |
+| **Blake3 hash output**          | 32 bytes                      | State root (Blake3 leg) + general digests.               |
 | **Commit bond floor**           | 1 PYDE (10⁹ quanta)           | `MIN_COMMIT_BOND` — commit-reveal private-tx bond floor. |
-| **Address byte length**         | 32                            | All Pyde addresses.                              |
-| **Nonce window size**           | 16                            | Concurrent unconfirmed txs per sender.           |
-| **Min tx gas**                  | 21,000                        | Structural validator floor (`MIN_GAS_LIMIT`).    |
-| **Max tx size**                 | 128 KB                        | Structural validator cap (`MAX_TX_SIZE`).        |
-| **Max calldata size**           | 64 KB                         | Structural validator cap (`MAX_CALLDATA`).       |
-| **Max logs span per `getLogs`** | 5,000 waves                   | HOST_FN_ABI §15.4 cap.                           |
+| **Address byte length**         | 32                            | All Pyde addresses.                                      |
+| **Nonce window size**           | 16                            | Concurrent unconfirmed txs per sender.                   |
+| **Min tx gas**                  | 21,000                        | Structural validator floor (`MIN_GAS_LIMIT`).            |
+| **Max tx size**                 | 128 KB                        | Structural validator cap (`MAX_TX_SIZE`).                |
+| **Max calldata size**           | 64 KB                         | Structural validator cap (`MAX_CALLDATA`).               |
+| **Max logs span per `getLogs`** | 5,000 waves                   | HOST_FN_ABI §15.4 cap.                                   |
 
 ### Why these matter
 

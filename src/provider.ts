@@ -233,9 +233,10 @@ export class Provider {
    *  priority fees, so `gasPrice === baseFee`. Spec: Chapter 10 —
    *  `pyde_getFeeData`. */
   async getFeeData(): Promise<FeeData> {
-    const result = (await this.call_("pyde_getFeeData", [])) as
-      | { base_fee?: unknown; suggested_tip?: unknown }
-      | null;
+    const result = (await this.call_("pyde_getFeeData", [])) as {
+      base_fee?: unknown;
+      suggested_tip?: unknown;
+    } | null;
     if (!result || typeof result !== "object") {
       throw new RpcError(`pyde_getFeeData: empty response`);
     }
@@ -599,8 +600,7 @@ export class Provider {
   private buildTxResponse(hash: string): TransactionResponse {
     return {
       hash,
-      wait: (timeoutMs = 10_000): Promise<Receipt> =>
-        this.waitForReceipt(hash, timeoutMs),
+      wait: (timeoutMs = 10_000): Promise<Receipt> => this.waitForReceipt(hash, timeoutMs),
     };
   }
 
@@ -779,12 +779,7 @@ function asString(value: unknown, ctx: string): string {
 function asHex(value: unknown, ctx: string): string {
   if (typeof value === "string") return value;
   if (Array.isArray(value) && value.every((v) => typeof v === "number")) {
-    return (
-      "0x" +
-      (value as number[])
-        .map((b) => (b & 0xff).toString(16).padStart(2, "0"))
-        .join("")
-    );
+    return "0x" + (value as number[]).map((b) => (b & 0xff).toString(16).padStart(2, "0")).join("");
   }
   throw new RpcError(`${ctx} returned non-hex: ${JSON.stringify(value)}`);
 }
@@ -1077,9 +1072,7 @@ function parseWaveCommit(o: Record<string, unknown>): WaveCommit {
     waveId: parseBigIntLoose(o.wave_id ?? o.waveId, "WaveCommit.waveId"),
     anchorRound: parseBigIntLoose(o.anchor_round ?? o.anchorRound, "WaveCommit.anchorRound"),
     priorAnchorRound:
-      priorRaw == null
-        ? null
-        : parseBigIntLoose(priorRaw, "WaveCommit.priorAnchorRound"),
+      priorRaw == null ? null : parseBigIntLoose(priorRaw, "WaveCommit.priorAnchorRound"),
     anchorHash: asString(o.anchor_hash ?? o.anchorHash, "WaveCommit.anchorHash"),
     epoch: parseBigIntLoose(o.epoch ?? 0, "WaveCommit.epoch"),
     nextEpochBeacon:
@@ -1109,7 +1102,6 @@ function fromWireSnapshotManifest(w: unknown): SnapshotManifest {
     totalKeys: Number(o.total_keys),
   } as SnapshotManifest;
 }
-
 
 // ----------------------------------------------------------------------------
 // Receipt + Log
@@ -1206,8 +1198,7 @@ function fromWireTransactionInfo(w: unknown, queriedHash?: string): TransactionI
   //   - `nonce`, `chain_id`, `gas_limit`, `tx_type` are raw JSON
   //     numbers (not hex strings).
   const wireHash = o.hash ?? o.tx_hash;
-  const hash =
-    wireHash !== undefined ? asHex(wireHash, "Tx.hash") : queriedHash;
+  const hash = wireHash !== undefined ? asHex(wireHash, "Tx.hash") : queriedHash;
   if (hash === undefined) {
     throw new RpcError("Tx.hash missing on wire and no queried hash supplied");
   }

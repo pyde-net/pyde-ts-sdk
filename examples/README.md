@@ -2,11 +2,11 @@
 
 Runnable examples for `pyde-ts-sdk`. Each file is self-contained and includes a header explaining what it does + how to run it.
 
-| File                   | What it shows                                                              |
-| ---------------------- | -------------------------------------------------------------------------- |
-| `01-read-balance.mjs`  | HTTP `Provider` — read balance, nonce, account record.                     |
+| File                   | What it shows                                                               |
+| ---------------------- | --------------------------------------------------------------------------- |
+| `01-read-balance.mjs`  | HTTP `Provider` — read balance, nonce, account record.                      |
 | `02-send-transfer.mjs` | `Wallet` — derive devnet-1 from its deterministic seed and send a transfer. |
-| `03-event-indexer.mjs` | `WebSocketProvider` — live event subscription with at-least-once delivery. |
+| `03-event-indexer.mjs` | `WebSocketProvider` — live event subscription with at-least-once delivery.  |
 
 ## Running
 
