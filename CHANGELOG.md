@@ -2,7 +2,7 @@
 
 All notable changes to `pyde-ts-sdk` ship here. Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html) once we hit 1.0; pre-1.0 we ship `0.x.y-beta.N` and break liberally between minors. Each entry calls out wire-format / behavior-altering changes explicitly.
 
-## Unreleased
+## 0.4.0 — 2026-07-22
 
 ### Factory pattern — counterfactual child addresses + provenance events
 
