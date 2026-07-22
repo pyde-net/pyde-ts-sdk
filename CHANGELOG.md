@@ -2,6 +2,17 @@
 
 All notable changes to `pyde-ts-sdk` ship here. Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html) once we hit 1.0; pre-1.0 we ship `0.x.y-beta.N` and break liberally between minors. Each entry calls out wire-format / behavior-altering changes explicitly.
 
+## Unreleased
+
+### Factory pattern (PIP-0006) — counterfactual child addresses + provenance events
+
+New `./factory` module (all exported from the package root). Wallets and scripts can now compute a factory child's address before the instantiating tx lands, and decode the engine's child-provenance event off receipts.
+
+- **`childAddress(parent, template, salt)`** — pure counterfactual derivation, `Poseidon2("pyde-child:" || parent[32] || template[32] || salt[32])` over the 107-byte fixed-width preimage, byte-for-byte the engine's `pyde::instantiate` formula. Poseidon2 routes through the vendored `pyde-crypto-wasm` (the engine's own implementation — never hand-rolled). **`childPreimage(...)`** exposes the assembled preimage for auditing; `CHILD_ADDRESS_DOMAIN_TAG` pins the wire-frozen 11-byte tag.
+- **Salt helpers** mirroring the engine's `Salt::of` family: `saltOfBytes(borshBytes)` (Poseidon2 of the borsh encoding of the child-identity value — the general form), `saltOfCounter(counter)` (u64 little-endian, range-checked), and `saltOfUnorderedPair(a, b)` (unsigned bytewise ascending sort then raw 64-byte concat — argument-order-independent, so both orders land on the same child).
+- **`decodeInstantiated(log)`** — decodes the engine's `pyde.Instantiated` event (`INSTANTIATED_TOPIC0` = pinned `Blake3("pyde.Instantiated")`) into a typed `InstantiatedEvent { child, template, parent, salt, value }`; `value` is full-range u128 `bigint` quanta. Throws `InvalidArgumentError` on wrong topic0 / malformed data.
+- **Conformance:** the pyde-host golden vectors (`vectors/child_address.json` — 13 vectors incl. the engine KAT anchor and the unsigned-sort sign-boundary pair) are copied verbatim under `src/__fixtures__/` and replayed in full by the test suite.
+
 ## 0.3.0 — 2026-07-17
 
 ### Keystore standardized on the canonical cross-impl format
