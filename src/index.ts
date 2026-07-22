@@ -36,6 +36,17 @@ export {
   type CommitPayload,
   type RevealPayload,
 } from "./private-tx";
+export {
+  childAddress,
+  childPreimage,
+  saltOfBytes,
+  saltOfCounter,
+  saltOfUnorderedPair,
+  decodeInstantiated,
+  CHILD_ADDRESS_DOMAIN_TAG,
+  INSTANTIATED_TOPIC0,
+  type InstantiatedEvent,
+} from "./factory";
 export { Address } from "./address";
 export { parseUnits, formatUnits, parseQuanta, formatQuanta } from "./units";
 export {
