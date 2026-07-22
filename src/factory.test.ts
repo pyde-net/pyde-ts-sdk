@@ -1,5 +1,5 @@
 /**
- * Factory-pattern (PIP-0006) child-address derivation — unit tests (no devnet).
+ * Factory-pattern child-address derivation — unit tests (no devnet).
  *
  * Replays the pyde-host golden conformance vectors byte-for-byte. The
  * canonical home of the fixture is `pyde-net/pyde-host/vectors/

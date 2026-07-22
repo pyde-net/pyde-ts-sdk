@@ -4,7 +4,7 @@ All notable changes to `pyde-ts-sdk` ship here. Versioning follows [Semantic Ver
 
 ## Unreleased
 
-### Factory pattern (PIP-0006) — counterfactual child addresses + provenance events
+### Factory pattern — counterfactual child addresses + provenance events
 
 New `./factory` module (all exported from the package root). Wallets and scripts can now compute a factory child's address before the instantiating tx lands, and decode the engine's child-provenance event off receipts.
 
