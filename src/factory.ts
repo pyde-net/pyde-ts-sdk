@@ -1,5 +1,5 @@
 /**
- * Factory-pattern (PIP-0006) primitives — counterfactual child addresses
+ * Factory-pattern primitives — counterfactual child addresses
  * and child-provenance events.
  *
  * A factory contract instantiates children by reference via the engine's
