@@ -2,6 +2,14 @@
 
 All notable changes to `pyde-ts-sdk` ship here. Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html) once we hit 1.0; pre-1.0 we ship `0.x.y-beta.N` and break liberally between minors. Each entry calls out wire-format / behavior-altering changes explicitly.
 
+## 0.5.2 — 2026-07-24
+
+### Fix: read event fields from `params` + `indexed_mask` (0.5.1 read the wrong key)
+
+0.5.1 fixed the topic0 *formula* (`Blake3(canonical signature)`) but reconstructed the signature from `raw.fields`. Real engine ABIs carry event fields under **`params`** (like functions) with an **`indexed_mask`** bitmask — so `normaliseAbiEvent` found no fields, produced `"Name()"`, and the topic0 still didn't match a real log. Event decode was therefore still broken in 0.5.1. Now it reads `params` (falling back to `fields`) and derives each field's `indexed` flag from `indexed_mask` bit `i`.
+
+Verified against a live engine event: `Incremented(uint64,uint64,uint64)` → topic0 `0xe6dec688…` matches the emitted log, and `parseLog` decodes it to `{by, prev, next}` with real values. Anyone on 0.5.1 should move to 0.5.2 — 0.5.1's event decoding does not work against real events.
+
 ## 0.5.1 — 2026-07-24
 
 ### Fix: event `topic0` is `Blake3(signature)`, so `parseLog` actually decodes events

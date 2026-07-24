@@ -11,19 +11,22 @@ import { Provider } from "./provider";
 const provider = new Provider("http://127.0.0.1:9933", { allowInsecureTransport: true }); // constructed only; never called
 const ADDR = "0x" + "11".repeat(32);
 
+// Real engine ABIs carry event fields under `params` with an `indexed_mask`
+// bitmask (NOT `fields` + per-field `indexed`) — use the real shape here.
 const ABI = JSON.stringify({
   contract: "Demo",
   functions: [],
   events: [
     {
       name: "Transfer",
-      fields: [
-        { name: "from", ty: "Address", indexed: true },
-        { name: "to", ty: "Address", indexed: true },
-        { name: "amount", ty: "U128", indexed: false },
+      params: [
+        { name: "from", ty: "Address" },
+        { name: "to", ty: "Address" },
+        { name: "amount", ty: "U128" },
       ],
+      indexed_mask: 0b011, // from + to indexed
     },
-    { name: "Ping", fields: [] },
+    { name: "Ping", params: [], indexed_mask: 0 },
   ],
 });
 

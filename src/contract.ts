@@ -1741,13 +1741,17 @@ function canonicalEventType(t: EngineAbiType): string {
 }
 
 function normaliseAbiEvent(raw: Record<string, unknown>): AbiEvent {
-  const rawFields = (raw.fields as unknown[]) ?? [];
+  // Engine ABIs carry event fields under `params` (like functions) with an
+  // `indexed_mask` bitmask (bit i ⇒ param i is indexed). Older / hand-written
+  // shapes use `fields` with a per-field `indexed` flag — support both.
+  const rawFields = (raw.params as unknown[]) ?? (raw.fields as unknown[]) ?? [];
+  const mask = typeof raw.indexed_mask === "number" ? (raw.indexed_mask as number) : undefined;
   const fields = rawFields.map((f, i) => {
     const o = f as Record<string, unknown>;
     return {
       name: (o.name as string | undefined) ?? `field${i}`,
       type: normaliseAbiType((o.ty ?? o.type) as EngineAbiType),
-      indexed: Boolean(o.indexed),
+      indexed: mask !== undefined ? (mask & (1 << i)) !== 0 : Boolean(o.indexed),
     };
   });
   const name = raw.name as string;
