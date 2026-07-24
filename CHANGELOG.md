@@ -2,6 +2,18 @@
 
 All notable changes to `pyde-ts-sdk` ship here. Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html) once we hit 1.0; pre-1.0 we ship `0.x.y-beta.N` and break liberally between minors. Each entry calls out wire-format / behavior-altering changes explicitly.
 
+## 0.5.0 — 2026-07-24
+
+### Receipt: `waveId`, `nonce`, and `commitReveal`
+
+`Receipt` (from `getTransactionReceipt`) now surfaces three fields, matching the engine's `nonce` + `commit_reveal` receipt change:
+
+- **`waveId`** (`Wave | null`) — the wave this tx was included in. It was always on the wire (`wave_id`) but the SDK never parsed it into `Receipt`; now it does.
+- **`nonce`** (`bigint | null`) — the tx author's nonce. For a **commit-reveal inner op** this is the INNER tx's nonce, so a lookup by the inner-op hash (which is not a standalone indexed tx) reports the correct nonce.
+- **`commitReveal`** (`boolean`) — `true` when the receipt is a commit-reveal inner op. Per the engine, this is **delayed-disclosure ordering protection, NOT confidentiality** — the inner op is public plaintext once revealed, so **do not label it "private"** in UIs. `false` for a plaintext tx.
+
+All three degrade gracefully (`null` / `false`) against nodes that predate the fields.
+
 ## 0.4.0 — 2026-07-22
 
 ### Factory pattern — counterfactual child addresses + provenance events
