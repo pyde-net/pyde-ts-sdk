@@ -18,6 +18,7 @@
  * with their own file loading.
  */
 
+import { blake3 } from "@noble/hashes/blake3";
 import { computeSelector } from "./crypto";
 import { InvalidArgumentError } from "./errors";
 import { Provider } from "./provider";
@@ -169,6 +170,8 @@ interface AbiEnumDef {
 interface AbiEvent {
   name: string;
   fields: AbiEventField[];
+  /** topics[0] = `Blake3(canonical signature)` — see {@link normaliseAbiEvent}. */
+  topic0: string;
 }
 
 interface AbiEventField {
@@ -341,12 +344,10 @@ export class Contract<TAbi extends AbiShape = DefaultAbi> {
     for (const raw of abi.events || []) {
       const ev = normaliseAbiEvent(raw);
       contract.events.set(ev.name, ev);
-      // topic[0] = FNV-1a selector of event name, stored as LE u32 zero-padded to 32 bytes
-      const sel = computeSelector(ev.name);
-      const selBuf = new Uint8Array(4);
-      writeU32LE(selBuf, 0, sel);
-      const topic0 = "0x" + bytesToHex(selBuf) + "0".repeat(56);
-      contract.eventsByTopic.set(topic0, ev);
+      // topic[0] = Blake3(canonical signature), computed in normaliseAbiEvent —
+      // matches pyde-host's #[event] derive + the rust-sdk (what a real event
+      // log actually carries). NOT an FNV selector.
+      contract.eventsByTopic.set(ev.topic0, ev);
     }
 
     return contract as unknown as Contract<T>;
@@ -600,12 +601,19 @@ export class Contract<TAbi extends AbiShape = DefaultAbi> {
     return this.decodeEventLog(ev, log);
   }
 
-  /** Get the topic0 hash for an event name (for building custom filters). */
+  /** Get the topic0 hash for an event name (for building custom filters).
+   *  topic0 = `Blake3(canonical signature)`, so the event's typed fields
+   *  determine it — the event must be declared in this contract's ABI. */
   getEventTopic(eventName: string): string {
-    const sel = computeSelector(eventName);
-    const buf = new Uint8Array(4);
-    writeU32LE(buf, 0, sel);
-    return "0x" + bytesToHex(buf) + "0".repeat(56);
+    const ev = this.events.get(eventName);
+    if (!ev) {
+      throw new InvalidArgumentError(
+        `unknown event '${eventName}' — not declared in this contract's ABI`,
+        "eventName",
+        eventName,
+      );
+    }
+    return ev.topic0;
   }
 
   private decodeEventLog(ev: AbiEvent, log: import("./types").Log): EventLog {
@@ -1707,8 +1715,34 @@ function normaliseEnumDef(raw: Record<string, unknown>): AbiEnumDef {
   return { name: raw.name as string, variants };
 }
 
+/** Canonical Solidity-style spelling of an event field type, used ONLY to
+ *  reconstruct the topic-0 signature. Mirrors the rust-sdk's
+ *  `write_canonical_type` and pyde-host's `#[event]` derive: `uintN` / `intN`,
+ *  `address`, `bytesN` (a 32-byte fixed field is `bytes32`, NOT `address`),
+ *  `bytes`, `string`. Derived from the RAW ABI type — the normalised type
+ *  collapses `hash32 → Address`, which would mis-spell a `bytes32` field. */
+function canonicalEventType(t: EngineAbiType): string {
+  if (typeof t === "string") {
+    const s = t.toLowerCase();
+    const scalar: Record<string, string> = {
+      u8: "uint8", u16: "uint16", u32: "uint32", u64: "uint64", u128: "uint128", u256: "uint256",
+      i8: "int8", i16: "int16", i32: "int32", i64: "int64", i128: "int128", i256: "int256",
+      bool: "bool", address: "address", string: "string", bytes: "bytes",
+      hash: "bytes32", hash32: "bytes32",
+    };
+    return scalar[s] ?? t;
+  }
+  if (typeof t === "object" && t !== null) {
+    const o = t as Record<string, unknown>;
+    if (typeof o.FixedBytes === "number") return `bytes${o.FixedBytes}`;
+    if (o.Vec !== undefined) return `${canonicalEventType(o.Vec as EngineAbiType)}[]`;
+  }
+  return String(t);
+}
+
 function normaliseAbiEvent(raw: Record<string, unknown>): AbiEvent {
-  const fields = ((raw.fields as unknown[]) ?? []).map((f, i) => {
+  const rawFields = (raw.fields as unknown[]) ?? [];
+  const fields = rawFields.map((f, i) => {
     const o = f as Record<string, unknown>;
     return {
       name: (o.name as string | undefined) ?? `field${i}`,
@@ -1716,7 +1750,19 @@ function normaliseAbiEvent(raw: Record<string, unknown>): AbiEvent {
       indexed: Boolean(o.indexed),
     };
   });
-  return { name: raw.name as string, fields };
+  const name = raw.name as string;
+  // topic-0 = Blake3("name(canonicalType1,…)") over ALL fields in declaration
+  // order — the exact value pyde-host's `#[event]` derive computes and the
+  // contract passes to `emit_event`, so it's what a real log's topics[0]
+  // carries. Matches the rust-sdk's `event_signature_topic`.
+  const sig = `${name}(${rawFields
+    .map((f) => {
+      const o = f as Record<string, unknown>;
+      return canonicalEventType((o.ty ?? o.type) as EngineAbiType);
+    })
+    .join(",")})`;
+  const topic0 = "0x" + bytesToHex(blake3(new TextEncoder().encode(sig)));
+  return { name, fields, topic0 };
 }
 
 /** Parse "[T; N]" inner string → [elementType, count]. */
