@@ -2,6 +2,15 @@
 
 All notable changes to `pyde-ts-sdk` ship here. Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html) once we hit 1.0; pre-1.0 we ship `0.x.y-beta.N` and break liberally between minors. Each entry calls out wire-format / behavior-altering changes explicitly.
 
+## 0.5.1 — 2026-07-24
+
+### Fix: event `topic0` is `Blake3(signature)`, so `parseLog` actually decodes events
+
+`Contract.parseLog` / `getEventTopic` computed event `topic0` as a 4-byte FNV-1a selector of the event *name* zero-padded to 32 bytes. Real event logs carry `topic0 = Blake3("Name(canonicalType1,…)")` (what pyde-host's `#[event]` derive emits and the engine stores), so the lookup never matched and **every event silently decoded to `null`**. Now `topic0` is `Blake3` of the canonical Solidity-style signature, derived from the typed ABI fields — matching the rust-sdk's `event_signature_topic` and the engine's pinned `Blake3("pyde.Instantiated")`. Verified against the engine's pinned reference hash.
+
+- Canonical spelling mirrors the contract side: `uintN`/`intN`, `address`, a 32-byte fixed field is `bytes32` (not `address`), `bytes`, `string`.
+- `getEventTopic(name)` now throws `InvalidArgumentError` for an event not declared in the ABI (its typed fields are required to compute `topic0`).
+
 ## 0.5.0 — 2026-07-24
 
 ### Receipt: `waveId`, `nonce`, and `commitReveal`
