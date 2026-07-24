@@ -198,6 +198,15 @@ export interface Receipt {
   txHash: Hash;
   /** Position of this tx within the wave's canonical order. */
   txIndex: number;
+  /** Wave this tx was included in. `null` only if the engine omits it. */
+  waveId: Wave | null;
+  /** The tx author's nonce; for a commit-reveal INNER op, the inner tx's nonce
+   *  (so a lookup by inner-hash reports it). `null` on pre-field engines. */
+  nonce: bigint | null;
+  /** True when this receipt is a commit-reveal inner op — delayed-disclosure
+   *  ordering protection, NOT confidentiality (the op is public plaintext once
+   *  revealed). `false` for a plaintext tx. */
+  commitReveal: boolean;
   success: boolean;
   /** Hex-encoded u64. */
   gasUsed: string;

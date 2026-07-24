@@ -1127,6 +1127,9 @@ function fromWireReceipt(w: unknown): Receipt {
   const out: Receipt = {
     txHash: asString(o.tx_hash ?? o.txHash, "Receipt.txHash"),
     txIndex,
+    waveId: tryBigInt(o.wave_id ?? o.waveId),
+    nonce: tryBigInt(o.nonce),
+    commitReveal: o.commit_reveal === true || o.commitReveal === true,
     success,
     gasUsed: asString(o.gas_used ?? o.gasUsed, "Receipt.gasUsed"),
     effectiveGas: tryWireString(o.effective_gas ?? o.effectiveGas),
