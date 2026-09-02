@@ -6,7 +6,7 @@ All notable changes to `pyde-ts-sdk` ship here. Versioning follows [Semantic Ver
 
 ### Fix: read event fields from `params` + `indexed_mask` (0.5.1 read the wrong key)
 
-0.5.1 fixed the topic0 *formula* (`Blake3(canonical signature)`) but reconstructed the signature from `raw.fields`. Real engine ABIs carry event fields under **`params`** (like functions) with an **`indexed_mask`** bitmask — so `normaliseAbiEvent` found no fields, produced `"Name()"`, and the topic0 still didn't match a real log. Event decode was therefore still broken in 0.5.1. Now it reads `params` (falling back to `fields`) and derives each field's `indexed` flag from `indexed_mask` bit `i`.
+0.5.1 fixed the topic0 _formula_ (`Blake3(canonical signature)`) but reconstructed the signature from `raw.fields`. Real engine ABIs carry event fields under **`params`** (like functions) with an **`indexed_mask`** bitmask — so `normaliseAbiEvent` found no fields, produced `"Name()"`, and the topic0 still didn't match a real log. Event decode was therefore still broken in 0.5.1. Now it reads `params` (falling back to `fields`) and derives each field's `indexed` flag from `indexed_mask` bit `i`.
 
 Verified against a live engine event: `Incremented(uint64,uint64,uint64)` → topic0 `0xe6dec688…` matches the emitted log, and `parseLog` decodes it to `{by, prev, next}` with real values. Anyone on 0.5.1 should move to 0.5.2 — 0.5.1's event decoding does not work against real events.
 
@@ -14,7 +14,7 @@ Verified against a live engine event: `Incremented(uint64,uint64,uint64)` → to
 
 ### Fix: event `topic0` is `Blake3(signature)`, so `parseLog` actually decodes events
 
-`Contract.parseLog` / `getEventTopic` computed event `topic0` as a 4-byte FNV-1a selector of the event *name* zero-padded to 32 bytes. Real event logs carry `topic0 = Blake3("Name(canonicalType1,…)")` (what pyde-host's `#[event]` derive emits and the engine stores), so the lookup never matched and **every event silently decoded to `null`**. Now `topic0` is `Blake3` of the canonical Solidity-style signature, derived from the typed ABI fields — matching the rust-sdk's `event_signature_topic` and the engine's pinned `Blake3("pyde.Instantiated")`. Verified against the engine's pinned reference hash.
+`Contract.parseLog` / `getEventTopic` computed event `topic0` as a 4-byte FNV-1a selector of the event _name_ zero-padded to 32 bytes. Real event logs carry `topic0 = Blake3("Name(canonicalType1,…)")` (what pyde-host's `#[event]` derive emits and the engine stores), so the lookup never matched and **every event silently decoded to `null`**. Now `topic0` is `Blake3` of the canonical Solidity-style signature, derived from the typed ABI fields — matching the rust-sdk's `event_signature_topic` and the engine's pinned `Blake3("pyde.Instantiated")`. Verified against the engine's pinned reference hash.
 
 - Canonical spelling mirrors the contract side: `uintN`/`intN`, `address`, a 32-byte fixed field is `bytes32` (not `address`), `bytes`, `string`.
 - `getEventTopic(name)` now throws `InvalidArgumentError` for an event not declared in the ABI (its typed fields are required to compute `topic0`).

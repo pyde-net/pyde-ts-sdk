@@ -1725,10 +1725,24 @@ function canonicalEventType(t: EngineAbiType): string {
   if (typeof t === "string") {
     const s = t.toLowerCase();
     const scalar: Record<string, string> = {
-      u8: "uint8", u16: "uint16", u32: "uint32", u64: "uint64", u128: "uint128", u256: "uint256",
-      i8: "int8", i16: "int16", i32: "int32", i64: "int64", i128: "int128", i256: "int256",
-      bool: "bool", address: "address", string: "string", bytes: "bytes",
-      hash: "bytes32", hash32: "bytes32",
+      u8: "uint8",
+      u16: "uint16",
+      u32: "uint32",
+      u64: "uint64",
+      u128: "uint128",
+      u256: "uint256",
+      i8: "int8",
+      i16: "int16",
+      i32: "int32",
+      i64: "int64",
+      i128: "int128",
+      i256: "int256",
+      bool: "bool",
+      address: "address",
+      string: "string",
+      bytes: "bytes",
+      hash: "bytes32",
+      hash32: "bytes32",
     };
     return scalar[s] ?? t;
   }
