@@ -57,7 +57,11 @@ describe("event topic0 = Blake3(canonical signature)", () => {
   it("parseLog matches a log carrying the real topic0 (and rejects a wrong one)", () => {
     const from = "0x" + "aa".repeat(32);
     const to = "0x" + "bb".repeat(32);
-    const good = { contract: ADDR, topics: [c.getEventTopic("Transfer"), from, to], data: "0x" } as never;
+    const good = {
+      contract: ADDR,
+      topics: [c.getEventTopic("Transfer"), from, to],
+      data: "0x",
+    } as never;
     expect(c.parseLog(good)?.name).toBe("Transfer");
 
     const bad = { contract: ADDR, topics: ["0x" + "00".repeat(32)], data: "0x" } as never;
